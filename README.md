@@ -28,7 +28,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 **Core Features:**
 - **Rootless Containers**: Runs without host root privileges using Podman's user namespaces
-- **Minimal Base Image**: Built on Debian Slim with only essential packages
+- **Minimal Base Image**: Built on Alpine Linux with only essential packages
 - **Squid Proxy Firewall**: Proxy-based destination filtering with explicit allowlist rules
 - **Hard Egress Isolation**: Agent containers run on an internal-only network and can exit only via Squid
 - **No Privilege Escalation**: `--security-opt=no-new-privileges:true` enforced
@@ -44,7 +44,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 ### Usability
 - **Cross-Platform**: Works on Linux, macOS, and Windows (via WSL2)
-- **Config Import**: Linux mounts existing agent config directly. On macOS/Windows, use `agentbox import <agent>` to copy host config once.
+- **Config Import**: All platforms use managed config (import-only). Use `agentbox import <agent>` to seed host config.
 - **Simple Commands**: Just run `agentbox claude` to get started
 
 ## Supported Agents
@@ -55,7 +55,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 | `codex`     | OpenAI's Codex CLI           | None (downloaded)|
 | `opencode`  | OpenCode AI assistant        | None (official image + tools) |
 
-**Note**: All agents are installed inside the container. On Linux, existing config (`~/.claude`, etc.) is mounted automatically. On macOS/Windows, use `agentbox import <agent>` (or `agentbox import all`) to seed managed config.
+**Note**: All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `agentbox import <agent>` (or `agentbox import all`) to re-seed from host config.
 
 ## Installation
 
@@ -139,7 +139,7 @@ agentbox opencode
 
 That's it! AgentBox automatically:
 - Builds the container image if needed
-- Mounts your existing config (`~/.claude`, `~/.codex`, etc.)
+- Imports your existing config (`~/.claude`, `~/.codex`, etc.) on first run
 - Mounts your project directory
 - Sets up the network firewall (Squid proxy)
 
@@ -196,11 +196,18 @@ agentbox projects          # List known projects
 ### Options
 
 ```bash
-agentbox --no-firewall <agent>  # Disable network firewall for this run
-agentbox --read-only <agent>    # Mount workspace as read-only (safety)
-agentbox --verbose <agent>      # Enable verbose output
-agentbox --include-dir /tmp/foo <agent>  # Mount /tmp/foo into /workspace/foo
+agentbox -f claude              # Disable network firewall *DANGEROUS*
+agentbox -r claude              # Mount workspace as read-only (safety)
+agentbox -v claude              # Enable verbose output
+agentbox -n claude              # Don't pass host environment variables
+agentbox -n -e MY_KEY=val claude  # Only pass specific env vars
+agentbox -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
+agentbox -t nodejs,go claude    # Add Alpine packages to image (persisted)
+agentbox -a api.example.com claude  # Allow extra domains for this session
+agentbox -u claude              # Check for and apply agent updates
 ```
+
+All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`.
 
 ## Available Profiles
 
@@ -219,6 +226,24 @@ agentbox --include-dir /tmp/foo <agent>  # Mount /tmp/foo into /workspace/foo
 
 ## Configuration
 
+### Custom Tools
+
+AgentBox images come with a standard set of Alpine packages (see `config/tools.txt`). You can add extra packages in two ways:
+
+1. **CLI flag** (persisted automatically):
+   ```bash
+   agentbox -t nodejs,python3-dev claude
+   ```
+   This adds the packages to `~/.config/agentbox/tools.txt` and rebuilds the image.
+
+2. **Manual edit**:
+   ```bash
+   echo "nodejs" >> ~/.config/agentbox/tools.txt
+   ```
+   The image will rebuild on next run when tools change.
+
+Packages are Alpine `apk` package names. Use `apk search <name>` inside a container to find available packages.
+
 ### Resource Limits
 
 AgentBox enforces default resource limits to prevent runaway agents:
@@ -227,15 +252,19 @@ AgentBox enforces default resource limits to prevent runaway agents:
 
 ### What Gets Mounted
 
-AgentBox mounts your existing config directly from the host:
+AgentBox uses **managed config** (import-only). On first run, host config is copied into `~/.config/agentbox/<agent>/` and all mounts come from there. Host originals are never modified. Use `agentbox import <agent>` to re-seed from host config at any time.
 
-| Agent   | Host Path              | Container Path         |
-|:--------|:-----------------------|:-----------------------|
-| Claude  | `~/.claude`            | `/home/user/.claude`   |
-| Claude  | `~/.claude.json`       | `/home/user/.claude.json` |
-| Claude  | `~/.local/share/claude`| `/home/user/.local/share/claude` |
-| Codex   | `~/.codex`             | `/home/user/.codex`    |
-| OpenCode| `~/.opencode`          | `/home/user/.opencode` |
+| Agent    | Managed Path                                      | Container Path                    |
+|:---------|:--------------------------------------------------|:----------------------------------|
+| Claude   | `~/.config/agentbox/claude/.claude`               | `/home/user/.claude`              |
+| Claude   | `~/.config/agentbox/claude/.claude.json`          | `/home/user/.claude.json`         |
+| Claude   | `~/.config/agentbox/claude/.config`               | `/home/user/.config`              |
+| Codex    | `~/.config/agentbox/codex/.codex`                 | `/home/user/.codex`               |
+| Codex    | `~/.config/agentbox/codex/.config/codex`          | `/home/user/.config/codex`        |
+| OpenCode | `~/.config/agentbox/opencode/.opencode`           | `/home/user/.opencode`            |
+| OpenCode | `~/.config/agentbox/opencode/.config/opencode`    | `/home/user/.config/opencode`     |
+| OpenCode | `~/.config/agentbox/opencode/.local/share/opencode` | `/home/user/.local/share/opencode` |
+| OpenCode | `~/.config/agentbox/opencode/.local/state`        | `/home/user/.local/state`         |
 
 Your project directory is mounted at `/workspace`.
 
@@ -278,10 +307,20 @@ Add explicit hosts or wildcard domains:
 echo "mycompany.com" >> ~/.config/agentbox/allowlist.txt
 ```
 
+### Temporary Domain Access
+
+Allow extra domains for a single session without editing the allowlist:
+
+```bash
+agentbox -a api.example.com,cdn.example.com claude
+```
+
+These domains are added to the Squid config and hot-reloaded. They do not persist across sessions.
+
 ### Disabling the Firewall
 
 ```bash
-agentbox --no-firewall claude
+agentbox --no-firewall claude   # *DANGEROUS* - disables all network restrictions
 ```
 
 ## Why Podman?
@@ -305,15 +344,6 @@ podman system migrate
 
 ```bash
 podman machine start
-```
-
-### macOS: "GID already exists" during build
-
-This was a known issue where macOS's default GID (20, the `staff` group) conflicted with an existing group in the Debian container. It has been fixed. If you see this error, pull the latest version:
-
-```bash
-cd ~/.agentbox && git pull
-agentbox rebuild claude
 ```
 
 ### Docker: Permission Denied

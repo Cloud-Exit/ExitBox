@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # ==============================================================================
-# AgentBox Base Image (Debian Slim + Rootless + iptables)
+# AgentBox Base Image (Alpine + Rootless + iptables)
 # Minimal, security-focused base with working firewall
 # ==============================================================================
 
-FROM debian:bookworm-slim
+FROM alpine:latest
 
 # Build arguments
 ARG USER_ID=1000
@@ -12,81 +12,38 @@ ARG GROUP_ID=1000
 ARG USERNAME=user
 ARG DELTA_VERSION=0.18.2
 ARG TARGETARCH=x86_64
-ARG AGENTBOX_VERSION=3.1.0
+ARG AGENTBOX_VERSION=3.2.0
 
 # Environment variables
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     HOME=/home/${USERNAME} \
-    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}" \
-    DEBIAN_FRONTEND=noninteractive
+    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
 
-# Install base packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Essential tools
-    ca-certificates \
-    curl \
-    wget \
-    git \
-    openssh-client \
-    bash \
-    # Editors
-    vim-tiny \
-    nano \
-    # Data processing
-    jq \
-    # Search tools
-    ripgrep \
-    fd-find \
-    fzf \
-    # File utilities
-    tree \
-    file \
-    less \
-    bat \
-    # Process utilities
-    procps \
-    htop \
-    # Archive tools
-    zip \
-    unzip \
-    xz-utils \
-    tar \
-    gzip \
-    bzip2 \
-    # Build essentials (for compiling)
-    make \
-    patch \
-    diffutils \
-    # Text processing
-    sed \
-    gawk \
-    gettext-base \
-    # Networking
-    dnsutils \
-    netcat-openbsd \
-    socat \
-    # Terminal
-    tmux \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Install base packages from tools.txt
+COPY tools.txt /tmp/tools.txt
+RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') \
+    && rm /tmp/tools.txt
 
-# Install yq (not in Debian repos)
-RUN curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq \
+# Install yq (architecture-aware)
+RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
+        YQ_ARCH="amd64"; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        YQ_ARCH="arm64"; \
+    else \
+        YQ_ARCH="amd64"; \
+    fi && \
+    curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${YQ_ARCH}" -o /usr/local/bin/yq \
     && chmod +x /usr/local/bin/yq
 
-# Create symlinks for tools with different names
-RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
-    ln -sf /usr/bin/batcat /usr/local/bin/bat
-
-# Install git-delta for better diffs
+# Install git-delta for better diffs (musl build for Alpine)
 RUN mkdir -p /usr/local/bin && \
     if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
-        DELTA_ARCH="x86_64-unknown-linux-gnu"; \
+        DELTA_ARCH="x86_64-unknown-linux-musl"; \
     elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
-        DELTA_ARCH="aarch64-unknown-linux-gnu"; \
+        DELTA_ARCH="aarch64-unknown-linux-musl"; \
     else \
-        DELTA_ARCH="x86_64-unknown-linux-gnu"; \
+        DELTA_ARCH="x86_64-unknown-linux-musl"; \
     fi && \
     wget -q -O /tmp/delta.tar.gz "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${DELTA_ARCH}.tar.gz" && \
     tar -xzf /tmp/delta.tar.gz -C /tmp && \
@@ -94,11 +51,8 @@ RUN mkdir -p /usr/local/bin && \
     rm -rf /tmp/delta*
 
 # Create non-root user
-# Use -f flag for groupadd to handle pre-existing GIDs gracefully (e.g. macOS
-# where id -g returns 20 which conflicts with the 'dialout' group in Debian).
-# Use numeric GID for useradd so it works regardless of group name.
-RUN groupadd -f -g ${GROUP_ID} ${USERNAME} && \
-    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash ${USERNAME} && \
+RUN addgroup -g ${GROUP_ID} ${USERNAME} && \
+    adduser -u ${USER_ID} -G ${USERNAME} -s /bin/bash -h /home/${USERNAME} -D ${USERNAME} && \
     mkdir -p /home/${USERNAME}/.local/bin && \
     mkdir -p /home/${USERNAME}/.config && \
     mkdir -p /home/${USERNAME}/.cache && \

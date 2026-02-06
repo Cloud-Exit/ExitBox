@@ -1,0 +1,63 @@
+# AgentBox Base Tools (Alpine packages)
+# ==============================================================================
+# One package per line. Lines starting with # are comments.
+# These packages are installed in the base image and all agent images.
+# Users can add extra packages via ~/.config/agentbox/tools.txt or -t flag.
+# ==============================================================================
+
+# Essential tools
+ca-certificates
+curl
+wget
+git
+openssh-client
+bash
+
+# Editors
+vim
+nano
+
+# Data processing
+jq
+
+# Search tools
+ripgrep
+fd
+fzf
+
+# File utilities
+tree
+file
+less
+bat
+
+# Process utilities
+procps
+htop
+
+# Archive tools
+zip
+unzip
+xz
+tar
+gzip
+bzip2
+
+# Build essentials (for compiling)
+make
+patch
+diffutils
+
+# Text processing
+sed
+gawk
+gettext
+python3
+
+# Networking
+bind-tools
+netcat-openbsd
+socat
+
+# Terminal
+tmux

@@ -119,38 +119,9 @@ ENV LANG=C.UTF-8 \
     HOME=/home/user \
     PATH="/home/user/.local/bin:/usr/local/bin:${PATH}"
 
-# Install base packages (matches base image but via apk)
-RUN apk update && apk add --no-cache \
-    ca-certificates \
-    curl \
-    wget \
-    git \
-    openssh-client \
-    bash \
-    jq \
-    ripgrep \
-    fd \
-    fzf \
-    tree \
-    file \
-    less \
-    bat \
-    procps \
-    htop \
-    zip \
-    unzip \
-    xz \
-    tar \
-    gzip \
-    bzip2 \
-    make \
-    patch \
-    sed \
-    gawk \
-    gettext \
-    bind-tools \
-    netcat-openbsd \
-    tmux
+# Install base packages from tools.txt
+COPY tools.txt /tmp/tools.txt
+RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') && rm /tmp/tools.txt
 
 # Stay rootless-only: no package-manager installs and no privilege escalation.
 COPY docker-entrypoint-opencode /usr/local/bin/docker-entrypoint

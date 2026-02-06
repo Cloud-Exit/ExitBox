@@ -17,16 +17,34 @@ build_base_image() {
     local cmd
     cmd=$(container_cmd)
 
+    # Compute tools hash for change detection
+    local tools_hash=""
+    local merged_tools=$(mktemp)
+    cp "${SCRIPT_DIR}/config/tools.txt" "$merged_tools"
+    local user_tools="${AGENTBOX_HOME}/tools.txt"
+    if [[ -f "$user_tools" ]]; then
+        cat "$user_tools" >> "$merged_tools"
+    fi
+    tools_hash=$(cksum "$merged_tools" | cut -d' ' -f1)
+    rm -f "$merged_tools"
+
     # Skip if image exists and not forcing rebuild
     if [[ "$force" != "true" ]] && container_image_exists "$image_name"; then
         # Check if version matches
         local image_version
         image_version=$($cmd inspect "$image_name" --format '{{index .Config.Labels "agentbox.version"}}' 2>/dev/null || printf '')
-        
+
         if [[ "$image_version" == "$AGENTBOX_VERSION" ]]; then
-            return 0
+            # Check if tools have changed
+            local image_tools_hash
+            image_tools_hash=$($cmd inspect "$image_name" --format '{{index .Config.Labels "agentbox.tools.hash"}}' 2>/dev/null || printf '')
+            if [[ "$image_tools_hash" == "$tools_hash" ]]; then
+                return 0
+            fi
+            info "Tools list changed. Rebuilding base image..."
+        else
+            info "Base image version mismatch ($image_version != $AGENTBOX_VERSION). Rebuilding..."
         fi
-        info "Base image version mismatch ($image_version != $AGENTBOX_VERSION). Rebuilding..."
     fi
 
     info "Building base image with $cmd..."
@@ -39,6 +57,13 @@ build_base_image() {
     cp "${BUILD_DIR}/docker-entrypoint" "$build_context/docker-entrypoint"
     cp "${BUILD_DIR}/dockerignore" "$build_context/.dockerignore"
     chmod +x "$build_context/docker-entrypoint"
+
+    # Copy tools.txt and merge user tools
+    cp "${SCRIPT_DIR}/config/tools.txt" "$build_context/tools.txt"
+    local user_tools="${AGENTBOX_HOME}/tools.txt"
+    if [[ -f "$user_tools" ]]; then
+        cat "$user_tools" >> "$build_context/tools.txt"
+    fi
 
     local build_args=()
 
@@ -61,6 +86,7 @@ build_base_image() {
         --build-arg "USERNAME=user"
         --build-arg "TARGETARCH=$target_arch"
         --build-arg "AGENTBOX_VERSION=$AGENTBOX_VERSION"
+        --label "agentbox.tools.hash=$tools_hash"
         -t "$image_name"
         -f "$build_context/Dockerfile"
         "$build_context"
@@ -95,7 +121,7 @@ build_squid_image() {
     cat > "$build_context/Dockerfile" << 'EOF'
 FROM alpine:latest
 ARG AGENTBOX_VERSION
-RUN apk add --no-cache squid socat
+RUN apk add --no-cache squid socat ripgrep python3
 RUN mkdir -p /etc/squid
 LABEL agentbox.version="${AGENTBOX_VERSION}"
 # Default config will be mounted
@@ -183,6 +209,12 @@ build_agent_core_image() {
             # Copy entrypoint to build context
             cp "${SCRIPT_DIR}/build/docker-entrypoint-opencode" "$build_context/"
             chmod +x "$build_context/docker-entrypoint-opencode"
+            # Copy tools.txt and merge user tools
+            cp "${SCRIPT_DIR}/config/tools.txt" "$build_context/tools.txt"
+            local user_tools="${AGENTBOX_HOME}/tools.txt"
+            if [[ -f "$user_tools" ]]; then
+                cat "$user_tools" >> "$build_context/tools.txt"
+            fi
             ;;
     esac
 
@@ -287,6 +319,14 @@ build_agent_project_image() {
         current_hash=$(cksum "$profiles_file" | cut -d' ' -f1)
     fi
 
+    # Include user tools in composite hash
+    local user_tools_file="${AGENTBOX_HOME}/tools.txt"
+    local user_tools_hash=""
+    if [[ -f "$user_tools_file" ]]; then
+        user_tools_hash=$(cksum "$user_tools_file" | cut -d' ' -f1)
+    fi
+    current_hash="${current_hash}:${user_tools_hash}"
+
     # Check existing image
     if container_image_exists "$image_name"; then
         # Check if core image is newer than project image
@@ -317,6 +357,16 @@ build_agent_project_image() {
 
     local dockerfile="$build_context/Dockerfile"
     printf 'FROM %s\n\n' "$core_image" > "$dockerfile"
+
+    # Install user tools if any
+    if [[ -f "$user_tools_file" ]]; then
+        local pkgs=""
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            pkgs="$pkgs $(printf '%s' "$line" | xargs)"
+        done < "$user_tools_file"
+        [[ -n "$pkgs" ]] && printf 'RUN apk add --no-cache %s\n\n' "$pkgs" >> "$dockerfile"
+    fi
 
     # Add profile installations
     if [[ -f "$profiles_file" ]]; then

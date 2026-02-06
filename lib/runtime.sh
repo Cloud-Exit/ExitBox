@@ -77,7 +77,7 @@ seed_file_from_host_once() {
     fi
 }
 
-# Use managed config mounts on non-Linux hosts, where container mounts are VM-backed.
+# Use managed config mounts (import-only) on all platforms for consistent behaviour.
 should_use_managed_config_mounts() {
     if [[ "${AGENTBOX_FORCE_MANAGED_CONFIG_MOUNTS:-false}" == "true" ]]; then
         return 0
@@ -86,9 +86,8 @@ should_use_managed_config_mounts() {
         return 1
     fi
 
-    local os
-    os=$(detect_os)
-    [[ "$os" != "linux" ]]
+    # All platforms use managed (import-only) config mounts.
+    return 0
 }
 
 # Resolve source directory for mounting into container.
@@ -426,13 +425,28 @@ run_agent_container() {
     local project_name
     project_name=$(basename "$PROJECT_DIR")
 
+    # Internal vars are always passed (agentbox needs these to function)
     run_args+=(
-        -e "NODE_ENV=${NODE_ENV:-production}"
-        -e "TERM=${TERM:-xterm-256color}"
-        -e "VERBOSE=${VERBOSE:-false}"
         -e "AGENTBOX_AGENT=$agent"
         -e "AGENTBOX_PROJECT_NAME=$project_name"
     )
+
+    # Host environment variables (skipped with --no-env)
+    if [[ "${CLI_NO_ENV:-false}" != "true" ]]; then
+        run_args+=(
+            -e "NODE_ENV=${NODE_ENV:-production}"
+            -e "TERM=${TERM:-xterm-256color}"
+            -e "VERBOSE=${VERBOSE:-false}"
+        )
+    fi
+
+    # User-specified environment variables (-e KEY=VALUE)
+    if [[ ${#CLI_ENV_VARS[@]} -gt 0 ]]; then
+        local env_var
+        for env_var in "${CLI_ENV_VARS[@]}"; do
+            run_args+=(-e "$env_var")
+        done
+    fi
 
     # Security options
     run_args+=(

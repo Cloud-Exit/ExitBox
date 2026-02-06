@@ -265,24 +265,24 @@ save_default_flags() {
 # Get packages for a profile
 get_profile_packages() {
     case "$1" in
-        core) printf 'gcc g++ make git pkg-config libssl-dev libffi-dev zlib1g-dev tmux' ;;
-        build-tools) printf 'cmake ninja-build autoconf automake libtool' ;;
-        shell) printf 'rsync openssh-client man-db gnupg2 file' ;;
-        networking) printf 'iptables ipset iproute2 dnsutils' ;;
-        c) printf 'gdb valgrind clang clang-format clang-tidy cppcheck doxygen libboost-all-dev libncurses5-dev libncursesw5-dev' ;;
+        core) printf 'gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux' ;;
+        build-tools) printf 'cmake samurai autoconf automake libtool' ;;
+        shell) printf 'rsync openssh-client mandoc gnupg file' ;;
+        networking) printf 'iptables ipset iproute2 bind-tools' ;;
+        c) printf 'gdb valgrind clang clang-extra-tools cppcheck doxygen boost-dev ncurses-dev' ;;
         rust) printf '' ;;
         python) printf '' ;;
         go) printf '' ;;
         flutter) printf '' ;;
         javascript) printf '' ;;
         java) printf '' ;;
-        ruby) printf 'ruby-full ruby-dev libreadline-dev libyaml-dev libsqlite3-dev sqlite3 libxml2-dev libxslt1-dev libcurl4-openssl-dev' ;;
-        php) printf 'php php-cli php-fpm php-mysql php-pgsql php-sqlite3 php-curl php-gd php-mbstring php-xml php-zip composer' ;;
-        database) printf 'postgresql-client mysql-client sqlite3 redis-tools' ;;
-        devops) printf 'docker.io docker-compose kubectl helm terraform ansible' ;;
+        ruby) printf 'ruby ruby-dev readline-dev yaml-dev sqlite-dev sqlite libxml2-dev libxslt-dev curl-dev' ;;
+        php) printf 'php83 php83-cli php83-fpm php83-mysqli php83-pgsql php83-sqlite3 php83-curl php83-gd php83-mbstring php83-xml php83-zip composer' ;;
+        database) printf 'postgresql16-client mariadb-client sqlite redis' ;;
+        devops) printf 'docker docker-cli-compose kubectl helm terraform ansible' ;;
         web) printf 'nginx apache2-utils httpie' ;;
-        embedded) printf 'gcc-arm-none-eabi gdb-multiarch openocd picocom minicom screen' ;;
-        datascience) printf 'r-base' ;;
+        embedded) printf '' ;;
+        datascience) printf 'R' ;;
         security) printf 'nmap tcpdump netcat-openbsd' ;;
         ml) printf '' ;;
         *) printf '' ;;
@@ -314,7 +314,7 @@ get_profile_core() {
     local packages
     packages=$(get_profile_packages "core")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -322,7 +322,7 @@ get_profile_build_tools() {
     local packages
     packages=$(get_profile_packages "build-tools")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -330,7 +330,7 @@ get_profile_shell() {
     local packages
     packages=$(get_profile_packages "shell")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -338,7 +338,7 @@ get_profile_networking() {
     local packages
     packages=$(get_profile_packages "networking")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -346,7 +346,7 @@ get_profile_c() {
     local packages
     packages=$(get_profile_packages "c")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -416,7 +416,7 @@ get_profile_ruby() {
     local packages
     packages=$(get_profile_packages "ruby")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -424,7 +424,7 @@ get_profile_php() {
     local packages
     packages=$(get_profile_packages "php")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -432,7 +432,7 @@ get_profile_database() {
     local packages
     packages=$(get_profile_packages "database")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -440,7 +440,7 @@ get_profile_devops() {
     local packages
     packages=$(get_profile_packages "devops")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -448,7 +448,7 @@ get_profile_web() {
     local packages
     packages=$(get_profile_packages "web")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -456,7 +456,7 @@ get_profile_embedded() {
     local packages
     packages=$(get_profile_packages "embedded")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -464,7 +464,7 @@ get_profile_datascience() {
     local packages
     packages=$(get_profile_packages "datascience")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 
@@ -472,7 +472,7 @@ get_profile_security() {
     local packages
     packages=$(get_profile_packages "security")
     if [[ -n "$packages" ]]; then
-        printf 'RUN apt-get update && apt-get install -y %s && apt-get clean\n' "$packages"
+        printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
 }
 

@@ -123,7 +123,9 @@ get_network_subnet() {
 }
 
 # Generate Squid configuration
+# Arguments: extra URLs to allow (optional)
 generate_squid_config() {
+    local extra_urls=("$@")
     local allowlist_path
     allowlist_path=$(get_allowlist_path)
     local config_file="$AGENTBOX_CACHE/squid.conf"
@@ -210,6 +212,25 @@ EOF
     else
         warn "Allowlist file not found. Blocking all outbound destinations."
         printf 'acl allowed_domains dstdomain .__agentbox_block_all__.invalid\n' >> "$config_file"
+    fi
+
+    # Process extra URLs (from --allow-urls / -a)
+    if [[ ${#extra_urls[@]} -gt 0 ]]; then
+        local url
+        for url in "${extra_urls[@]}"; do
+            [[ -z "$url" ]] && continue
+            local normalized_url
+            if ! normalized_url=$(normalize_allowlist_entry "$url"); then
+                warn "Skipping invalid --allow-urls entry: $url"
+                continue
+            fi
+            # Deduplicate against already-added domains
+            if [[ " ${added_domains:-} " == *" $normalized_url "* ]]; then
+                continue
+            fi
+            added_domains="${added_domains:-} $normalized_url"
+            printf 'acl allowed_domains dstdomain %s\n' "$normalized_url" >> "$config_file"
+        done
     fi
 
     cat >> "$config_file" << 'EOF'
@@ -359,6 +380,12 @@ squid_has_published_callback_port() {
     $cmd port "$AGENTBOX_SQUID_CONTAINER" 1455/tcp 2>/dev/null | grep -q .
 }
 
+# Reload Squid configuration without restarting the container
+reload_squid_config() {
+    local cmd; cmd=$(container_cmd)
+    $cmd exec "$AGENTBOX_SQUID_CONTAINER" squid -k reconfigure 2>/dev/null
+}
+
 # Start the Squid proxy container
 start_squid_proxy() {
     local cmd
@@ -374,6 +401,12 @@ start_squid_proxy() {
         if [[ "$need_codex_callback_port" == "true" ]] && ! squid_has_published_callback_port; then
             info "Restarting Squid proxy to publish Codex callback port..."
             $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
+        elif [[ ${#CLI_ALLOW_URLS[@]} -gt 0 ]]; then
+            # Regenerate config with extra URLs and hot-reload
+            info "Updating Squid config with extra allowed domains..."
+            generate_squid_config "${CLI_ALLOW_URLS[@]}" >/dev/null
+            reload_squid_config || warn "Failed to reload Squid config"
+            return 0
         else
             return 0
         fi
@@ -388,10 +421,16 @@ start_squid_proxy() {
     # Build image if needed
     build_squid_image
 
-    # Generate config
+    # Generate config (include extra URLs from CLI if any)
     local config_file
-    if ! config_file=$(generate_squid_config); then
-        error "Failed to generate Squid configuration."
+    if [[ ${#CLI_ALLOW_URLS[@]} -gt 0 ]]; then
+        if ! config_file=$(generate_squid_config "${CLI_ALLOW_URLS[@]}"); then
+            error "Failed to generate Squid configuration."
+        fi
+    else
+        if ! config_file=$(generate_squid_config); then
+            error "Failed to generate Squid configuration."
+        fi
     fi
     if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
         error "Generated Squid configuration path is invalid."
@@ -401,7 +440,7 @@ start_squid_proxy() {
         -d
         --name "$AGENTBOX_SQUID_CONTAINER"
         --network "$AGENTBOX_EGRESS_NETWORK"
-        -v "$config_file":/etc/squid/squid.conf:ro
+        -v "$config_file":/etc/squid/squid.conf
         --restart=unless-stopped
     )
 
@@ -509,4 +548,4 @@ get_proxy_env_vars() {
 
 export -f ensure_network ensure_networks get_squid_dns_servers get_squid_dns_run_args get_squid_dns_search_run_args
 export -f should_publish_codex_callback_port squid_has_published_callback_port start_squid_proxy configure_codex_callback_relay
-export -f get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet
+export -f get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet reload_squid_config

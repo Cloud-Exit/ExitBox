@@ -27,9 +27,19 @@ CLI_VERSION=false
 CLI_UPDATE=false
 CLI_NO_FIREWALL=false
 CLI_READ_ONLY=false
+CLI_NO_ENV=false
+
+# User-specified environment variables (-e KEY=VALUE)
+CLI_ENV_VARS=()
 
 # Include directories to mount inside /workspace
 CLI_INCLUDE_DIRS=()
+
+# Extra tools (Alpine packages) to add to the image
+CLI_TOOLS=()
+
+# Extra domains to allow for this session
+CLI_ALLOW_URLS=()
 
 # Known agent names (populated from agents/base.sh)
 AGENTBOX_AGENT_NAMES=(claude codex opencode)
@@ -74,7 +84,7 @@ parse_cli() {
         if [[ "$parsing_passthrough" == true ]]; then
             if [[ "$explicit_passthrough" == false ]]; then
                 case "$arg" in
-                    --include-dir)
+                    -i|--include-dir)
                         if [[ $((i + 1)) -ge ${#args[@]} ]]; then
                             error "--include-dir requires a path"
                         fi
@@ -83,8 +93,68 @@ parse_cli() {
                         i=$((i + 1))
                         continue
                         ;;
-                    --include-dir=*)
+                    -i=*|--include-dir=*)
                         CLI_INCLUDE_DIRS+=("${arg#*=}")
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -n|--no-env)
+                        CLI_NO_ENV=true
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -u|--update)
+                        CLI_UPDATE=true
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -f|--no-firewall)
+                        CLI_NO_FIREWALL=true
+                        export AGENTBOX_NO_FIREWALL=true
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -r|--read-only)
+                        CLI_READ_ONLY=true
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -t|--tools)
+                        if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                            error "--tools requires a package list"
+                        fi
+                        i=$((i + 1))
+                        IFS=',' read -ra items <<< "${args[$i]}"
+                        CLI_TOOLS+=("${items[@]}")
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -a|--allow-urls)
+                        if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                            error "--allow-urls requires a domain list"
+                        fi
+                        i=$((i + 1))
+                        IFS=',' read -ra items <<< "${args[$i]}"
+                        CLI_ALLOW_URLS+=("${items[@]}")
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -e)
+                        if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                            error "-e requires a KEY=VALUE argument"
+                        fi
+                        i=$((i + 1))
+                        CLI_ENV_VARS+=("${args[$i]}")
+                        i=$((i + 1))
+                        continue
+                        ;;
+                    -e=*|-e*)
+                        local env_val="${arg#-e}"
+                        env_val="${env_val#=}"
+                        if [[ -z "$env_val" ]]; then
+                            error "-e requires a KEY=VALUE argument"
+                        fi
+                        CLI_ENV_VARS+=("$env_val")
                         i=$((i + 1))
                         continue
                         ;;
@@ -108,24 +178,58 @@ parse_cli() {
             -V|--version)
                 CLI_VERSION=true
                 ;;
-            --update)
+            -u|--update)
                 CLI_UPDATE=true
                 ;;
-            --no-firewall)
+            -f|--no-firewall)
                 CLI_NO_FIREWALL=true
                 export AGENTBOX_NO_FIREWALL=true
                 ;;
-            --read-only)
+            -r|--read-only)
                 CLI_READ_ONLY=true
                 ;;
-            --include-dir)
+            -n|--no-env)
+                CLI_NO_ENV=true
+                ;;
+            -t|--tools)
+                if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                    error "--tools requires a package list"
+                fi
+                i=$((i + 1))
+                IFS=',' read -ra items <<< "${args[$i]}"
+                CLI_TOOLS+=("${items[@]}")
+                ;;
+            -a|--allow-urls)
+                if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                    error "--allow-urls requires a domain list"
+                fi
+                i=$((i + 1))
+                IFS=',' read -ra items <<< "${args[$i]}"
+                CLI_ALLOW_URLS+=("${items[@]}")
+                ;;
+            -e)
+                if [[ $((i + 1)) -ge ${#args[@]} ]]; then
+                    error "-e requires a KEY=VALUE argument"
+                fi
+                i=$((i + 1))
+                CLI_ENV_VARS+=("${args[$i]}")
+                ;;
+            -e=*|-e*)
+                local env_val="${arg#-e}"
+                env_val="${env_val#=}"
+                if [[ -z "$env_val" ]]; then
+                    error "-e requires a KEY=VALUE argument"
+                fi
+                CLI_ENV_VARS+=("$env_val")
+                ;;
+            -i|--include-dir)
                 if [[ $((i + 1)) -ge ${#args[@]} ]]; then
                     error "--include-dir requires a path"
                 fi
                 i=$((i + 1))
                 CLI_INCLUDE_DIRS+=("${args[$i]}")
                 ;;
-            --include-dir=*)
+            -i=*|--include-dir=*)
                 CLI_INCLUDE_DIRS+=("${arg#*=}")
                 ;;
             -*)
@@ -173,13 +277,17 @@ Usage: agentbox [options] <command> [args...]
 Multi-Agent Docker Sandbox - Run AI coding assistants in isolated containers
 
 Options:
-  -v, --verbose    Enable verbose output
-  -h, --help       Show this help message
-  -V, --version    Show version information
-  --update         Check for and apply agent updates
-  --no-firewall    Disable network firewall
-  --read-only      Mount workspace as read-only
-  --include-dir    Mount a host dir inside /workspace (repeatable)
+  -v, --verbose           Enable verbose output
+  -h, --help              Show this help message
+  -V, --version           Show version information
+  -u, --update            Check for and apply agent updates
+  -f, --no-firewall       Disable network firewall *DANGEROUS*
+  -r, --read-only         Mount workspace as read-only
+  -n, --no-env            Don't pass host environment variables to container
+  -e KEY=VALUE            Pass an environment variable to the container (repeatable)
+  -i, --include-dir PATH  Mount a host dir inside /workspace (repeatable)
+  -t, --tools PKG         Add Alpine packages to the image (comma-separated, persisted)
+  -a, --allow-urls DOMAIN Allow extra domains for this session (comma-separated)
 
 Agent Commands:
   agentbox <agent> [args...]           Run an agent (claude, codex, opencode)
@@ -222,5 +330,6 @@ print_version() {
 # ============================================================================
 
 export CLI_COMMAND CLI_SUBCOMMAND CLI_AGENT
-export CLI_VERBOSE CLI_HELP CLI_VERSION CLI_UPDATE CLI_NO_FIREWALL CLI_READ_ONLY
+export CLI_VERBOSE CLI_HELP CLI_VERSION CLI_UPDATE CLI_NO_FIREWALL CLI_READ_ONLY CLI_NO_ENV
+export CLI_TOOLS CLI_ALLOW_URLS
 export -f is_agent_name parse_cli print_usage print_version

@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # Version
-readonly AGENTBOX_VERSION="3.1.0"
+readonly AGENTBOX_VERSION="3.2.0"
 
 # Add error handler
 trap 'exit_code=$?; [[ $exit_code -eq 130 ]] && exit 130 || { printf "Error at line %s: Command failed with exit code %s\n" "$LINENO" "$exit_code" >&2; printf "Failed command: %s\n" "$BASH_COMMAND" >&2; }' ERR INT
@@ -101,6 +101,16 @@ main() {
     if [[ "$CLI_VERSION" == "true" ]]; then
         print_version
         exit 0
+    fi
+
+    # Step 4b: Persist CLI_TOOLS to user tools file
+    if [[ ${#CLI_TOOLS[@]} -gt 0 ]]; then
+        local user_tools_file="${AGENTBOX_HOME}/tools.txt"
+        for tool in "${CLI_TOOLS[@]}"; do
+            if ! grep -qx "$tool" "$user_tools_file" 2>/dev/null; then
+                printf '%s\n' "$tool" >> "$user_tools_file"
+            fi
+        done
     fi
 
     # Step 5: Check if this is first run
