@@ -79,7 +79,12 @@ build_squid_image() {
     cmd=$(container_cmd)
 
     if [[ "$force" != "true" ]] && container_image_exists "$image_name"; then
-        return 0
+        local image_version
+        image_version=$($cmd inspect "$image_name" --format '{{index .Config.Labels "agentbox.version"}}' 2>/dev/null || printf '')
+        if [[ "$image_version" == "$AGENTBOX_VERSION" ]]; then
+            return 0
+        fi
+        info "Squid image version mismatch ($image_version != $AGENTBOX_VERSION). Rebuilding..."
     fi
 
     info "Building Squid proxy image..."
@@ -89,8 +94,10 @@ build_squid_image() {
 
     cat > "$build_context/Dockerfile" << 'EOF'
 FROM alpine:latest
-RUN apk add --no-cache squid
+ARG AGENTBOX_VERSION
+RUN apk add --no-cache squid socat
 RUN mkdir -p /etc/squid
+LABEL agentbox.version="${AGENTBOX_VERSION}"
 # Default config will be mounted
 CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
 EOF
@@ -103,6 +110,7 @@ EOF
     fi
 
     build_args+=(
+        --build-arg "AGENTBOX_VERSION=$AGENTBOX_VERSION"
         -t "$image_name"
         "$build_context"
     )

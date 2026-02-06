@@ -139,23 +139,6 @@ resolve_file_mount_source() {
     fi
 }
 
-# Return 0 when Codex appears authenticated via local auth state.
-codex_is_authenticated() {
-    local codex_state_dir="$1"
-    local codex_config_dir="$2"
-    local auth_file
-
-    for auth_file in \
-        "$codex_state_dir/auth.json" \
-        "$codex_config_dir/auth.json"; do
-        if [[ -s "$auth_file" ]]; then
-            return 0
-        fi
-    done
-
-    return 1
-}
-
 # Run an agent container
 # Usage: run_agent_container <agent> <container_name> <mode> [args...]
 run_agent_container() {
@@ -334,47 +317,30 @@ run_agent_container() {
             run_args+=(-v "$agent_config_dir/.config":/home/user/.config)
             ;;
         codex)
-            local codex_dir_src=""
-            local codex_config_dir_src=""
-
             if [[ "$use_managed_mounts" == "true" ]]; then
+                local codex_dir_src
                 codex_dir_src=$(resolve_dir_mount_source "$HOME/.codex" "$agent_config_dir/.codex" "$use_managed_mounts")
+                run_args+=(-v "$codex_dir_src":/home/user/.codex)
 
-                codex_config_dir_src="$agent_config_dir/.config/codex"
-                seed_dir_from_host_once "$HOME/.config/codex" "$codex_config_dir_src"
-                mkdir -p "$codex_config_dir_src"
+                local codex_config_dir="$agent_config_dir/.config/codex"
+                seed_dir_from_host_once "$HOME/.config/codex" "$codex_config_dir"
+                mkdir -p "$codex_config_dir"
+                run_args+=(-v "$codex_config_dir":/home/user/.config/codex)
             else
                 # Linux behavior: keep native host mounts unchanged.
                 if [[ -d "$HOME/.codex" ]]; then
-                    codex_dir_src="$HOME/.codex"
+                    run_args+=(-v "$HOME/.codex":/home/user/.codex)
                 else
                     mkdir -p "$agent_config_dir/.codex"
-                    codex_dir_src="$agent_config_dir/.codex"
+                    run_args+=(-v "$agent_config_dir/.codex":/home/user/.codex)
                 fi
 
                 mkdir -p "$agent_config_dir/.config/codex"
-                codex_config_dir_src="$agent_config_dir/.config/codex"
+                run_args+=(-v "$agent_config_dir/.config/codex":/home/user/.config/codex)
             fi
 
-            # Only publish callback port when Codex is not yet authenticated.
-            if codex_is_authenticated "$codex_dir_src" "$codex_config_dir_src"; then
-                run_args+=(-e "AGENTBOX_CODEX_ENABLE_CALLBACK_RELAY=false")
-            else
-                local host_os
-                host_os=$(detect_os)
-
-                # OrbStack/macOS does not reliably retain 127.0.0.1-bound publish rules
-                # for this network setup, so use host-port publish syntax there.
-                if [[ "$host_os" == "macos" ]]; then
-                    run_args+=(-p "1455:2455")
-                else
-                    run_args+=(-p "127.0.0.1:1455:2455")
-                fi
-                run_args+=(-e "AGENTBOX_CODEX_ENABLE_CALLBACK_RELAY=true")
-            fi
-
-            run_args+=(-v "$codex_dir_src":/home/user/.codex)
-            run_args+=(-v "$codex_config_dir_src":/home/user/.config/codex)
+            # Configure shared Squid callback relay target before Codex starts.
+            configure_codex_callback_relay "$container_name"
             ;;
         opencode)
             if [[ "$use_managed_mounts" == "true" ]]; then

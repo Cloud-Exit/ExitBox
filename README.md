@@ -239,7 +239,7 @@ AgentBox mounts your existing config directly from the host:
 
 Your project directory is mounted at `/workspace`.
 
-For Codex authentication, AgentBox only publishes callback port `1455` (relayed to Codex's localhost listener) when no existing Codex auth is detected. This avoids callback port conflicts when running multiple authenticated Codex agents.
+When Codex is enabled, AgentBox publishes callback port `1455` on the shared `agentbox-squid` container and relays it to the active Codex container, so OrbStack/private-networking callback flows work reliably.
 
 **Note:** SSH keys (`~/.ssh`) and AWS credentials (`~/.aws`) are **NOT** mounted by default for security.
 

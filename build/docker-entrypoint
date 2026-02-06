@@ -23,7 +23,7 @@ start_codex_callback_relay() {
         return 0
     fi
 
-    # Relay host-published traffic on 2455 to Codex's localhost callback on 1455.
+    # Relay container-reachable traffic on 2455 to Codex's localhost callback on 1455.
     socat "TCP-LISTEN:${CODEX_RELAY_PORT},bind=0.0.0.0,reuseaddr,fork" "TCP:127.0.0.1:${CODEX_CALLBACK_PORT}" >/tmp/codex-oauth-relay.log 2>&1 &
     RELAY_PID="$!"
 }
@@ -59,7 +59,7 @@ if [[ "${VERBOSE:-false}" == "true" ]]; then
     which claude >&2 2>/dev/null || echo "[DEBUG] claude not in PATH" >&2
 fi
 
-if [[ "$AGENT" == "codex" ]] && [[ "${AGENTBOX_CODEX_ENABLE_CALLBACK_RELAY:-true}" == "true" ]]; then
+if [[ "$AGENT" == "codex" ]]; then
     start_codex_callback_relay
     trap cleanup_relay EXIT INT TERM
 fi

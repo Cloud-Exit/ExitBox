@@ -332,16 +332,53 @@ get_squid_dns_search_run_args() {
     done
 }
 
+# Return 0 when Codex callback port should be exposed on the Squid container.
+should_publish_codex_callback_port() {
+    if [[ "${AGENTBOX_ENABLE_CODEX_CALLBACK_PORT:-auto}" == "false" ]]; then
+        return 1
+    fi
+
+    if [[ "${AGENTBOX_ENABLE_CODEX_CALLBACK_PORT:-auto}" == "true" ]]; then
+        return 0
+    fi
+
+    if declare -F agent_is_enabled >/dev/null 2>&1; then
+        if agent_is_enabled "codex"; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Return 0 when Squid currently publishes the callback port on host.
+squid_has_published_callback_port() {
+    local cmd
+    cmd=$(container_cmd)
+
+    $cmd port "$AGENTBOX_SQUID_CONTAINER" 1455/tcp 2>/dev/null | grep -q .
+}
+
 # Start the Squid proxy container
 start_squid_proxy() {
     local cmd
+    local need_codex_callback_port="false"
     cmd=$(container_cmd)
+
+    if should_publish_codex_callback_port; then
+        need_codex_callback_port="true"
+    fi
     
     # Check if running
     if $cmd ps --filter "name=^/${AGENTBOX_SQUID_CONTAINER}$" --format '{{.Names}}' | grep -q "^${AGENTBOX_SQUID_CONTAINER}$"; then
-        return 0
+        if [[ "$need_codex_callback_port" == "true" ]] && ! squid_has_published_callback_port; then
+            info "Restarting Squid proxy to publish Codex callback port..."
+            $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
+        else
+            return 0
+        fi
     fi
-    
+
     # Remove if stopped
     $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
 
@@ -367,6 +404,10 @@ start_squid_proxy() {
         -v "$config_file":/etc/squid/squid.conf:ro
         --restart=unless-stopped
     )
+
+    if [[ "$need_codex_callback_port" == "true" ]]; then
+        run_args+=(-p "1455:1455")
+    fi
 
     local squid_dns_flags
     squid_dns_flags=$(get_squid_dns_run_args)
@@ -408,6 +449,33 @@ start_squid_proxy() {
     done
 }
 
+# Configure callback relay inside the shared Squid container.
+# Forwards squid:1455 -> <codex_container_name>:2455.
+configure_codex_callback_relay() {
+    local codex_container_name="$1"
+    local cmd
+    cmd=$(container_cmd)
+
+    if [[ -z "$codex_container_name" ]]; then
+        error "Codex callback relay requires a container name."
+    fi
+
+    if ! should_publish_codex_callback_port; then
+        return 0
+    fi
+
+    start_squid_proxy
+
+    if ! $cmd exec -e "CODEX_RELAY_TARGET=${codex_container_name}" "$AGENTBOX_SQUID_CONTAINER" sh -c '
+        set -e
+        killall socat >/dev/null 2>&1 || true
+        socat "TCP-LISTEN:1455,bind=0.0.0.0,reuseaddr,fork" "TCP:${CODEX_RELAY_TARGET}:2455" >/tmp/codex-callback-relay.log 2>&1 &
+        echo $! >/tmp/codex-callback-relay.pid
+    '; then
+        error "Failed to configure Codex callback relay via Squid."
+    fi
+}
+
 # Get proxy environment variables
 get_proxy_env_vars() {
     if [[ "${AGENTBOX_NO_FIREWALL:-false}" == "true" ]]; then
@@ -439,4 +507,6 @@ get_proxy_env_vars() {
     printf -- '-e NO_PROXY=localhost,127.0.0.1,.local '
 }
 
-export -f ensure_network ensure_networks get_squid_dns_servers get_squid_dns_run_args get_squid_dns_search_run_args start_squid_proxy get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet
+export -f ensure_network ensure_networks get_squid_dns_servers get_squid_dns_run_args get_squid_dns_search_run_args
+export -f should_publish_codex_callback_port squid_has_published_callback_port start_squid_proxy configure_codex_callback_relay
+export -f get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet
