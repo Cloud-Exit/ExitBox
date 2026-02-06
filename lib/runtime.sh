@@ -318,8 +318,10 @@ run_agent_container() {
             ;;
         codex)
             # Codex OAuth flow uses a localhost callback server on port 1455.
-            # Publish that port to host loopback so browser auth can return.
-            run_args+=(-p "127.0.0.1:1455:1455")
+            # Codex may bind 127.0.0.1:1455 inside the container only.
+            # Publish host 1455 -> container 2455, then relay 2455 -> 127.0.0.1:1455
+            # inside the container (started by docker-entrypoint).
+            run_args+=(-p "127.0.0.1:1455:2455")
 
             if [[ "$use_managed_mounts" == "true" ]]; then
                 local codex_dir_src

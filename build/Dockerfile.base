@@ -65,6 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Networking
     dnsutils \
     netcat-openbsd \
+    socat \
     # Terminal
     tmux \
     && apt-get clean \
