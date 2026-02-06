@@ -28,7 +28,8 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 **Core Features:**
 - **Rootless Containers**: Runs without host root privileges using Podman's user namespaces
-- **Minimal Base Image**: Built on Alpine Linux with only essential packages
+- **Alpine Base Image**: Minimal Alpine Linux base (~5 MB) with a managed tool list (`config/tools.txt`)
+- **Supply-Chain Hardened Installs**: Claude Code is installed via direct binary download with SHA-256 checksum verification against Anthropic's signed manifest — no `curl | bash`
 - **Squid Proxy Firewall**: Proxy-based destination filtering with explicit allowlist rules
 - **Hard Egress Isolation**: Agent containers run on an internal-only network and can exit only via Squid
 - **No Privilege Escalation**: `--security-opt=no-new-privileges:true` enforced
@@ -41,11 +42,29 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 - **Multi-Agent Support**: Run Claude Code, OpenAI Codex, or OpenCode
 - **Project Isolation**: Each project gets its own containerized environment
 - **Development Profiles**: Pre-configured environments for Rust, Python, Go, Node.js, and more
+- **Custom Tools**: Add Alpine packages to any image via `-t` flag or `~/.config/agentbox/tools.txt`
 
 ### Usability
 - **Cross-Platform**: Works on Linux, macOS, and Windows (via WSL2)
 - **Config Import**: All platforms use managed config (import-only). Use `agentbox import <agent>` to seed host config.
 - **Simple Commands**: Just run `agentbox claude` to get started
+- **CLI Shorthands**: All flags have single-letter aliases (`-f`, `-r`, `-t`, `-a`, etc.)
+- **Session Allow-URLs**: Temporarily allow extra domains with `-a` — no config file edits, no restarts
+
+## Architecture
+
+### Alpine Base Image
+
+All agent images are built on **Alpine Linux**. The base package list lives in `config/tools.txt` — a plain-text file (one package per line, `#` comments) shared by all image builds. This replaces the previous Debian bookworm-slim base and eliminates duplicate package lists across agents.
+
+Alpine was chosen for:
+- **Small image size**: ~5 MB base vs ~80 MB for Debian slim
+- **musl libc**: Matches the native binaries shipped by Claude Code, git-delta, and yq
+- **Consistent package manager**: `apk` is used everywhere — base image, profiles, and user tools
+
+### Supply-Chain Hardened Agent Installs
+
+Claude Code is installed via **direct binary download with SHA-256 checksum verification** against Anthropic's signed manifest — no `curl | bash`. The download URL is auto-discovered from the official installer if the hardcoded endpoint ever changes. The build aborts on any checksum mismatch.
 
 ## Supported Agents
 
@@ -315,7 +334,7 @@ Allow extra domains for a single session without editing the allowlist:
 agentbox -a api.example.com,cdn.example.com claude
 ```
 
-These domains are added to the Squid config and hot-reloaded. They do not persist across sessions.
+The domains are merged into the Squid config and applied via **hot-reload** (`squid -k reconfigure`) — no proxy restart, no container restart, no connection drop. If the Squid proxy is already running from a previous session, the config is regenerated and reloaded in-place. These domains do not persist across sessions.
 
 ### Disabling the Firewall
 
