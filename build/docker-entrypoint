@@ -59,7 +59,7 @@ if [[ "${VERBOSE:-false}" == "true" ]]; then
     which claude >&2 2>/dev/null || echo "[DEBUG] claude not in PATH" >&2
 fi
 
-if [[ "$AGENT" == "codex" ]]; then
+if [[ "$AGENT" == "codex" ]] && [[ "${AGENTBOX_CODEX_ENABLE_CALLBACK_RELAY:-true}" == "true" ]]; then
     start_codex_callback_relay
     trap cleanup_relay EXIT INT TERM
 fi
