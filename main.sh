@@ -133,7 +133,7 @@ main() {
 
         # Check if subcommand is 'profile'
         if [[ "${CLI_SUBCOMMAND:-}" == "profile" ]]; then
-            _cmd_agent_profile "$agent" "${CLI_ARGS[@]:-}"
+            _cmd_agent_profile "$agent" "${CLI_ARGS[@]+"${CLI_ARGS[@]}"}"
             exit $?
         fi
 
@@ -175,7 +175,7 @@ main() {
             build_agent_project_image "$agent"
 
             # Run the agent
-            _cmd_agent_run "$agent" "${CLI_PASSTHROUGH[@]}"
+            _cmd_agent_run "$agent" "${CLI_PASSTHROUGH[@]+"${CLI_PASSTHROUGH[@]}"}"
         fi
 
         exit $?
@@ -183,7 +183,7 @@ main() {
 
     # Logs command (no container/runtime needed)
     if [[ "$cmd" == "logs" ]]; then
-        _cmd_agent_logs "${CLI_SUBCOMMAND:-}" "${CLI_ARGS[@]:-}"
+        _cmd_agent_logs "${CLI_SUBCOMMAND:-}" "${CLI_ARGS[@]+"${CLI_ARGS[@]}"}"
         exit $?
     fi
 
@@ -220,7 +220,7 @@ main() {
     fi
 
     # Dispatch to command handler
-    dispatch_command "$cmd" "${CLI_SUBCOMMAND:-}" "${CLI_ARGS[@]:-}"
+    dispatch_command "$cmd" "${CLI_SUBCOMMAND:-}" "${CLI_ARGS[@]+"${CLI_ARGS[@]}"}"
 }
 
 # Run main
