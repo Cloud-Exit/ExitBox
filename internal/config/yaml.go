@@ -33,7 +33,7 @@ func LoadConfigFrom(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cfg Config
+	cfg := *DefaultConfig()
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}

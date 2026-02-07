@@ -53,7 +53,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 			if latestVersion != "" && av != "" && latestVersion != av {
 				ui.Infof("%s update available (%s -> %s). Rebuilding...", agentName, av, latestVersion)
 			} else {
-				BuildBase(ctx, rt, false)
+				if err := BuildBase(ctx, rt, false); err != nil {
+					return err
+				}
 				return nil
 			}
 		} else {
@@ -67,7 +69,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	}
 
 	// Rebuild squid when any agent is rebuilt
-	BuildSquid(ctx, rt, true)
+	_ = BuildSquid(ctx, rt, true)
 
 	ui.Infof("Building %s core image with %s...", agentName, cmd)
 
@@ -201,7 +203,9 @@ func fileSHA256(path string) string {
 	}
 	defer f.Close()
 	h := sha256.New()
-	io.Copy(h, f)
+	if _, err = io.Copy(h, f); err != nil {
+		return ""
+	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
@@ -211,5 +215,5 @@ func appendToFile(path, content string) {
 		return
 	}
 	defer f.Close()
-	f.WriteString(content)
+	_, _ = f.WriteString(content)
 }

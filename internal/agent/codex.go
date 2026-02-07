@@ -142,11 +142,11 @@ func (c *Codex) DetectHostConfig() (string, error) {
 func (c *Codex) ImportConfig(src, dst string) error {
 	if strings.Contains(src, ".config/codex") {
 		target := filepath.Join(dst, ".config", "codex")
-		os.MkdirAll(target, 0755)
+		_ = os.MkdirAll(target, 0755)
 		return copyDirContents(src, target)
 	}
 	target := filepath.Join(dst, ".codex")
-	os.MkdirAll(target, 0755)
+	_ = os.MkdirAll(target, 0755)
 	return copyDirContents(src, target)
 }
 
@@ -159,14 +159,14 @@ func copyDirContents(src, dst string) error {
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
 		if e.IsDir() {
-			os.MkdirAll(dstPath, 0755)
-			copyDirContents(srcPath, dstPath)
+			_ = os.MkdirAll(dstPath, 0755)
+			_ = copyDirContents(srcPath, dstPath)
 		} else {
 			data, err := os.ReadFile(srcPath)
 			if err != nil {
 				continue
 			}
-			os.WriteFile(dstPath, data, 0644)
+			_ = os.WriteFile(dstPath, data, 0644)
 		}
 	}
 	return nil

@@ -39,11 +39,11 @@ const (
 func EnsureNetworks(rt container.Runtime) {
 	if !rt.NetworkExists(InternalNetwork) {
 		ui.Infof("Creating internal network %s...", InternalNetwork)
-		rt.NetworkCreate(InternalNetwork, true)
+		_ = rt.NetworkCreate(InternalNetwork, true)
 	}
 	if !rt.NetworkExists(EgressNetwork) {
 		ui.Infof("Creating egress network %s...", EgressNetwork)
-		rt.NetworkCreate(EgressNetwork, false)
+		_ = rt.NetworkCreate(EgressNetwork, false)
 	}
 }
 
@@ -98,14 +98,14 @@ func StartSquidProxy(rt container.Runtime, extraURLs []string) error {
 				if err := writeSquidConfig(rt, extraURLs); err != nil {
 					return err
 				}
-				exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
+				_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
 			}
 			return nil
 		}
 	}
 
 	// Remove if stopped
-	rt.Remove(SquidContainer)
+	_ = rt.Remove(SquidContainer)
 
 	// Ensure networks
 	EnsureNetworks(rt)
@@ -144,7 +144,7 @@ func StartSquidProxy(rt container.Runtime, extraURLs []string) error {
 
 	// Connect to internal network
 	if err := rt.NetworkConnect(InternalNetwork, SquidContainer); err != nil {
-		rt.Remove(SquidContainer)
+		_ = rt.Remove(SquidContainer)
 		return fmt.Errorf("failed to connect Squid to internal network: %w", err)
 	}
 
@@ -193,7 +193,7 @@ func CleanupSquidIfUnused(rt container.Runtime) {
 		for _, n := range squidNames {
 			if n == SquidContainer {
 				ui.Info("Stopping Squid proxy (no running agents)...")
-				exec.Command(cmd, "rm", "-f", SquidContainer).Run()
+				_ = exec.Command(cmd, "rm", "-f", SquidContainer).Run()
 				break
 			}
 		}

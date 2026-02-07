@@ -30,7 +30,7 @@ func EnsureDirs() {
 		AgentDir("opencode"),
 	}
 	for _, d := range dirs {
-		os.MkdirAll(d, 0755)
+		_ = os.MkdirAll(d, 0755)
 	}
 }
 

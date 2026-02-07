@@ -100,6 +100,6 @@ func randomHex(n int) string {
 		return "0000"
 	}
 	defer f.Close()
-	f.Read(b)
+	_, _ = f.Read(b)
 	return fmt.Sprintf("%x", b)
 }

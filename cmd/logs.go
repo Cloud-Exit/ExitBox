@@ -75,7 +75,7 @@ var logsCmd = &cobra.Command{
 				continue
 			}
 			seen[dir] = true
-			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return nil
 				}
@@ -112,7 +112,7 @@ var logsCmd = &cobra.Command{
 		tail := exec.Command("tail", "-n", "200", latest)
 		tail.Stdout = os.Stdout
 		tail.Stderr = os.Stderr
-		tail.Run()
+		_ = tail.Run()
 	},
 }
 

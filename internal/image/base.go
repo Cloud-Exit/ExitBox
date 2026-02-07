@@ -69,7 +69,7 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		var extra string
 		for _, b := range cfg.Tools.Binaries {
 			extra += fmt.Sprintf("\n# Install %s (binary download)\n", b.Name)
-			extra += fmt.Sprintf("RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \\\n")
+			extra += "RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \\\n"
 			url := strings.ReplaceAll(b.URLPattern, "{arch}", "${ARCH}")
 			extra += fmt.Sprintf("    curl -sL \"%s\" -o /usr/local/bin/%s && \\\n", url, b.Name)
 			extra += fmt.Sprintf("    chmod +x /usr/local/bin/%s\n", b.Name)

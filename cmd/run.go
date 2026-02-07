@@ -56,7 +56,9 @@ func runAgent(agentName string, passthrough []string) {
 	ctx := context.Background()
 
 	// Initialize project
-	project.Init(projectDir)
+	if err := project.Init(projectDir); err != nil {
+		ui.Warnf("Failed to initialize project directory: %v", err)
+	}
 
 	// Build images
 	image.Version = Version

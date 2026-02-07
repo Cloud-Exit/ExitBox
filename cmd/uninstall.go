@@ -60,7 +60,7 @@ var uninstallCmd = &cobra.Command{
 				ui.Info("Stopping and removing all exitbox containers...")
 				names, _ := rt.PS("name=exitbox-", "{{.ID}}")
 				for _, id := range names {
-					rt.Remove(id)
+					_ = rt.Remove(id)
 				}
 
 				// Remove images
@@ -74,7 +74,7 @@ var uninstallCmd = &cobra.Command{
 				cfg.SetAgentEnabled(name, false)
 				os.RemoveAll(config.AgentDir(name))
 			}
-			config.SaveConfig(cfg)
+			_ = config.SaveConfig(cfg)
 
 			// Remove cache
 			os.RemoveAll(config.Cache)
@@ -109,7 +109,7 @@ var uninstallCmd = &cobra.Command{
 		os.RemoveAll(config.AgentDir(name))
 		cfg := config.LoadOrDefault()
 		cfg.SetAgentEnabled(name, false)
-		config.SaveConfig(cfg)
+		_ = config.SaveConfig(cfg)
 
 		ui.Successf("%s completely uninstalled", agent.DisplayName(name))
 	},
@@ -117,23 +117,20 @@ var uninstallCmd = &cobra.Command{
 
 func removeAgentImages(rt container.Runtime, agentName string) {
 	// Remove core image
-	rt.ImageRemove("exitbox-" + agentName + "-core")
+	_ = rt.ImageRemove("exitbox-" + agentName + "-core")
 
 	// List and remove project images
-	names, _ := rt.PS("", "")
-	_ = names
-	// Use image inspect to find matching images
-	rt.ImageRemove("exitbox-" + agentName + "-*")
+	_ = rt.ImageRemove("exitbox-" + agentName + "-*")
 }
 
 func cleanImages(rt container.Runtime, mode string) {
 	switch mode {
 	case "all":
 		for _, name := range agent.AgentNames {
-			rt.ImageRemove("exitbox-" + name + "-core")
+			_ = rt.ImageRemove("exitbox-" + name + "-core")
 		}
-		rt.ImageRemove("exitbox-base")
-		rt.ImageRemove("exitbox-squid")
+		_ = rt.ImageRemove("exitbox-base")
+		_ = rt.ImageRemove("exitbox-squid")
 	}
 }
 

@@ -246,7 +246,7 @@ func ensureFile(parts ...string) string {
 	p := filepath.Join(parts...)
 	os.MkdirAll(filepath.Dir(p), 0755)
 	if _, err := os.Stat(p); os.IsNotExist(err) {
-		os.WriteFile(p, nil, 0644)
+		_ = os.WriteFile(p, nil, 0644)
 	}
 	return p
 }
@@ -260,7 +260,7 @@ func seedDirOnce(host, managed string) {
 		return
 	}
 	os.MkdirAll(managed, 0755)
-	exec.Command("cp", "-R", host+"/.", managed+"/").Run()
+	_ = exec.Command("cp", "-R", host+"/.", managed+"/").Run()
 }
 
 func seedFileOnce(host, managed string) {

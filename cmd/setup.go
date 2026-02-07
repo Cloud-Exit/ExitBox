@@ -36,7 +36,7 @@ var setupCmd = &cobra.Command{
 			ui.Warn("Config already exists at " + config.ConfigFile())
 			fmt.Print("Re-running setup will overwrite your configuration. Continue? [y/N] ")
 			var resp string
-			fmt.Scanln(&resp)
+			_, _ = fmt.Scanln(&resp)
 			if resp != "y" && resp != "Y" {
 				ui.Info("Cancelled")
 				return nil

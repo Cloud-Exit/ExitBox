@@ -154,7 +154,7 @@ func (c *Claude) ImportConfig(src, dst string) error {
 
 	// Copy entire ~/.claude directory
 	target := filepath.Join(dst, ".claude")
-	os.MkdirAll(target, 0755)
+	_ = os.MkdirAll(target, 0755)
 	if err := copyDirContents(src, target); err != nil {
 		return fmt.Errorf("copying .claude dir: %w", err)
 	}
@@ -162,7 +162,7 @@ func (c *Claude) ImportConfig(src, dst string) error {
 	// Also copy ~/.claude.json if it exists
 	claudeJSON := filepath.Join(home, ".claude.json")
 	if data, err := os.ReadFile(claudeJSON); err == nil {
-		os.WriteFile(filepath.Join(dst, ".claude.json"), data, 0644)
+		_ = os.WriteFile(filepath.Join(dst, ".claude.json"), data, 0644)
 	}
 
 	return nil
