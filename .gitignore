@@ -1,3 +1,7 @@
 .exitbox
 exitbox
 .claude
+coverage.out
+coverage.txt
+coverage.html
+coverage-report.md

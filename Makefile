@@ -2,13 +2,22 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -ldflags "-s -w -X github.com/cloud-exit/exitbox/cmd.Version=$(VERSION)"
 BINARY := exitbox
 
-.PHONY: build test vet lint clean install cross-compile
+.PHONY: build test test-shell coverage vet lint clean install cross-compile
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
 
 test:
 	go test ./...
+
+test-shell:
+	bash static/build/docker-entrypoint_test.sh
+
+coverage:
+	go test ./... -coverprofile=coverage.out -covermode=atomic
+	go tool cover -func=coverage.out
+	@echo ""
+	@echo "HTML report: go tool cover -html=coverage.out -o coverage.html"
 
 vet:
 	go vet ./...

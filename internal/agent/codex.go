@@ -140,7 +140,7 @@ func (c *Codex) DetectHostConfig() (string, error) {
 }
 
 func (c *Codex) ImportConfig(src, dst string) error {
-	if strings.Contains(src, ".config/codex") {
+	if strings.Contains(src, filepath.Join(".config", "codex")) {
 		target := filepath.Join(dst, ".config", "codex")
 		_ = os.MkdirAll(target, 0755)
 		return copyDirContents(src, target)

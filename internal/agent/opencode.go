@@ -136,7 +136,7 @@ func (o *OpenCode) DetectHostConfig() (string, error) {
 }
 
 func (o *OpenCode) ImportConfig(src, dst string) error {
-	if strings.Contains(src, ".config/opencode") {
+	if strings.Contains(src, filepath.Join(".config", "opencode")) {
 		target := filepath.Join(dst, ".config", "opencode")
 		_ = os.MkdirAll(target, 0755)
 		return copyDirContents(src, target)

@@ -25,6 +25,84 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  unit_tests:
+    name: "Unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=coverage.txt -covermode=atomic
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage
+          path: coverage.txt
+          if-no-files-found: error
+
+      - name: Generate coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          TOTAL=$(go tool cover -func=coverage.txt | grep '^total:' | awk '{print $NF}' | tr -d '%')
+          echo "Total coverage: ${TOTAL}%"
+
+          # Determine badge color
+          if (( $(echo "$TOTAL >= 80" | bc -l) )); then
+            COLOR="brightgreen"
+          elif (( $(echo "$TOTAL >= 60" | bc -l) )); then
+            COLOR="green"
+          elif (( $(echo "$TOTAL >= 40" | bc -l) )); then
+            COLOR="yellowgreen"
+          elif (( $(echo "$TOTAL >= 20" | bc -l) )); then
+            COLOR="yellow"
+          else
+            COLOR="orange"
+          fi
+
+          # Write shields.io endpoint JSON
+          mkdir -p .github/badges
+          cat > .github/badges/coverage.json <<-EOF
+          {
+            "schemaVersion": 1,
+            "label": "coverage",
+            "message": "${TOTAL}%",
+            "color": "${COLOR}"
+          }
+          EOF
+
+          # Commit and push badge data to main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/coverage.json
+          git diff --cached --quiet || git commit -m "Update coverage badge [skip ci]"
+          git push
+
+      - name: Run shell tests
+        run: bash static/build/docker-entrypoint_test.sh
+
+  code_coverage:
+    name: "Code coverage report"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: unit_tests
+    continue-on-error: true  # Don't block PR if baseline is missing (first run)
+    permissions:
+      contents:      read
+      actions:       read
+      pull-requests: write
+    steps:
+      - uses: fgrosse/go-coverage-report@v1.1.1
+        with:
+          coverage-artifact-name: "code-coverage"
+          coverage-file-name: "coverage.txt"
+
   lint:
     runs-on: ubuntu-latest
     steps:
