@@ -75,8 +75,16 @@ RUN mkdir -p /usr/local/bin && \
     mv /tmp/delta-*/delta /usr/local/bin/ && \
     rm -rf /tmp/delta*
 
-# Create non-root user
-RUN addgroup -g ${GROUP_ID} ${USERNAME} && \
+# Create non-root user (handle GID/UID conflicts, e.g. macOS GID 20 = Alpine's dialout)
+RUN existing_group=$(getent group ${GROUP_ID} | cut -d: -f1) && \
+    if [ -n "$existing_group" ] && [ "$existing_group" != "${USERNAME}" ]; then \
+        delgroup "$existing_group" 2>/dev/null || true; \
+    fi && \
+    existing_user=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    if [ -n "$existing_user" ] && [ "$existing_user" != "${USERNAME}" ]; then \
+        deluser "$existing_user" 2>/dev/null || true; \
+    fi && \
+    addgroup -g ${GROUP_ID} ${USERNAME} && \
     adduser -u ${USER_ID} -G ${USERNAME} -s /bin/bash -h /home/${USERNAME} -D ${USERNAME} && \
     mkdir -p /home/${USERNAME}/.local/bin && \
     mkdir -p /home/${USERNAME}/.config && \

@@ -449,15 +449,34 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Only check "make default" if this workspace is already the default.
 				m.checked["setting:make_default"] = ws.Name == m.defaultWorkspace
 			} else {
-				// "Create new workspace" — clear workspace input and languages
+				// "Create new workspace" — start with a clean slate
 				m.workspaceInput = ""
 				m.state.WorkspaceName = ""
 				m.editingExisting = false
 				m.state.OriginalDevelopment = nil
-				m.checked["setting:make_default"] = false
+
+				// Clear all selections
+				for _, role := range Roles {
+					m.checked["role:"+role.Name] = false
+				}
 				for _, l := range AllLanguages {
 					m.checked["lang:"+l.Name] = false
 				}
+				for _, tc := range AllToolCategories {
+					m.checked["tool:"+tc.Name] = false
+				}
+				for _, a := range AllAgents {
+					m.checked["agent:"+a.Name] = false
+				}
+
+				// Reset settings to defaults
+				m.checked["setting:auto_update"] = true
+				m.checked["setting:status_bar"] = true
+				m.checked["setting:make_default"] = false
+				m.checked["setting:firewall"] = true
+				m.checked["setting:auto_resume"] = true
+				m.checked["setting:pass_env"] = true
+				m.checked["setting:read_only"] = false
 			}
 			m.step = stepRole
 			m.cursor = 0
@@ -525,6 +544,17 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			k := "role:" + Roles[m.cursor].Name
 			m.checked[k] = !m.checked[k]
 		case "enter":
+			// Require at least one role selected
+			hasRole := false
+			for _, role := range Roles {
+				if m.checked["role:"+role.Name] {
+					hasRole = true
+					break
+				}
+			}
+			if !hasRole {
+				return m, nil
+			}
 			m.state.Roles = nil
 			// Pre-check languages and tools from all selected roles.
 			// When editing an existing workspace, skip language overrides
@@ -588,7 +618,18 @@ func (m Model) viewRole() string {
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, dimStyle.Render(role.Description)))
 	}
 
-	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	hasRole := false
+	for _, role := range Roles {
+		if m.checked["role:"+role.Name] {
+			hasRole = true
+			break
+		}
+	}
+	if hasRole {
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	} else {
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back") + "  " + dimStyle.Render("(select at least one role)"))
+	}
 	return b.String()
 }
 
@@ -738,18 +779,18 @@ func (m Model) viewTools() string {
 func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
-			case "enter":
-				name := strings.TrimSpace(m.workspaceInput)
-				if name == "" {
-					name = "default"
-				}
-				m.workspaceInput = name
-				m.state.WorkspaceName = name
-				if m.workspaceOnly {
-					m.state.MakeDefault = false
-				}
-				m.step = stepAgents
-				m.cursor = 0
+		case "enter":
+			name := strings.TrimSpace(m.workspaceInput)
+			if name == "" {
+				return m, nil
+			}
+			m.workspaceInput = name
+			m.state.WorkspaceName = name
+			if m.workspaceOnly {
+				m.state.MakeDefault = false
+			}
+			m.step = stepAgents
+			m.cursor = 0
 		case "esc":
 			m.step = stepTools
 			m.cursor = 0
@@ -781,7 +822,11 @@ func (m Model) viewProfile() string {
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("Examples: personal, work, client-a"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("\nType to edit, Enter to confirm, Esc to go back"))
+	if strings.TrimSpace(m.workspaceInput) == "" {
+		b.WriteString(helpStyle.Render("\nType a name, Esc to go back") + "  " + dimStyle.Render("(name required)"))
+	} else {
+		b.WriteString(helpStyle.Render("\nType to edit, Enter to confirm, Esc to go back"))
+	}
 	return b.String()
 }
 
@@ -802,6 +847,17 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 			k := "agent:" + AllAgents[m.cursor].Name
 			m.checked[k] = !m.checked[k]
 		case "enter":
+			// Require at least one agent selected
+			hasAgent := false
+			for _, a := range AllAgents {
+				if m.checked["agent:"+a.Name] {
+					hasAgent = true
+					break
+				}
+			}
+			if !hasAgent {
+				return m, nil
+			}
 			m.state.Agents = nil
 			for _, a := range AllAgents {
 				if m.checked["agent:"+a.Name] {
@@ -839,7 +895,18 @@ func (m Model) viewAgents() string {
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, dimStyle.Render(agent.Description)))
 	}
 
-	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	hasAgent := false
+	for _, a := range AllAgents {
+		if m.checked["agent:"+a.Name] {
+			hasAgent = true
+			break
+		}
+	}
+	if hasAgent {
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	} else {
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back") + "  " + dimStyle.Render("(select at least one agent)"))
+	}
 	return b.String()
 }
 
