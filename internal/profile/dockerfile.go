@@ -73,8 +73,9 @@ ENV PATH="/home/user/.venv/bin:$PATH"
     wget -q -O /tmp/go.tar.gz "https://go.dev/dl/${GO_TARBALL}" && \
     echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - && \
     tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm -f /tmp/go.tar.gz
-ENV PATH="/usr/local/go/bin:$PATH"
+    rm -f /tmp/go.tar.gz && \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 `
 	case "flutter":
 		return `RUN set -e && \
@@ -97,7 +98,6 @@ ENV PATH="/usr/local/go/bin:$PATH"
     rm -f /tmp/flutter.tar.xz && \
     ln -sf /opt/flutter/bin/flutter /usr/local/bin/flutter && \
     ln -sf /opt/flutter/bin/dart /usr/local/bin/dart
-ENV PATH="/opt/flutter/bin:$PATH"
 `
 	case "node", "javascript":
 		return `RUN apk add --no-cache nodejs npm && \

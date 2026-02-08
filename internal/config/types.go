@@ -18,13 +18,26 @@ package config
 
 // Config is the top-level exitbox configuration (config.yaml).
 type Config struct {
-	Version  int            `yaml:"version"`
-	Roles          []string       `yaml:"roles,omitempty"`
-	Profiles       []string       `yaml:"profiles,omitempty"`
-	ToolCategories []string       `yaml:"tool_categories,omitempty"`
-	Agents         AgentConfig    `yaml:"agents"`
-	Tools          ToolsConfig    `yaml:"tools"`
-	Settings SettingsConfig `yaml:"settings"`
+	Version        int              `yaml:"version"`
+	Roles          []string         `yaml:"roles,omitempty"`
+	Workspaces     WorkspaceCatalog `yaml:"workspaces,omitempty"`
+	ToolCategories []string         `yaml:"tool_categories,omitempty"`
+	Agents         AgentConfig      `yaml:"agents"`
+	Tools          ToolsConfig      `yaml:"tools"`
+	Settings       SettingsConfig   `yaml:"settings"`
+}
+
+// WorkspaceCatalog stores named workspaces and the active workspace name.
+type WorkspaceCatalog struct {
+	Active string      `yaml:"active,omitempty"`
+	Items  []Workspace `yaml:"items,omitempty"`
+}
+
+// Workspace is a named workspace (e.g. personal/work) with development stacks.
+type Workspace struct {
+	Name        string   `yaml:"name"`
+	Development []string `yaml:"development,omitempty"`
+	Directory   string   `yaml:"directory,omitempty"`
 }
 
 // AgentConfig holds enable/disable state for each agent.
@@ -53,9 +66,10 @@ type BinaryConfig struct {
 
 // SettingsConfig holds global settings.
 type SettingsConfig struct {
-	AutoUpdate   bool         `yaml:"auto_update"`
-	StatusBar    bool         `yaml:"status_bar"`
-	DefaultFlags DefaultFlags `yaml:"default_flags"`
+	AutoUpdate       bool         `yaml:"auto_update"`
+	StatusBar        bool         `yaml:"status_bar"`
+	DefaultWorkspace string       `yaml:"default_workspace,omitempty"`
+	DefaultFlags     DefaultFlags `yaml:"default_flags"`
 }
 
 // DefaultFlags holds the default CLI flag values.
@@ -63,6 +77,7 @@ type DefaultFlags struct {
 	NoFirewall bool `yaml:"no_firewall"`
 	ReadOnly   bool `yaml:"read_only"`
 	NoEnv      bool `yaml:"no_env"`
+	AutoResume bool `yaml:"auto_resume"`
 }
 
 // Allowlist is the domain allowlist (allowlist.yaml).
@@ -94,11 +109,6 @@ func (a *Allowlist) AllDomains() []string {
 		}
 	}
 	return result
-}
-
-// ProjectProfiles is the per-project profile config (profiles.yaml).
-type ProjectProfiles struct {
-	Profiles []string `yaml:"profiles"`
 }
 
 // IsAgentEnabled returns whether the named agent is enabled.

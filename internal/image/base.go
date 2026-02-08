@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
@@ -138,17 +139,32 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 // build output is printed to stderr.
 func buildImage(rt container.Runtime, args []string, label string) error {
 	if ui.Verbose {
-		return container.BuildInteractive(rt, args)
+		start := time.Now()
+		err := container.BuildInteractive(rt, args)
+		ui.Infof("Build took %s", formatDuration(time.Since(start)))
+		return err
 	}
 	spin := ui.NewSpinner(label)
 	spin.Start()
 	output, err := container.BuildQuiet(rt, args)
-	spin.Stop()
+	elapsed := spin.Stop()
 	if err != nil {
 		fmt.Fprint(os.Stderr, output)
 		return err
 	}
+	ui.Infof("Build took %s", formatDuration(elapsed))
 	return nil
+}
+
+// formatDuration formats a duration as a human-friendly string (e.g., "12s", "1m 23s").
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 func buildArgs(cmd string) []string {

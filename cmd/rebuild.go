@@ -28,6 +28,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var rebuildWorkspace string
+
 var rebuildCmd = &cobra.Command{
 	Use:   "rebuild <agent|all>",
 	Short: "Force rebuild of agent image(s)",
@@ -69,8 +71,7 @@ var rebuildCmd = &cobra.Command{
 			if err := image.BuildCore(ctx, rt, a, true); err != nil {
 				ui.Errorf("Failed to rebuild %s core image: %v", agent.DisplayName(a), err)
 			}
-			// Also rebuild project image (includes profiles/languages)
-			if err := image.BuildProject(ctx, rt, a, projectDir); err != nil {
+			if err := image.BuildProject(ctx, rt, a, projectDir, rebuildWorkspace, true); err != nil {
 				ui.Errorf("Failed to rebuild %s project image: %v", agent.DisplayName(a), err)
 			}
 			ui.Successf("%s image rebuilt successfully", agent.DisplayName(a))
@@ -79,5 +80,6 @@ var rebuildCmd = &cobra.Command{
 }
 
 func init() {
+	rebuildCmd.Flags().StringVarP(&rebuildWorkspace, "workspace", "w", "", "Rebuild image for a specific workspace")
 	rootCmd.AddCommand(rebuildCmd)
 }

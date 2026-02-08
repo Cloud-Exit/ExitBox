@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # Exitbox Docker Entrypoint
-# Runs firewall setup, then executes agent
+# Runs firewall setup, workspace selection, and executes agent
 # ==============================================================================
 
 set -e
@@ -10,6 +10,58 @@ WORKSPACE="/workspace"
 CODEX_CALLBACK_PORT="1455"
 CODEX_RELAY_PORT="2455"
 RELAY_PID=""
+WORKSPACE_SWITCH_FILE="/workspace/.exitbox/workspace-switch"
+GLOBAL_CONFIG_FILE="/home/user/.exitbox-config/config.yaml"
+GLOBAL_WORKSPACE_ROOT="/home/user/.exitbox-config/profiles/global"
+# Save the workspace that was bind-mounted at container start (for isolation detection).
+EXITBOX_MOUNTED_WORKSPACE="${EXITBOX_WORKSPACE_NAME:-}"
+
+agent_display_name() {
+    case "$1" in
+        claude)   echo "Claude Code" ;;
+        codex)    echo "OpenAI Codex" ;;
+        opencode) echo "OpenCode" ;;
+        *)        echo "$1" ;;
+    esac
+}
+
+update_tmux_status() {
+    local display ws_name ver
+    display="$(agent_display_name "$AGENT")"
+    ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
+    ver="${EXITBOX_VERSION:-dev}"
+    tmux set -g status-left " ExitBox  ${display}  [${ws_name}] " 2>/dev/null || true
+    tmux set -g status-right " v${ver}  C-M-p: switch workspace " 2>/dev/null || true
+}
+
+write_tmux_conf() {
+    local conf="/tmp/exitbox-tmux.conf"
+    local display ws_name ver
+    display="$(agent_display_name "$AGENT")"
+    ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
+    ver="${EXITBOX_VERSION:-dev}"
+
+    cat > "$conf" <<TMUXEOF
+# ExitBox tmux configuration
+set -g default-terminal "xterm-256color"
+set -g status-position top
+set -g status-style "bg=colour236,fg=colour255"
+set -g status-left " ExitBox  ${display}  [${ws_name}] "
+set -g status-left-length 80
+set -g status-right " v${ver}  C-M-p: switch workspace "
+set -g status-right-length 60
+set -g window-status-format ""
+set -g window-status-current-format ""
+set -g pane-border-style "fg=colour236"
+set -g pane-active-border-style "fg=colour236"
+set -g message-style "bg=colour236,fg=colour255"
+TMUXEOF
+
+    if [[ "${EXITBOX_STATUS_BAR:-true}" != "true" ]]; then
+        echo "set -g status off" >> "$conf"
+    fi
+    echo "$conf"
+}
 
 cleanup_relay() {
     if [[ -n "$RELAY_PID" ]]; then
@@ -28,6 +80,327 @@ start_codex_callback_relay() {
     RELAY_PID="$!"
 }
 
+ensure_workspace_files() {
+    mkdir -p "$(dirname "$GLOBAL_CONFIG_FILE")"
+    mkdir -p "$GLOBAL_WORKSPACE_ROOT"
+    if [[ ! -f "$GLOBAL_CONFIG_FILE" ]]; then
+        cat > "$GLOBAL_CONFIG_FILE" <<'EOF'
+version: 1
+workspaces:
+  active: default
+  items:
+    - name: default
+      development: []
+agents:
+  claude:
+    enabled: true
+  codex:
+    enabled: true
+  opencode:
+    enabled: true
+tools:
+  user: []
+settings:
+  auto_update: false
+  status_bar: true
+  default_workspace: default
+  default_flags:
+    no_firewall: false
+    read_only: false
+    no_env: false
+    auto_resume: true
+EOF
+    fi
+}
+
+workspace_entries() {
+    local globals
+    # Try new key first, fall back to old "profiles" key
+    globals="$(yq -r '(.workspaces.items[]?.name // .profiles.items[]?.name) // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null | sed '/^$/d')"
+    if [[ -z "$globals" ]]; then
+        globals="$(yq -r '.profiles.items[]?.name // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null | sed '/^$/d')"
+    fi
+    local result=""
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        local dir
+        dir="$(NAME="$name" yq -r '(.workspaces.items[] | select(.name == strenv(NAME)) | .directory) // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null || true)"
+        if [[ -n "$dir" ]]; then
+            result="${result}directory:${name} [${dir}]"$'\n'
+        else
+            result="${result}global:${name}"$'\n'
+        fi
+    done <<< "$globals"
+    printf '%s' "$result" | sed '/^$/d'
+}
+
+resolve_active_workspace() {
+    local global_default global_active first_global
+
+    # Check directory-scoped workspaces (new key only)
+    local current_dir
+    current_dir="$(pwd)"
+    local dir_match
+    dir_match="$(yq -r ".workspaces.items[] | select(.directory == \"${current_dir}\") | .name // \"\"" "$GLOBAL_CONFIG_FILE" 2>/dev/null | head -n1 || true)"
+    if [[ -n "$dir_match" ]]; then
+        echo "directory:${dir_match}"
+        return 0
+    fi
+
+    # Try new key, fall back to old key
+    global_default="$(yq -r '.settings.default_workspace // .settings.default_profile // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null || true)"
+    if [[ -n "$global_default" ]]; then
+        echo "global:${global_default}"
+        return 0
+    fi
+
+    global_active="$(yq -r '.workspaces.active // .profiles.active // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null || true)"
+    if [[ -n "$global_active" ]]; then
+        echo "global:${global_active}"
+        return 0
+    fi
+
+    first_global="$(yq -r '.workspaces.items[]?.name // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null | sed '/^$/d' | head -n1)"
+    if [[ -z "$first_global" ]]; then
+        first_global="$(yq -r '.profiles.items[]?.name // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null | sed '/^$/d' | head -n1)"
+    fi
+    if [[ -n "$first_global" ]]; then
+        echo "global:${first_global}"
+        return 0
+    fi
+
+    echo "global:default"
+}
+
+set_active_workspace() {
+    local scope="$1"
+    local name="$2"
+    if [[ -z "$scope" || -z "$name" ]]; then
+        return 1
+    fi
+
+    ensure_workspace_files
+
+    # Write new keys
+    NAME="$name" yq -i '.settings.default_workspace = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
+    NAME="$name" yq -i '.workspaces.active = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
+    # Also write old keys for backward compat with configs not yet migrated
+    NAME="$name" yq -i '.settings.default_profile = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
+    NAME="$name" yq -i '.profiles.active = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
+    return 0
+}
+
+link_path() {
+    local src="$1"
+    local dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst"
+    ln -s "$src" "$dst"
+}
+
+apply_active_workspace_links() {
+    ensure_workspace_files
+
+    local scope name workspace_root
+
+    # If the Go host already specified a workspace (via --workspace flag or
+    # env var), use it directly. Only resolve from config.yaml when unset
+    # (e.g. after an in-container workspace switch via Ctrl+Alt+P).
+    if [[ -n "${EXITBOX_WORKSPACE_NAME:-}" ]]; then
+        scope="${EXITBOX_WORKSPACE_SCOPE:-global}"
+        name="${EXITBOX_WORKSPACE_NAME}"
+    else
+        local resolved
+        resolved="$(resolve_active_workspace)"
+        scope="${resolved%%:*}"
+        name="${resolved#*:}"
+    fi
+
+    export EXITBOX_WORKSPACE_SCOPE="$scope"
+    export EXITBOX_WORKSPACE_NAME="$name"
+
+    workspace_root="${GLOBAL_WORKSPACE_ROOT}/${name}/${AGENT}"
+
+    # Credential isolation: only the workspace that was mounted at container
+    # start has real data. If the user switched to a different workspace via
+    # Ctrl+P, its directory is empty (not bind-mounted from host).
+    if [[ -n "$EXITBOX_MOUNTED_WORKSPACE" && "$name" != "$EXITBOX_MOUNTED_WORKSPACE" ]]; then
+        echo "" >&2
+        echo "[NOTE] Switched to workspace '${name}', but this container was started with workspace '${EXITBOX_MOUNTED_WORKSPACE}'." >&2
+        echo "[NOTE] Credentials for '${name}' are not available in this session." >&2
+        echo "[NOTE] To use this workspace, exit and re-run:" >&2
+        echo "[NOTE]   exitbox run --workspace ${name} ${AGENT}" >&2
+        echo "" >&2
+    fi
+
+    mkdir -p "$workspace_root"
+
+    case "$AGENT" in
+        claude)
+            mkdir -p "$workspace_root/.claude" "$workspace_root/.config"
+            touch "$workspace_root/.claude.json"
+            link_path "$workspace_root/.claude" "$HOME/.claude"
+            link_path "$workspace_root/.claude.json" "$HOME/.claude.json"
+            link_path "$workspace_root/.config" "$HOME/.config"
+            ;;
+        codex)
+            mkdir -p "$workspace_root/.codex" "$workspace_root/.config/codex"
+            link_path "$workspace_root/.codex" "$HOME/.codex"
+            mkdir -p "$HOME/.config"
+            link_path "$workspace_root/.config/codex" "$HOME/.config/codex"
+            ;;
+        opencode)
+            mkdir -p "$workspace_root/.opencode" \
+                     "$workspace_root/.config/opencode" \
+                     "$workspace_root/.local/share/opencode" \
+                     "$workspace_root/.local/state" \
+                     "$workspace_root/.cache/opencode"
+            link_path "$workspace_root/.opencode" "$HOME/.opencode"
+            mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local" "$HOME/.cache"
+            link_path "$workspace_root/.config/opencode" "$HOME/.config/opencode"
+            link_path "$workspace_root/.local/share/opencode" "$HOME/.local/share/opencode"
+            link_path "$workspace_root/.local/state" "$HOME/.local/state"
+            link_path "$workspace_root/.cache/opencode" "$HOME/.cache/opencode"
+            ;;
+    esac
+}
+
+switch_workspace_interactive() {
+    ensure_workspace_files
+    local choice scope name
+    set +e
+    choice="$(workspace_entries | fzf --height=40% --reverse --border --prompt='Switch workspace > ')"
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 || -z "$choice" ]]; then
+        exit 0
+    fi
+
+    scope="${choice%%:*}"
+    name="${choice#*:}"
+    # Strip directory info display suffix if present
+    name="${name%% \[*}"
+    set_active_workspace "$scope" "$name"
+    # Signal the Go host to re-launch with the new workspace.
+    mkdir -p "$(dirname "$WORKSPACE_SWITCH_FILE")"
+    echo "$name" > "$WORKSPACE_SWITCH_FILE"
+    echo "Switching to workspace '${name}'..."
+}
+
+capture_resume_token() {
+    if [[ "${EXITBOX_AUTO_RESUME:-true}" != "true" ]]; then
+        return
+    fi
+    local output
+    output="$(tmux capture-pane -p -S -100 2>/dev/null || true)"
+    if [[ -z "$output" ]]; then
+        return
+    fi
+    local token=""
+    # Match: <agent> --resume <token>  or  <agent> -r <token>
+    token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}')"
+    local resume_dir
+    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
+    mkdir -p "$resume_dir"
+    if [[ -n "$token" ]]; then
+        echo "$token" > "${resume_dir}/.resume-token"
+    fi
+}
+
+build_resume_args() {
+    RESUME_ARGS=()
+    if [[ "${EXITBOX_AUTO_RESUME:-true}" != "true" ]]; then
+        # Clear any existing token when auto-resume is disabled
+        local resume_file
+        resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
+        rm -f "$resume_file"
+        return
+    fi
+    local resume_file
+    resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
+    if [[ -f "$resume_file" ]]; then
+        local token
+        token="$(cat "$resume_file")"
+        if [[ -n "$token" ]]; then
+            RESUME_ARGS=("--resume" "$token")
+        fi
+    fi
+}
+
+run_agent_once() {
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            claude|codex|opencode)
+                exec "$@"
+                ;;
+            *)
+                if [[ -n "$AGENT" ]]; then
+                    exec "$AGENT" "$@"
+                else
+                    exec "$@"
+                fi
+                ;;
+        esac
+    else
+        if [[ -n "$AGENT" ]]; then
+            exec "$AGENT"
+        else
+            exec bash
+        fi
+    fi
+}
+
+run_agent_loop() {
+    apply_active_workspace_links
+    update_tmux_status
+    if [[ -n "$AGENT" ]]; then
+        inject_sandbox_instructions
+    fi
+
+    build_resume_args
+
+    # Check if user already passed --resume or -r in their args
+    local user_has_resume=false
+    for arg in "$@"; do
+        if [[ "$arg" == "--resume" || "$arg" == "-r" ]]; then
+            user_has_resume=true
+            break
+        fi
+    done
+
+    set +e
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            claude|codex|opencode)
+                if [[ "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
+                    "$@" "${RESUME_ARGS[@]}"
+                else
+                    "$@"
+                fi
+                ;;
+            *)
+                if [[ "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
+                    "$AGENT" "$@" "${RESUME_ARGS[@]}"
+                else
+                    "$AGENT" "$@"
+                fi
+                ;;
+        esac
+    else
+        if [[ ${#RESUME_ARGS[@]} -gt 0 ]]; then
+            "$AGENT" "${RESUME_ARGS[@]}"
+        else
+            "$AGENT"
+        fi
+    fi
+    local code=$?
+    set -e
+
+    capture_resume_token
+
+    exit "$code"
+}
+
 # ============================================================================
 # AGENT DETECTION
 # ============================================================================
@@ -42,6 +415,12 @@ if [[ -z "$AGENT" ]]; then
     elif command -v opencode >/dev/null 2>&1; then
         AGENT="opencode"
     fi
+fi
+
+if [[ "${1:-}" == "__switch-workspace" ]]; then
+    shift
+    switch_workspace_interactive
+    exit 0
 fi
 
 if [[ -n "$AGENT" ]] && ! command -v "$AGENT" >/dev/null 2>&1; then
@@ -60,7 +439,7 @@ You are running inside an ExitBox sandboxed container. Important constraints:
 
 - You CANNOT run container runtimes (docker, podman, nerdctl, etc.) inside this container.
 - You CANNOT manage containers, images, volumes, or networks from within this environment.
-- Do NOT attempt to debug issues by running docker/podman commands — they are not available.
+- Do NOT attempt to debug issues by running docker/podman commands - they are not available.
 - The filesystem at /workspace is your working directory, mounted from the host.
 - Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
 - You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
@@ -72,18 +451,14 @@ inject_sandbox_instructions() {
     local target=""
     case "$AGENT" in
         claude)
-            # Claude reads ~/.claude/CLAUDE.md as global instructions
             target="$HOME/.claude/CLAUDE.md"
             mkdir -p "$HOME/.claude"
             ;;
         codex)
-            # Codex reads ~/.codex/AGENTS.md as global instructions
             target="$HOME/.codex/AGENTS.md"
             mkdir -p "$HOME/.codex"
             ;;
         opencode)
-            # OpenCode reads ~/.config/opencode/AGENTS.md as global instructions
-            # Also falls back to ~/.claude/CLAUDE.md
             target="$HOME/.config/opencode/AGENTS.md"
             mkdir -p "$HOME/.config/opencode"
             ;;
@@ -102,47 +477,57 @@ inject_sandbox_instructions() {
     fi
 }
 
-if [[ -n "$AGENT" ]]; then
-    inject_sandbox_instructions
-fi
-
 # ============================================================================
 # RUN AGENT
 # ============================================================================
 
 cd "$WORKSPACE"
 
-# Debug: show what's available
-if [[ "${VERBOSE:-false}" == "true" ]]; then
-    echo "[DEBUG] PATH=$PATH" >&2
-    echo "[DEBUG] HOME=$HOME" >&2
-    echo "[DEBUG] AGENT=$AGENT" >&2
-    ls -la /home/user/.local/bin/ >&2 2>/dev/null || echo "[DEBUG] .local/bin not found" >&2
-    which claude >&2 2>/dev/null || echo "[DEBUG] claude not in PATH" >&2
-fi
-
 if [[ "$AGENT" == "codex" ]]; then
     start_codex_callback_relay
     trap cleanup_relay EXIT INT TERM
 fi
 
-if [[ $# -gt 0 ]]; then
-    case "$1" in
-        claude|codex|opencode)
-            exec "$@"
-            ;;
-        *)
-            if [[ -n "$AGENT" ]]; then
-                exec "$AGENT" "$@"
-            else
-                exec "$@"
-            fi
-            ;;
-    esac
-else
-    if [[ -n "$AGENT" ]]; then
-        exec "$AGENT"
-    else
-        exec bash
-    fi
+if [[ "${1:-}" == "__agent-loop" ]]; then
+    shift
+    tmux bind-key -n C-M-p run-shell 'tmux display-popup -E "/usr/local/bin/docker-entrypoint __switch-workspace"; if [ -f /workspace/.exitbox/workspace-switch ]; then tmux kill-session; fi' 2>/dev/null || true
+    run_agent_loop "$@"
+    exit $?
 fi
+
+if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
+    # Fall back to a widely-supported TERM if the host terminal's terminfo
+    # is not available inside the container (e.g. xterm-kitty, alacritty).
+    if ! infocmp "$TERM" >/dev/null 2>&1; then
+        export TERM="xterm-256color"
+    fi
+    TMUX_CONF="$(write_tmux_conf)"
+    tmux -f "$TMUX_CONF" new-session -A -s "exitbox-${AGENT}" "/usr/local/bin/docker-entrypoint __agent-loop"
+    TMUX_EXIT=$?
+
+    # Show resume status after tmux exits (visible on the host terminal)
+    resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
+    if [[ -f "$resume_file" ]] && [[ "${EXITBOX_AUTO_RESUME:-true}" == "true" ]]; then
+        echo ""
+        echo "[INFO] Session saved. Next run will auto-resume this conversation."
+        echo "[INFO] To start fresh: exitbox run ${AGENT} --no-resume"
+        echo "[INFO] To disable globally: exitbox setup > uncheck 'Auto-resume sessions'"
+    fi
+
+    exit $TMUX_EXIT
+fi
+
+if [[ -n "$AGENT" ]]; then
+    apply_active_workspace_links
+    inject_sandbox_instructions
+fi
+
+# Debug: show what's available
+if [[ "${VERBOSE:-false}" == "true" ]]; then
+    echo "[DEBUG] PATH=$PATH" >&2
+    echo "[DEBUG] HOME=$HOME" >&2
+    echo "[DEBUG] AGENT=$AGENT" >&2
+    echo "[DEBUG] ACTIVE_WORKSPACE=${EXITBOX_WORKSPACE_SCOPE}/${EXITBOX_WORKSPACE_NAME}" >&2
+fi
+
+run_agent_once "$@"

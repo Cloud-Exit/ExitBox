@@ -18,8 +18,6 @@ package run
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,32 +26,35 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
 	"github.com/cloud-exit/exitbox/internal/network"
+	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
-	"github.com/cloud-exit/exitbox/internal/statusbar"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"golang.org/x/term"
 )
 
 // Options holds all the flags for running a container.
 type Options struct {
-	Agent       string
-	ProjectDir  string
-	NoFirewall  bool
-	ReadOnly    bool
-	NoEnv       bool
-	EnvVars     []string
-	IncludeDirs []string
-	AllowURLs   []string
-	Passthrough []string
-	Verbose     bool
-	StatusBar   bool
-	Version     string
+	Agent              string
+	ProjectDir         string
+	WorkspaceHash      string
+	WorkspaceOverride  string
+	NoFirewall         bool
+	ReadOnly           bool
+	NoEnv              bool
+	NoResume           bool
+	EnvVars            []string
+	IncludeDirs        []string
+	AllowURLs          []string
+	Passthrough        []string
+	Verbose            bool
+	StatusBar          bool
+	Version            string
 }
 
 // AgentContainer runs an agent container interactively.
 func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	cmd := container.Cmd(rt)
-	imageName := project.ImageName(opts.Agent, opts.ProjectDir)
+	imageName := project.ImageName(opts.Agent, opts.ProjectDir, opts.WorkspaceHash)
 	containerName := project.ContainerName(opts.Agent, opts.ProjectDir)
 
 	var args []string
@@ -86,6 +87,14 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		args = append(args, proxyArgs...)
 	}
 
+	// Ensure squid cleanup runs on ALL return paths (including early errors).
+	defer func() {
+		if len(opts.AllowURLs) > 0 {
+			network.RemoveSessionURLs(rt, containerName)
+		}
+		network.CleanupSquidIfUnused(rt)
+	}()
+
 	// Resource limits
 	args = append(args, "--memory=8g", "--cpus=4")
 
@@ -111,19 +120,41 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		args = append(args, "-v", dir+":/workspace/"+rel)
 	}
 
-	// Agent-specific config mounts
-	agentCfgDir := config.AgentDir(opts.Agent)
-	_ = os.MkdirAll(agentCfgDir, 0755)
+	// Workspace resolution and isolated config mounts.
+	cfg := config.LoadOrDefault()
+	activeWorkspace, err := profile.ResolveActiveWorkspace(cfg, opts.ProjectDir, opts.WorkspaceOverride)
+	if err != nil {
+		return 1, fmt.Errorf("failed to resolve active workspace: %w", err)
+	}
 
-	mounts := resolveAgentMounts(opts.Agent, agentCfgDir)
-	args = append(args, mounts...)
+	// Mount config.yaml individually (read-write for in-container workspace switching).
+	configFile := filepath.Join(config.Home, "config.yaml")
+	if _, statErr := os.Stat(configFile); os.IsNotExist(statErr) {
+		_ = config.SaveConfig(cfg)
+	}
+	args = append(args, "-v", configFile+":/home/user/.exitbox-config/config.yaml")
+
+	if activeWorkspace != nil {
+		if err := profile.EnsureAgentConfig(activeWorkspace.Workspace.Name, opts.Agent); err != nil {
+			ui.Warnf("Failed to prepare workspace config for %s/%s: %v", activeWorkspace.Scope, activeWorkspace.Workspace.Name, err)
+		}
+		// Mount only the active workspace's agent dir for credential isolation.
+		// Other workspaces' credentials are not accessible from within the container.
+		hostDir := profile.WorkspaceAgentDir(activeWorkspace.Workspace.Name, opts.Agent)
+		containerDir := "/home/user/.exitbox-config/profiles/global/" + activeWorkspace.Workspace.Name + "/" + opts.Agent
+		args = append(args, "-v", hostDir+":"+containerDir)
+		args = append(args,
+			"-e", "EXITBOX_WORKSPACE_SCOPE="+activeWorkspace.Scope,
+			"-e", "EXITBOX_WORKSPACE_NAME="+activeWorkspace.Workspace.Name,
+		)
+	}
 
 	// Environment variables
 	projectName := filepath.Base(opts.ProjectDir)
 	if !opts.NoEnv {
 		args = append(args,
 			"-e", "NODE_ENV="+getEnvOr("NODE_ENV", "production"),
-			"-e", "TERM="+getEnvOr("TERM", "xterm-256color"),
+			"-e", "TERM=xterm-256color",
 			"-e", "VERBOSE="+fmt.Sprint(opts.Verbose),
 		)
 	}
@@ -144,6 +175,9 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	args = append(args,
 		"-e", "EXITBOX_AGENT="+opts.Agent,
 		"-e", "EXITBOX_PROJECT_NAME="+projectName,
+		"-e", "EXITBOX_VERSION="+opts.Version,
+		"-e", "EXITBOX_STATUS_BAR="+fmt.Sprint(opts.StatusBar),
+		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(!opts.NoResume),
 	)
 
 	// Security options
@@ -162,20 +196,14 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		ui.Debugf("Container run: %s run %s", cmd, strings.Join(args, " "))
 	}
 
-	// Status bar
-	if opts.StatusBar {
-		statusbar.Show(opts.Version, opts.Agent)
-	}
-
 	// Run with inherited stdio
 	c := exec.Command(cmd, append([]string{"run"}, args...)...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 
-	err := c.Run()
+	err = c.Run()
 
-	statusbar.Hide()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -185,135 +213,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		}
 	}
 
-	// Remove per-session URLs if any were registered
-	if len(opts.AllowURLs) > 0 {
-		network.RemoveSessionURLs(rt, containerName)
-	}
-
-	network.CleanupSquidIfUnused(rt)
 	return exitCode, nil
-}
-
-func resolveAgentMounts(agent, cfgDir string) []string {
-	home := os.Getenv("HOME")
-	var args []string
-
-	switch agent {
-	case "claude":
-		claudeDir := ensureDir(cfgDir, ".claude")
-		seedDirOnce(filepath.Join(home, ".claude"), claudeDir)
-		args = append(args, "-v", claudeDir+":/home/user/.claude")
-
-		claudeJSON := ensureFile(cfgDir, ".claude.json")
-		seedFileOnce(filepath.Join(home, ".claude.json"), claudeJSON)
-		args = append(args, "-v", claudeJSON+":/home/user/.claude.json")
-
-		configDir := ensureDir(cfgDir, ".config")
-		args = append(args, "-v", configDir+":/home/user/.config")
-
-	case "codex":
-		codexDir := ensureDir(cfgDir, ".codex")
-		seedDirOnce(filepath.Join(home, ".codex"), codexDir)
-		args = append(args, "-v", codexDir+":/home/user/.codex")
-
-		codexCfgDir := ensureDir(cfgDir, ".config", "codex")
-		seedDirOnce(filepath.Join(home, ".config", "codex"), codexCfgDir)
-		args = append(args, "-v", codexCfgDir+":/home/user/.config/codex")
-
-	case "opencode":
-		ocDir := ensureDir(cfgDir, ".opencode")
-		seedDirOnce(filepath.Join(home, ".opencode"), ocDir)
-		args = append(args, "-v", ocDir+":/home/user/.opencode")
-
-		ocCfgDir := ensureDir(cfgDir, ".config", "opencode")
-		seedDirOnce(filepath.Join(home, ".config", "opencode"), ocCfgDir)
-		args = append(args, "-v", ocCfgDir+":/home/user/.config/opencode")
-
-		ocShareDir := ensureDir(cfgDir, ".local", "share", "opencode")
-		seedDirOnce(filepath.Join(home, ".local", "share", "opencode"), ocShareDir)
-		args = append(args, "-v", ocShareDir+":/home/user/.local/share/opencode")
-
-		ocStateDir := ensureDir(cfgDir, ".local", "state")
-		args = append(args, "-v", ocStateDir+":/home/user/.local/state")
-
-		ocCacheDir := ensureDir(cfgDir, ".cache", "opencode")
-		args = append(args, "-v", ocCacheDir+":/home/user/.cache/opencode")
-	}
-
-	return args
-}
-
-func ensureDir(parts ...string) string {
-	p := filepath.Join(parts...)
-	_ = os.MkdirAll(p, 0755)
-	return p
-}
-
-func ensureFile(parts ...string) string {
-	p := filepath.Join(parts...)
-	_ = os.MkdirAll(filepath.Dir(p), 0755)
-	if _, err := os.Stat(p); os.IsNotExist(err) {
-		_ = os.WriteFile(p, []byte("{}\n"), 0644)
-	}
-	return p
-}
-
-func seedDirOnce(host, managed string) {
-	if _, err := os.Stat(host); os.IsNotExist(err) {
-		return
-	}
-	entries, err := os.ReadDir(managed)
-	if err == nil && len(entries) > 0 {
-		return
-	}
-	_ = os.MkdirAll(managed, 0755)
-	_ = copyDirRecursive(host, managed)
-}
-
-func copyDirRecursive(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
-}
-
-func seedFileOnce(host, managed string) {
-	if _, err := os.Stat(host); os.IsNotExist(err) {
-		return
-	}
-	if _, err := os.Stat(managed); err == nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(managed), 0755)
-	data, err := os.ReadFile(host)
-	if err == nil {
-		_ = os.WriteFile(managed, data, 0644)
-	}
 }
 
 func expandPath(dir, projectDir string) string {
@@ -335,14 +235,20 @@ func getEnvOr(key, def string) string {
 
 func isReservedEnvVar(key string) bool {
 	reserved := map[string]bool{
-		"EXITBOX_AGENT":        true,
-		"EXITBOX_PROJECT_NAME": true,
-		"http_proxy":            true,
-		"https_proxy":           true,
-		"HTTP_PROXY":            true,
-		"HTTPS_PROXY":           true,
-		"no_proxy":              true,
-		"NO_PROXY":              true,
+		"EXITBOX_AGENT":           true,
+		"EXITBOX_PROJECT_NAME":    true,
+		"EXITBOX_WORKSPACE_SCOPE": true,
+		"EXITBOX_WORKSPACE_NAME":  true,
+		"EXITBOX_VERSION":         true,
+		"EXITBOX_STATUS_BAR":      true,
+		"EXITBOX_AUTO_RESUME":     true,
+		"TERM":                    true,
+		"http_proxy":              true,
+		"https_proxy":             true,
+		"HTTP_PROXY":              true,
+		"HTTPS_PROXY":             true,
+		"no_proxy":                true,
+		"NO_PROXY":                true,
 	}
 	return reserved[key]
 }

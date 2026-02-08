@@ -18,6 +18,7 @@ package wizard
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -48,23 +49,83 @@ func Run(existingCfg *config.Config) error {
 		return fmt.Errorf("setup cancelled")
 	}
 
-	return applyResult(wm.Result())
+	return applyResult(wm.Result(), existingCfg)
 }
 
-func applyResult(state State) error {
+// RunWorkspaceCreation runs the wizard from step 1 and returns a configured workspace.
+func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*config.Workspace, bool, error) {
+	model := NewWorkspaceModelFromConfig(existingCfg, workspaceName)
+
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	finalModel, err := p.Run()
+	if err != nil {
+		return nil, false, fmt.Errorf("wizard error: %w", err)
+	}
+
+	wm := finalModel.(Model)
+	if wm.Cancelled() || !wm.Confirmed() {
+		return nil, false, fmt.Errorf("setup cancelled")
+	}
+
+	name := strings.TrimSpace(wm.Result().WorkspaceName)
+	if name == "" {
+		name = strings.TrimSpace(workspaceName)
+	}
+	if name == "" {
+		name = "default"
+	}
+
+	return &config.Workspace{
+		Name:        name,
+		Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
+	}, wm.Result().MakeDefault, nil
+}
+
+func applyResult(state State, existingCfg *config.Config) error {
 	cfg := config.DefaultConfig()
+	if existingCfg != nil {
+		copyCfg := *existingCfg
+		cfg = &copyCfg
+	}
+
+	workspaceName := activeWorkspaceNameOrDefault(state.WorkspaceName)
+	var development []string
+	if state.OriginalDevelopment != nil {
+		// Editing an existing workspace: preserve the original development
+		// stack and apply language selection changes on top.
+		development = applyLanguageDelta(state.OriginalDevelopment, state.Languages)
+	} else {
+		development = ComputeProfiles(state.Roles, state.Languages)
+	}
+
 	cfg.Roles = state.Roles
-	cfg.Profiles = ComputeProfiles(state.Roles, state.Languages)
 	cfg.ToolCategories = state.ToolCategories
 	cfg.Settings.AutoUpdate = state.AutoUpdate
 	cfg.Settings.StatusBar = state.StatusBar
+	cfg.Settings.DefaultFlags = config.DefaultFlags{
+		NoFirewall: !state.EnableFirewall,
+		AutoResume: state.AutoResume,
+		NoEnv:      !state.PassEnv,
+		ReadOnly:   state.ReadOnly,
+	}
+	cfg.Workspaces.Active = workspaceName
+	cfg.Workspaces.Items = upsertWorkspace(cfg.Workspaces.Items, config.Workspace{
+		Name:        workspaceName,
+		Development: development,
+	})
+	if state.MakeDefault {
+		cfg.Settings.DefaultWorkspace = workspaceName
+	} else if existingCfg == nil {
+		cfg.Settings.DefaultWorkspace = ""
+	}
 
+	cfg.Agents = config.AgentConfig{}
 	for _, name := range state.Agents {
 		cfg.SetAgentEnabled(name, true)
 	}
 
 	cfg.Tools.User = ComputePackages(state.ToolCategories)
-
+	cfg.Tools.Binaries = nil
 	for _, b := range ComputeBinaries(state.ToolCategories) {
 		cfg.Tools.Binaries = append(cfg.Tools.Binaries, config.BinaryConfig{
 			Name:       b.Name,
@@ -84,4 +145,66 @@ func applyResult(state State) error {
 	config.EnsureDirs()
 
 	return nil
+}
+
+// applyLanguageDelta takes an existing development stack and applies language
+// selection changes on top. Non-language profiles (e.g. "web", "database",
+// "build-tools") are preserved; language profiles are added/removed based on
+// the user's current selections.
+func applyLanguageDelta(original []string, selectedLanguages []string) []string {
+	// Build a set of all known language profiles.
+	langProfiles := make(map[string]bool)
+	for _, l := range AllLanguages {
+		langProfiles[l.Profile] = true
+	}
+
+	// Build a set of selected language profiles.
+	selectedProfiles := make(map[string]bool)
+	for _, langName := range selectedLanguages {
+		for _, l := range AllLanguages {
+			if l.Name == langName {
+				selectedProfiles[l.Profile] = true
+				break
+			}
+		}
+	}
+
+	// Start with non-language profiles from the original stack.
+	seen := make(map[string]bool)
+	var result []string
+	for _, p := range original {
+		if langProfiles[p] {
+			// This is a language profile — only keep if still selected.
+			if selectedProfiles[p] && !seen[p] {
+				seen[p] = true
+				result = append(result, p)
+			}
+		} else {
+			// Non-language profile — always preserve.
+			if !seen[p] {
+				seen[p] = true
+				result = append(result, p)
+			}
+		}
+	}
+
+	// Add newly selected language profiles that weren't in the original.
+	for _, l := range AllLanguages {
+		if selectedProfiles[l.Profile] && !seen[l.Profile] {
+			seen[l.Profile] = true
+			result = append(result, l.Profile)
+		}
+	}
+
+	return result
+}
+
+func upsertWorkspace(list []config.Workspace, item config.Workspace) []config.Workspace {
+	for i := range list {
+		if list[i].Name == item.Name {
+			list[i] = item
+			return list
+		}
+	}
+	return append(list, item)
 }

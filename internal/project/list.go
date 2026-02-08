@@ -57,12 +57,14 @@ func ListAll(rt container.Runtime) {
 		projectPath := strings.TrimSpace(string(data))
 		found = true
 
-		// Check which agents have images
+		// Check which agents have images (any profile variant)
 		var agentsList []string
 		for _, agent := range []string{"claude", "codex", "opencode"} {
-			imgName := fmt.Sprintf("exitbox-%s-%s", agent, e.Name())
-			if rt != nil && rt.ImageExists(imgName) {
-				agentsList = append(agentsList, agent)
+			prefix := fmt.Sprintf("exitbox-%s-%s-*", agent, e.Name())
+			if rt != nil {
+				if imgs, err := rt.ImageList(prefix); err == nil && len(imgs) > 0 {
+					agentsList = append(agentsList, agent)
+				}
 			}
 		}
 

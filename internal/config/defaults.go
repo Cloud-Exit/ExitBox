@@ -20,14 +20,24 @@ package config
 func DefaultConfig() *Config {
 	return &Config{
 		Version: 1,
+		Workspaces: WorkspaceCatalog{
+			Active: "default",
+			Items: []Workspace{
+				{Name: "default"},
+			},
+		},
 		Agents: AgentConfig{
 			Claude:   AgentEntry{Enabled: false},
 			Codex:    AgentEntry{Enabled: false},
 			OpenCode: AgentEntry{Enabled: false},
 		},
 		Settings: SettingsConfig{
-			AutoUpdate: false,
-			StatusBar:  true,
+			AutoUpdate:       false,
+			StatusBar:        true,
+			DefaultWorkspace: "default",
+			DefaultFlags: DefaultFlags{
+				AutoResume: true,
+			},
 		},
 	}
 }

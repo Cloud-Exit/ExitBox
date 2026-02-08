@@ -112,7 +112,7 @@ func RemoveSessionURLs(rt container.Runtime, containerName string) {
 
 	// Reconfigure squid if running
 	cmd := container.Cmd(rt)
-	names, _ := rt.PS(fmt.Sprintf("name=^/%s$", SquidContainer), "{{.Names}}")
+	names, _ := rt.PS("", "{{.Names}}")
 	for _, n := range names {
 		if n == SquidContainer {
 			_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
@@ -164,7 +164,7 @@ func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []str
 	allExtraURLs := collectAllSessionURLs()
 
 	// Check if already running
-	names, _ := rt.PS(fmt.Sprintf("name=^/%s$", SquidContainer), "{{.Names}}")
+	names, _ := rt.PS("", "{{.Names}}")
 	for _, n := range names {
 		if n == SquidContainer {
 			// Regenerate config with all session URLs and reload
@@ -246,26 +246,31 @@ func GetProxyEnvVars(rt container.Runtime) []string {
 // CleanupSquidIfUnused stops squid if no agent containers are running.
 func CleanupSquidIfUnused(rt container.Runtime) {
 	cmd := container.Cmd(rt)
-	names, _ := rt.PS("", "{{.Names}}")
+	names, err := rt.PS("", "{{.Names}}")
+	if err != nil {
+		ui.Warnf("Failed to list containers: %v", err)
+		return
+	}
 	running := 0
+	squidRunning := false
 	for _, n := range names {
 		if n == SquidContainer {
+			squidRunning = true
 			continue
 		}
 		if strings.HasPrefix(n, "exitbox-") {
 			running++
 		}
 	}
-	if running == 0 {
-		// Check if squid is running
-		squidNames, _ := rt.PS(fmt.Sprintf("name=^/%s$", SquidContainer), "{{.Names}}")
-		for _, n := range squidNames {
-			if n == SquidContainer {
-				ui.Info("Stopping Squid proxy (no running agents)...")
-				_ = exec.Command(cmd, "rm", "-f", SquidContainer).Run()
-				break
-			}
+	if running == 0 && squidRunning {
+		ui.Info("Stopping Squid proxy (no running agents)...")
+		// Stop first (handles restart policy), then remove.
+		_ = exec.Command(cmd, "stop", SquidContainer).Run()
+		if rmErr := exec.Command(cmd, "rm", "-f", SquidContainer).Run(); rmErr != nil {
+			ui.Warnf("Failed to remove Squid proxy: %v", rmErr)
 		}
+	}
+	if running == 0 {
 		// Clean stale session files
 		_ = os.RemoveAll(sessionDir())
 	}

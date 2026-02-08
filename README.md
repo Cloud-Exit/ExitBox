@@ -30,7 +30,9 @@ The setup wizard guides you through:
 1. **Developer role** — Frontend, Backend, Fullstack, DevOps, Data Science, Mobile, Embedded, or Security
 2. **Languages** — Pre-selected based on your role, customize as needed
 3. **Tool categories** — Build tools, databases, networking, DevOps, security, and more
-4. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
+4. **Workspace name** — Named context for isolated agent configs (e.g. personal, work)
+5. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
+6. **Settings** — Auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only
 
 The wizard generates a tailored `config.yaml` with your preferences. You can re-run it at any time with `exitbox setup`.
 
@@ -76,6 +78,15 @@ If the file already exists (e.g., from your own global instructions), ExitBox ap
 - **Project Isolation**: Each project gets its own containerized environment
 - **Development Profiles**: Pre-configured environments for Rust, Python, Go, Node.js, and more
 - **Custom Tools**: Add Alpine packages to any image via `-t` flag or `config.yaml`
+
+### Auto-Resume Sessions
+
+When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox automatically captures this token and passes it on the next run, so you seamlessly resume where you left off.
+
+- **Enabled by default** — just run `exitbox claude` again to continue your conversation
+- **Disable per-session** with `--no-resume` to start a fresh session
+- **Disable globally** by unchecking "Auto-resume sessions" in `exitbox setup`
+- Resume tokens are stored per-workspace per-agent at `~/.config/exitbox/profiles/global/<workspace>/<agent>/.resume-token`
 
 ### Usability
 - **Cross-Platform**: Native binaries for Linux, macOS, and Windows
@@ -233,13 +244,71 @@ exitbox aliases           # Print shell aliases for ~/.bashrc
 exitbox info              # Show system information
 ```
 
-### Profile Management
+### Workspace Management
+
+Workspaces are named contexts (e.g. `personal`, `work`, `client-a`) that provide isolated agent configurations, credentials, and development stacks. Each workspace stores its own agent config directories, so API keys and conversation history are kept separate.
 
 ```bash
-exitbox <agent> profile list       # List available profiles
-exitbox <agent> profile add <name> # Add a development profile
-exitbox <agent> profile remove <n> # Remove a profile
-exitbox <agent> profile status     # Show current profiles
+exitbox workspaces list                    # List all workspaces
+exitbox workspaces create <name>           # Create a new workspace (interactive)
+exitbox workspaces delete <name>           # Delete a workspace
+exitbox workspaces switch <name>           # Set the active workspace
+exitbox workspaces status                  # Show the current active workspace
+```
+
+#### How Workspaces Work
+
+- **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
+- **Development stacks**: Each workspace can have its own set of development profiles (languages/tools). The setup wizard or `exitbox workspaces create` lets you pick the stack for each workspace.
+- **Per-project auto-detection**: Workspaces can be scoped to a directory. When you run an agent from that directory, ExitBox automatically uses the matching workspace.
+- **Default workspace**: Set via `exitbox setup` or `exitbox workspaces switch`. Used when no directory-scoped workspace matches.
+
+#### Workspace Resolution Order
+
+1. **CLI flag**: `exitbox -w work claude` — explicit override for this session
+2. **Directory-scoped**: If the current directory matches a workspace's `directory` field in `config.yaml`
+3. **Default workspace**: The workspace set as default in settings
+4. **Active workspace**: The last-used workspace from `config.yaml`
+5. **Fallback**: `default`
+
+#### In-Container Workspace Switching
+
+While inside a running agent session, press **Ctrl+Alt+P** to open an interactive workspace picker (powered by `fzf`). Selecting a different workspace exits the current session and relaunches the agent with the new workspace.
+
+**Note**: Credentials are bind-mounted at container start for security isolation. If you switch to a workspace that wasn't mounted, ExitBox warns you that credentials for that workspace aren't available and suggests re-running with the `--workspace` flag.
+
+#### Workspace Examples
+
+```bash
+# Create workspaces for different contexts
+exitbox workspaces create work
+exitbox workspaces create personal
+
+# Run claude in a specific workspace
+exitbox -w work claude
+exitbox -w personal claude
+
+# Set the default workspace
+exitbox workspaces switch work
+
+# Now "exitbox claude" uses the "work" workspace by default
+exitbox claude
+```
+
+#### Shell Aliases
+
+Generate recommended shell aliases for quick access:
+
+```bash
+exitbox aliases
+```
+
+Or add custom aliases to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias claude-work="exitbox -w work claude"
+alias claude-personal="exitbox -w personal claude"
+alias codex-work="exitbox -w work codex"
 ```
 
 ### Utilities
@@ -264,9 +333,11 @@ exitbox -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
 exitbox -t nodejs,go claude    # Add Alpine packages to image (persisted)
 exitbox -a api.example.com claude  # Allow extra domains for this session
 exitbox -u claude              # Check for and apply agent updates
+exitbox --no-resume claude     # Start a fresh session (don't resume previous)
+exitbox -w work claude         # Use a specific workspace for this session
 ```
 
-All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`.
+All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--no-resume`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`.
 
 ## Available Profiles
 
@@ -304,7 +375,7 @@ The recommended way to configure ExitBox is through the setup wizard:
 exitbox setup
 ```
 
-The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It runs automatically on first use, or you can re-run it to reconfigure at any time.
+The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through 7 steps: role, languages, tools, workspace name, agents, settings (auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only), and a final review. Re-run it at any time to reconfigure.
 
 ### config.yaml
 
@@ -315,6 +386,18 @@ version: 1
 roles:
   - backend
   - devops
+
+workspaces:
+  active: default
+  items:
+    - name: default
+      development:
+        - go
+        - python
+    - name: work
+      development:
+        - node
+        - python
 
 agents:
   claude:
@@ -332,13 +415,17 @@ tools:
 settings:
   auto_update: false
   status_bar: true            # Show "ExitBox <version> - <agent>" bar at top of terminal
+  default_workspace: default  # Workspace used when no directory match is found
   default_flags:
-    no_firewall: false
-    read_only: false
-    no_env: false
+    no_firewall: false        # Set true to disable firewall by default
+    read_only: false          # Set true to mount workspace as read-only by default
+    no_env: false             # Set true to not pass host env vars by default
+    auto_resume: true         # Set false to disable auto-resume by default
 ```
 
-The `status_bar` setting controls the thin status bar displayed at the top of the terminal while an agent is running. It is enabled by default. Set to `false` to disable it.
+**Settings reference:**
+- `status_bar` — Thin status bar at the top of the terminal showing agent, workspace, and version. Enabled by default.
+- `auto_resume` — Automatically resume the last agent conversation on next run. Enabled by default. Disable per-session with `--no-resume`.
 
 ### allowlist.yaml
 

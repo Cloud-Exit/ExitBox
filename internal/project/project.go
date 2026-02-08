@@ -82,8 +82,10 @@ func Init(path string) error {
 }
 
 // ImageName returns the Docker image name for an agent in a project.
-func ImageName(agent, projectDir string) string {
-	return fmt.Sprintf("exitbox-%s-%s", agent, GenerateFolderName(projectDir))
+// profileHash must encode the active profile configuration so that each
+// profile produces a distinct image (no cache sharing between profiles).
+func ImageName(agent, projectDir, profileHash string) string {
+	return fmt.Sprintf("exitbox-%s-%s-%s", agent, GenerateFolderName(projectDir), profileHash)
 }
 
 // ContainerName returns a unique container name for an agent in a project.

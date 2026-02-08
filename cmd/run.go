@@ -19,6 +19,7 @@ package cmd
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
@@ -41,22 +42,19 @@ Available agents:
   codex       OpenAI Codex CLI
   opencode    OpenCode (open-source)
 
-Profiles:
-  Profiles install languages and tools into the container environment.
-  Default profiles are configured via 'exitbox setup' and apply to all projects.
-  Per-project profiles override or extend defaults for a single directory.
-
-  exitbox run <agent> profile list         List all profiles (* = default)
-  exitbox run <agent> profile status       Show active global + project profiles
-  exitbox run <agent> profile add <name>   Add a per-project profile
-  exitbox run <agent> profile remove <name>
+Workspaces:
+  Workspaces are named contexts (e.g. personal/work) with development stacks
+  and separate agent config storage.
+  Manage them with: exitbox workspaces --help
 
 Flags (passed after the agent name):
   -f, --no-firewall       Disable network firewall
   -r, --read-only         Mount workspace as read-only
   -n, --no-env            Don't pass host environment variables
+      --no-resume         Don't auto-resume the previous agent session
   -u, --update            Check for and apply agent updates
   -v, --verbose           Enable verbose output
+  -w, --workspace NAME    Use a specific workspace for this session
   -e, --env KEY=VALUE     Pass environment variables
   -t, --tools PKG         Add Alpine packages to the image
   -i, --include-dir DIR   Mount host dir inside /workspace
@@ -66,18 +64,15 @@ Examples:
   exitbox run claude
   exitbox run claude -f -e GITHUB_TOKEN=$GITHUB_TOKEN
   exitbox run codex --update
-  exitbox run claude profile add go`,
+  exitbox run claude --workspace work`,
 }
 
 func newAgentRunCmd(agentName string) *cobra.Command {
 	display := agent.DisplayName(agentName)
 	return &cobra.Command{
-		Use:   agentName + " [args...]",
-		Short: "Run " + display,
-		Long: "Run " + display + " in an isolated container.\n\n" +
-			"Subcommands:\n" +
-			"  profile   Manage development profiles (languages and tools)\n\n" +
-			"Run 'exitbox run " + agentName + " profile --help' for profile commands.",
+		Use:                agentName + " [args...]",
+		Short:              "Run " + display,
+		Long:               "Run " + display + " in an isolated container.",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
 			// DisableFlagParsing swallows --help; handle it manually
@@ -117,7 +112,6 @@ func runAgent(agentName string, passthrough []string) {
 		ui.Warnf("Failed to initialize project directory: %v", err)
 	}
 
-	// Build images (flags parsed below, but tools/update need to be set before build)
 	image.Version = Version
 
 	flags := parseRunFlags(passthrough, cfg.Settings.DefaultFlags)
@@ -126,43 +120,69 @@ func runAgent(agentName string, passthrough []string) {
 		ui.Verbose = true
 	}
 
-	// Wire tools and update flags before building images
 	image.SessionTools = flags.Tools
 	image.ForceRebuild = flags.ForceUpdate
 	image.AutoUpdate = cfg.Settings.AutoUpdate || flags.ForceUpdate
 
-	if err := image.BuildProject(ctx, rt, agentName, projectDir); err != nil {
-		ui.Errorf("Failed to build images: %v", err)
-	}
+	switchFile := filepath.Join(projectDir, ".exitbox", "workspace-switch")
 
-	opts := run.Options{
-		Agent:       agentName,
-		ProjectDir:  projectDir,
-		NoFirewall:  flags.NoFirewall,
-		ReadOnly:    flags.ReadOnly,
-		NoEnv:       flags.NoEnv,
-		EnvVars:     flags.EnvVars,
-		IncludeDirs: flags.IncludeDirs,
-		AllowURLs:   flags.AllowURLs,
-		Passthrough: flags.Remaining,
-		Verbose:     flags.Verbose,
-		StatusBar:   cfg.Settings.StatusBar,
-		Version:     Version,
-	}
+	// Main run loop: re-launches on workspace switch.
+	for {
+		// Reload config each iteration (workspace switch updates it).
+		cfg = config.LoadOrDefault()
 
-	exitCode, err := run.AgentContainer(rt, opts)
-	if err != nil {
-		ui.Errorf("%v", err)
+		if err := image.BuildProject(ctx, rt, agentName, projectDir, flags.Workspace, false); err != nil {
+			ui.Errorf("Failed to build images: %v", err)
+		}
+
+		workspaceHash := image.WorkspaceHash(cfg, projectDir, flags.Workspace)
+
+		opts := run.Options{
+			Agent:             agentName,
+			ProjectDir:        projectDir,
+			WorkspaceHash:     workspaceHash,
+			WorkspaceOverride: flags.Workspace,
+			NoFirewall:        flags.NoFirewall,
+			ReadOnly:          flags.ReadOnly,
+			NoEnv:             flags.NoEnv,
+			NoResume:          flags.NoResume,
+			EnvVars:           flags.EnvVars,
+			IncludeDirs:       flags.IncludeDirs,
+			AllowURLs:         flags.AllowURLs,
+			Passthrough:       flags.Remaining,
+			Verbose:           flags.Verbose,
+			StatusBar:         cfg.Settings.StatusBar,
+			Version:           Version,
+		}
+
+		exitCode, err := run.AgentContainer(rt, opts)
+		if err != nil {
+			ui.Errorf("%v", err)
+		}
+
+		// Check for workspace switch signal from the container.
+		if data, readErr := os.ReadFile(switchFile); readErr == nil {
+			newWorkspace := strings.TrimSpace(string(data))
+			_ = os.Remove(switchFile)
+			if newWorkspace != "" {
+				ui.Infof("Switching to workspace '%s'...", newWorkspace)
+				flags.Workspace = newWorkspace
+				continue
+			}
+		}
+
+		os.Exit(exitCode)
 	}
-	os.Exit(exitCode)
 }
 
 type parsedFlags struct {
 	NoFirewall  bool
 	ReadOnly    bool
 	NoEnv       bool
+	NoResume    bool
 	Verbose     bool
 	ForceUpdate bool
+	Workspace   string
 	EnvVars     []string
 	IncludeDirs []string
 	AllowURLs   []string
@@ -175,6 +195,7 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 		NoFirewall: defaults.NoFirewall,
 		ReadOnly:   defaults.ReadOnly,
 		NoEnv:      defaults.NoEnv,
+		NoResume:   !defaults.AutoResume,
 	}
 
 	for i := 0; i < len(passthrough); i++ {
@@ -186,10 +207,17 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 			f.ReadOnly = true
 		case "-n", "--no-env":
 			f.NoEnv = true
+		case "--no-resume":
+			f.NoResume = true
 		case "-v", "--verbose":
 			f.Verbose = true
 		case "-u", "--update":
 			f.ForceUpdate = true
+		case "-w", "--workspace":
+			if i+1 < len(passthrough) {
+				i++
+				f.Workspace = passthrough[i]
+			}
 		case "-e", "--env":
 			if i+1 < len(passthrough) {
 				i++
@@ -224,19 +252,6 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 func init() {
 	for _, name := range agent.AgentNames {
 		agentCmd := newAgentRunCmd(name)
-
-		// Add profile subcommand
-		agentProfileCmd := &cobra.Command{
-			Use:   "profile",
-			Short: "Manage profiles for " + agent.DisplayName(name),
-		}
-		agentName := name // capture for closure
-		agentProfileCmd.AddCommand(newProfileListCmd())
-		agentProfileCmd.AddCommand(newProfileAddCmd(agentName))
-		agentProfileCmd.AddCommand(newProfileRemoveCmd(agentName))
-		agentProfileCmd.AddCommand(newProfileStatusCmd(agentName))
-
-		agentCmd.AddCommand(agentProfileCmd)
 		runCmd.AddCommand(agentCmd)
 	}
 

@@ -38,7 +38,58 @@ func LoadConfigFrom(path string) (*Config, error) {
 		return nil, err
 	}
 	migrateTools(&cfg)
+	migrateProfilesToWorkspaces(data, &cfg)
 	return &cfg, nil
+}
+
+// legacyConfig mirrors the old YAML keys so we can read configs that still
+// use "profiles" / "default_profile" on disk.
+type legacyConfig struct {
+	Profiles struct {
+		Active string `yaml:"active"`
+		Items  []struct {
+			Name        string   `yaml:"name"`
+			Development []string `yaml:"development"`
+		} `yaml:"items"`
+	} `yaml:"profiles"`
+	Settings struct {
+		DefaultProfile string `yaml:"default_profile"`
+	} `yaml:"settings"`
+}
+
+// migrateProfilesToWorkspaces reads legacy "profiles" / "default_profile" keys
+// from raw YAML and copies them into the Workspaces / DefaultWorkspace fields
+// when the new keys are absent (i.e. still at defaults from an old config).
+func migrateProfilesToWorkspaces(data []byte, cfg *Config) {
+	var legacy legacyConfig
+	if err := yaml.Unmarshal(data, &legacy); err != nil {
+		return
+	}
+
+	// Only migrate if the old key had data and the new key is at defaults.
+	if len(legacy.Profiles.Items) > 0 && isDefaultWorkspaces(cfg) {
+		cfg.Workspaces.Active = legacy.Profiles.Active
+		cfg.Workspaces.Items = nil
+		for _, item := range legacy.Profiles.Items {
+			cfg.Workspaces.Items = append(cfg.Workspaces.Items, Workspace{
+				Name:        item.Name,
+				Development: item.Development,
+			})
+		}
+	}
+
+	if legacy.Settings.DefaultProfile != "" && cfg.Settings.DefaultWorkspace == "default" {
+		cfg.Settings.DefaultWorkspace = legacy.Settings.DefaultProfile
+	}
+}
+
+// isDefaultWorkspaces returns true if the workspaces catalog looks like
+// the untouched default (single "default" workspace with no dev stack).
+func isDefaultWorkspaces(cfg *Config) bool {
+	if len(cfg.Workspaces.Items) != 1 {
+		return false
+	}
+	return cfg.Workspaces.Items[0].Name == "default" && len(cfg.Workspaces.Items[0].Development) == 0
 }
 
 // packageReplacements maps deprecated Alpine packages to their replacements.
@@ -110,28 +161,6 @@ func SaveAllowlist(al *Allowlist) error {
 // SaveAllowlistTo writes allowlist to a specific path.
 func SaveAllowlistTo(al *Allowlist, path string) error {
 	data, err := yaml.Marshal(al)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-// LoadProjectProfiles reads profiles.yaml from the given path.
-func LoadProjectProfiles(path string) (*ProjectProfiles, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var pp ProjectProfiles
-	if err := yaml.Unmarshal(data, &pp); err != nil {
-		return nil, err
-	}
-	return &pp, nil
-}
-
-// SaveProjectProfiles writes profiles.yaml to the given path.
-func SaveProjectProfiles(pp *ProjectProfiles, path string) error {
-	data, err := yaml.Marshal(pp)
 	if err != nil {
 		return err
 	}

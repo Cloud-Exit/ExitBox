@@ -18,6 +18,7 @@ package image
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,12 +29,31 @@ import (
 	"github.com/cloud-exit/exitbox/internal/profile"
 	proj "github.com/cloud-exit/exitbox/internal/project"
 	"github.com/cloud-exit/exitbox/internal/ui"
-	"github.com/cloud-exit/exitbox/internal/wizard"
 )
 
-// BuildProject builds the agent project image (with profiles).
-func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectDir string) error {
-	imageName := proj.ImageName(agentName, projectDir)
+// WorkspaceHash computes a short hash encoding the active workspace and user
+// tools. Each distinct workspace configuration produces a different hash,
+// which becomes part of the image name so that no cache is shared between
+// workspaces.
+func WorkspaceHash(cfg *config.Config, projectDir string, overrideName string) string {
+	active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, overrideName)
+	var parts []string
+	if active != nil {
+		parts = append(parts, active.Scope, active.Workspace.Name)
+		parts = append(parts, active.Workspace.Development...)
+	}
+	parts = append(parts, cfg.Tools.User...)
+	h := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	return fmt.Sprintf("%x", h[:8])
+}
+
+// BuildProject builds the agent project image (with workspaces).
+// When force is true, the image is rebuilt even if it already exists.
+// workspaceOverride selects a specific workspace (empty = use resolution chain).
+func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectDir, workspaceOverride string, force bool) error {
+	cfg := config.LoadOrDefault()
+	wh := WorkspaceHash(cfg, projectDir, workspaceOverride)
+	imageName := proj.ImageName(agentName, projectDir, wh)
 	coreImage := fmt.Sprintf("exitbox-%s-core", agentName)
 	cmd := container.Cmd(rt)
 
@@ -42,40 +62,25 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 		return err
 	}
 
-	// Load config for global profiles and user tools
-	cfg := config.LoadOrDefault()
-
-	// Compute global profiles (backfill from roles for old configs without profiles key)
-	globalProfiles := cfg.Profiles
-	if len(globalProfiles) == 0 && len(cfg.Roles) > 0 {
-		globalProfiles = wizard.ComputeProfiles(cfg.Roles, nil)
-	}
-
-	// Get per-project profiles and merge with global profiles
-	projectProfiles, err := profile.GetProjectProfiles(agentName, projectDir)
-	if err != nil {
-		ui.Warnf("Failed to load profiles: %v", err)
-	}
-	profiles := mergeProfiles(globalProfiles, projectProfiles)
-
-	// Build composite hash for cache detection
-	hashParts := strings.Join(profiles, ",")
-	if len(cfg.Tools.User) > 0 {
-		hashParts += ":" + strings.Join(cfg.Tools.User, ",")
-	}
-
-	if rt.ImageExists(imageName) {
-		// Check if core is newer
+	// Each workspace has its own image name. If it already exists, skip.
+	if !force && rt.ImageExists(imageName) {
+		// Still check if core is newer (e.g. agent version bump)
 		coreCreated, _ := rt.ImageInspect(coreImage, "{{.Created}}")
 		projectCreated, _ := rt.ImageInspect(imageName, "{{.Created}}")
-		if coreCreated != "" && projectCreated != "" && coreCreated > projectCreated {
-			ui.Info("Core image updated, rebuilding project image...")
-		} else {
-			cachedHash, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.profiles.hash"}}`)
-			if cachedHash == hashParts {
-				return nil
-			}
+		if coreCreated == "" || projectCreated == "" || coreCreated <= projectCreated {
+			return nil
 		}
+		ui.Info("Core image updated, rebuilding project image...")
+	}
+
+	// Resolve active workspace.
+	active, err := profile.ResolveActiveWorkspace(cfg, projectDir, workspaceOverride)
+	if err != nil {
+		ui.Warnf("Failed to resolve active workspace: %v", err)
+	}
+	var developmentProfiles []string
+	if active != nil {
+		developmentProfiles = append(developmentProfiles, active.Workspace.Development...)
 	}
 
 	ui.Infof("Building %s project image with %s...", agentName, cmd)
@@ -96,10 +101,10 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 		fmt.Fprintf(&df, "RUN apk add --no-cache %s\n\n", strings.Join(cfg.Tools.User, " "))
 	}
 
-	// Add profile installations
-	for _, p := range profiles {
+	// Add development profile installations from active workspace.
+	for _, p := range developmentProfiles {
 		if !profile.Exists(p) {
-			return fmt.Errorf("unknown profile '%s'. Run 'exitbox run <agent> profile list' for valid names", p)
+			return fmt.Errorf("unknown development profile '%s'. Run 'exitbox setup' to configure your development stack", p)
 		}
 		snippet := profile.DockerfileSnippet(p)
 		if snippet != "" {
@@ -114,14 +119,14 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// Switch back to non-root user
 	df.WriteString("USER user\n")
 
-	// Add label
-	fmt.Fprintf(&df, "\nLABEL exitbox.profiles.hash=\"%s\"\n", hashParts)
-
 	if err := os.WriteFile(dockerfilePath, []byte(df.String()), 0644); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 
 	args := buildArgs(cmd)
+	if force {
+		args = append(args, "--no-cache")
+	}
 	args = append(args,
 		"-t", imageName,
 		"-f", dockerfilePath,
@@ -134,23 +139,4 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 
 	ui.Successf("%s project image built", agentName)
 	return nil
-}
-
-// mergeProfiles combines global and per-project profiles, deduplicated, global first.
-func mergeProfiles(global, project []string) []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, p := range global {
-		if !seen[p] {
-			seen[p] = true
-			result = append(result, p)
-		}
-	}
-	for _, p := range project {
-		if !seen[p] {
-			seen[p] = true
-			result = append(result, p)
-		}
-	}
-	return result
 }

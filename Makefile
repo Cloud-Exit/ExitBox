@@ -14,7 +14,8 @@ vet:
 	go vet ./...
 
 lint:
-	golangci-lint run
+	go vet ./...
+	golint ./...
 
 clean:
 	rm -f $(BINARY)

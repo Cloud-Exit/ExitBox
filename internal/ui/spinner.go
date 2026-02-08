@@ -24,11 +24,12 @@ import (
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Spinner displays an animated spinner with a message.
+// Spinner displays an animated spinner with a message and elapsed time.
 type Spinner struct {
-	msg  string
-	stop chan struct{}
-	done sync.WaitGroup
+	msg       string
+	stop      chan struct{}
+	done      sync.WaitGroup
+	startTime time.Time
 }
 
 // NewSpinner creates a new spinner with the given message.
@@ -41,6 +42,7 @@ func NewSpinner(msg string) *Spinner {
 
 // Start begins the spinner animation in a goroutine.
 func (s *Spinner) Start() {
+	s.startTime = time.Now()
 	s.done.Add(1)
 	go func() {
 		defer s.done.Done()
@@ -55,15 +57,17 @@ func (s *Spinner) Start() {
 				return
 			case <-ticker.C:
 				frame := spinnerFrames[i%len(spinnerFrames)]
-				fmt.Printf("\r%s%s%s %s", Cyan, frame, NC, s.msg)
+				elapsed := int(time.Since(s.startTime).Seconds())
+				fmt.Printf("\r%s%s%s %s %s(%ds)%s", Cyan, frame, NC, s.msg, Dim, elapsed, NC)
 				i++
 			}
 		}
 	}()
 }
 
-// Stop halts the spinner and clears the line.
-func (s *Spinner) Stop() {
+// Stop halts the spinner, clears the line, and returns the elapsed duration.
+func (s *Spinner) Stop() time.Duration {
 	close(s.stop)
 	s.done.Wait()
+	return time.Since(s.startTime)
 }

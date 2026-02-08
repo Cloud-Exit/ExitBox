@@ -9,53 +9,152 @@
 package profile
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/config"
 )
 
-func TestGetProjectProfiles_NotExist(t *testing.T) {
-	profiles, err := GetProjectProfiles("claude", "/nonexistent/path")
-	if err != nil {
-		t.Errorf("expected nil error for nonexistent profiles, got %v", err)
+func TestResolveActiveWorkspace_Override(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Active: "personal",
+			Items: []config.Workspace{
+				{Name: "personal", Development: []string{"python"}},
+				{Name: "work", Development: []string{"go"}},
+			},
+		},
 	}
-	if profiles != nil {
-		t.Errorf("expected nil profiles for nonexistent path, got %v", profiles)
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "work" {
+		t.Fatalf("expected work, got %s", active.Workspace.Name)
 	}
 }
 
-func TestGetProjectProfiles_ValidFile(t *testing.T) {
-	dir := t.TempDir()
-	agentDir := filepath.Join(dir, ".exitbox", "claude")
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	content := "profiles:\n  - python\n  - node\n"
-	if err := os.WriteFile(filepath.Join(agentDir, "profiles.yaml"), []byte(content), 0644); err != nil {
-		t.Fatal(err)
+func TestResolveActiveWorkspace_OverrideNotFound(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "personal"},
+			},
+		},
 	}
 
-	profiles, err := GetProjectProfiles("claude", dir)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if len(profiles) != 2 || profiles[0] != "python" || profiles[1] != "node" {
-		t.Errorf("unexpected profiles: %v", profiles)
-	}
-}
-
-func TestGetProjectProfiles_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	agentDir := filepath.Join(dir, ".exitbox", "claude")
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(agentDir, "profiles.yaml"), []byte("{{invalid yaml"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := GetProjectProfiles("claude", dir)
+	_, err := ResolveActiveWorkspace(cfg, "/some/dir", "nonexistent")
 	if err == nil {
-		t.Error("expected error for invalid YAML, got nil")
+		t.Fatal("expected error for unknown workspace override")
+	}
+}
+
+func TestResolveActiveWorkspace_DirectoryScoped(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Active: "personal",
+			Items: []config.Workspace{
+				{Name: "personal", Development: []string{"python"}},
+				{Name: "project-x", Development: []string{"go"}, Directory: "/home/user/project-x"},
+			},
+		},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/home/user/project-x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Scope != ScopeDirectory || active.Workspace.Name != "project-x" {
+		t.Fatalf("expected directory/project-x, got %s/%s", active.Scope, active.Workspace.Name)
+	}
+}
+
+func TestResolveActiveWorkspace_DefaultFallback(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "personal"},
+				{Name: "work"},
+			},
+		},
+		Settings: config.SettingsConfig{
+			DefaultWorkspace: "work",
+		},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "work" {
+		t.Fatalf("expected work, got %s", active.Workspace.Name)
+	}
+}
+
+func TestResolveActiveWorkspace_FirstFallback(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "first"},
+				{Name: "second"},
+			},
+		},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "first" {
+		t.Fatalf("expected first, got %s", active.Workspace.Name)
+	}
+}
+
+func TestResolveActiveWorkspace_Empty(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active != nil {
+		t.Fatalf("expected nil, got %+v", active)
+	}
+}
+
+func TestResolveActiveWorkspace_ActiveFallback(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Active: "second",
+			Items: []config.Workspace{
+				{Name: "first"},
+				{Name: "second"},
+			},
+		},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "second" {
+		t.Fatalf("expected second, got %s", active.Workspace.Name)
 	}
 }

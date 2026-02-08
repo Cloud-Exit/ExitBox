@@ -29,9 +29,11 @@ type Step int
 
 const (
 	stepWelcome Step = iota
+	stepWorkspaceSelect
 	stepRole
 	stepLanguage
 	stepTools
+	stepProfile
 	stepAgents
 	stepSettings
 	stepReview
@@ -40,24 +42,36 @@ const (
 
 // State holds accumulated user selections across wizard steps.
 type State struct {
-	Roles          []string
-	Languages      []string
-	ToolCategories []string
-	Agents         []string
-	AutoUpdate     bool
-	StatusBar      bool
+	Roles               []string
+	Languages           []string
+	ToolCategories      []string
+	WorkspaceName       string
+	MakeDefault         bool
+	Agents              []string
+	AutoUpdate          bool
+	StatusBar           bool
+	EnableFirewall      bool
+	AutoResume          bool
+	PassEnv             bool
+	ReadOnly            bool
+	OriginalDevelopment []string // non-nil when editing an existing workspace
 }
 
 // Model is the root bubbletea model for the wizard.
 type Model struct {
-	step      Step
-	state     State
-	cursor    int
-	checked   map[string]bool
-	width     int
-	height    int
-	cancelled bool
-	confirmed bool
+	step           Step
+	state          State
+	cursor         int
+	checked        map[string]bool
+	workspaceInput string
+	workspaceOnly  bool
+	workspaces       []config.Workspace // populated when >1 workspace exists
+	defaultWorkspace string             // the config's default workspace name
+	editingExisting  bool               // true when editing an existing workspace (skip role→lang override)
+	width          int
+	height         int
+	cancelled      bool
+	confirmed      bool
 }
 
 // NewModel creates a new wizard model with defaults.
@@ -66,9 +80,15 @@ func NewModel() Model {
 	// Default settings to on
 	checked["setting:auto_update"] = true
 	checked["setting:status_bar"] = true
+	checked["setting:make_default"] = true
+	checked["setting:firewall"] = true
+	checked["setting:auto_resume"] = true
+	checked["setting:pass_env"] = true
+	checked["setting:read_only"] = false
 	return Model{
-		step:    stepWelcome,
-		checked: checked,
+		step:           stepWelcome,
+		checked:        checked,
+		workspaceInput: "default",
 	}
 }
 
@@ -107,11 +127,20 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		}
 	}
 
-	// Pre-check languages from saved profiles (or fall back to role inference)
-	if len(cfg.Profiles) > 0 {
-		profileSet := make(map[string]bool, len(cfg.Profiles))
-		for _, p := range cfg.Profiles {
-			profileSet[p] = true
+	// Pre-check languages from saved workspaces (or fall back to role inference)
+	activeWorkspaceName := cfg.Workspaces.Active
+	if activeWorkspaceName == "" && len(cfg.Workspaces.Items) > 0 {
+		activeWorkspaceName = cfg.Workspaces.Items[0].Name
+	}
+	if activeWorkspaceName != "" {
+		profileSet := make(map[string]bool)
+		for _, w := range cfg.Workspaces.Items {
+			if w.Name == activeWorkspaceName {
+				for _, p := range w.Development {
+					profileSet[p] = true
+				}
+				break
+			}
 		}
 		for _, l := range AllLanguages {
 			if profileSet[l.Profile] {
@@ -131,11 +160,58 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	// Settings
 	checked["setting:auto_update"] = cfg.Settings.AutoUpdate
 	checked["setting:status_bar"] = cfg.Settings.StatusBar
+	checked["setting:make_default"] = cfg.Settings.DefaultWorkspace == activeWorkspaceNameOrDefault(activeWorkspaceName)
+	checked["setting:firewall"] = !cfg.Settings.DefaultFlags.NoFirewall
+	checked["setting:auto_resume"] = cfg.Settings.DefaultFlags.AutoResume
+	checked["setting:pass_env"] = !cfg.Settings.DefaultFlags.NoEnv
+	checked["setting:read_only"] = cfg.Settings.DefaultFlags.ReadOnly
+
+	startStep := stepWelcome
+	var workspaces []config.Workspace
+	activeCursor := 0
+	if len(cfg.Workspaces.Items) > 1 {
+		startStep = stepWorkspaceSelect
+		workspaces = cfg.Workspaces.Items
+		for i, w := range workspaces {
+			if w.Name == activeWorkspaceNameOrDefault(activeWorkspaceName) {
+				activeCursor = i
+				break
+			}
+		}
+	}
 
 	return Model{
-		step:    stepWelcome,
-		checked: checked,
+		step:             startStep,
+		cursor:           activeCursor,
+		checked:          checked,
+		workspaceInput:   activeWorkspaceNameOrDefault(activeWorkspaceName),
+		workspaces:       workspaces,
+		defaultWorkspace: cfg.Settings.DefaultWorkspace,
 	}
+}
+
+// NewWorkspaceModelFromConfig creates a blank wizard model for creating one workspace.
+// It intentionally does not inherit role/language/settings selections.
+func NewWorkspaceModelFromConfig(_ *config.Config, workspaceName string) Model {
+	m := NewModel()
+	m.workspaceOnly = true
+	m.state.MakeDefault = false
+	m.checked["setting:make_default"] = false
+	m.checked["setting:auto_update"] = false
+	m.checked["setting:status_bar"] = false
+	m.state.Roles = nil
+	m.state.Languages = nil
+	m.state.ToolCategories = nil
+	m.state.Agents = nil
+	m.state.AutoUpdate = false
+	m.state.StatusBar = false
+	if strings.TrimSpace(workspaceName) != "" {
+		m.workspaceInput = strings.TrimSpace(workspaceName)
+		m.state.WorkspaceName = m.workspaceInput
+	} else {
+		m.workspaceInput = ""
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -155,7 +231,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelled = true
 			return m, tea.Quit
 		case "q":
-			if m.step == stepWelcome {
+			if m.step == stepWelcome || m.step == stepWorkspaceSelect {
 				m.cancelled = true
 				return m, tea.Quit
 			}
@@ -165,12 +241,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.step {
 	case stepWelcome:
 		return m.updateWelcome(msg)
+	case stepWorkspaceSelect:
+		return m.updateWorkspaceSelect(msg)
 	case stepRole:
 		return m.updateRole(msg)
 	case stepLanguage:
 		return m.updateLanguage(msg)
 	case stepTools:
 		return m.updateTools(msg)
+	case stepProfile:
+		return m.updateProfile(msg)
 	case stepAgents:
 		return m.updateAgents(msg)
 	case stepSettings:
@@ -186,12 +266,16 @@ func (m Model) View() string {
 	switch m.step {
 	case stepWelcome:
 		return m.viewWelcome()
+	case stepWorkspaceSelect:
+		return m.viewWorkspaceSelect()
 	case stepRole:
 		return m.viewRole()
 	case stepLanguage:
 		return m.viewLanguage()
 	case stepTools:
 		return m.viewTools()
+	case stepProfile:
+		return m.viewProfile()
 	case stepAgents:
 		return m.viewAgents()
 	case stepSettings:
@@ -254,6 +338,13 @@ func wrapWords(words []string, indent string, maxWidth int) string {
 	return b.String()
 }
 
+func activeWorkspaceNameOrDefault(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "default"
+	}
+	return name
+}
+
 // --- Welcome Step ---
 
 func (m Model) updateWelcome(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -284,6 +375,139 @@ const logo = `  _____      _ _   ____
  | |___ >  <| | |_| |_) | (_) >  <
  |_____/_/\_\_|\__|____/ \___/_/\_\`
 
+// --- Workspace Select Step (single-select) ---
+
+func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Items: one per workspace + "Create new workspace" at the end
+	itemCount := len(m.workspaces) + 1
+
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < itemCount-1 {
+				m.cursor++
+			}
+		case "enter":
+			if m.cursor < len(m.workspaces) {
+				// Selected an existing workspace — re-populate from it
+				ws := m.workspaces[m.cursor]
+				m.workspaceInput = ws.Name
+				m.state.WorkspaceName = ws.Name
+				m.editingExisting = true
+				// Preserve original development stack for delta-based updates
+				m.state.OriginalDevelopment = make([]string, len(ws.Development))
+				copy(m.state.OriginalDevelopment, ws.Development)
+
+				devSet := make(map[string]bool)
+				for _, p := range ws.Development {
+					devSet[p] = true
+				}
+
+				// Re-check roles: only check roles whose profiles all exist
+				// in this workspace's development stack.
+				for _, role := range Roles {
+					match := len(role.Profiles) > 0
+					for _, p := range role.Profiles {
+						if !devSet[p] {
+							match = false
+							break
+						}
+					}
+					m.checked["role:"+role.Name] = match
+				}
+
+				// Re-populate language checks from this workspace's dev stack
+				for _, l := range AllLanguages {
+					m.checked["lang:"+l.Name] = devSet[l.Profile]
+				}
+
+				// Re-check tool categories: only check categories whose
+				// packages overlap with the workspace's tool set.
+				// (Tools are global, but we infer from development stack context.)
+				for _, tc := range AllToolCategories {
+					match := false
+					for _, role := range Roles {
+						if m.checked["role:"+role.Name] {
+							for _, rt := range role.ToolCategories {
+								if rt == tc.Name {
+									match = true
+									break
+								}
+							}
+						}
+						if match {
+							break
+						}
+					}
+					m.checked["tool:"+tc.Name] = match
+				}
+
+				// Only check "make default" if this workspace is already the default.
+				m.checked["setting:make_default"] = ws.Name == m.defaultWorkspace
+			} else {
+				// "Create new workspace" — clear workspace input and languages
+				m.workspaceInput = ""
+				m.state.WorkspaceName = ""
+				m.editingExisting = false
+				m.state.OriginalDevelopment = nil
+				m.checked["setting:make_default"] = false
+				for _, l := range AllLanguages {
+					m.checked["lang:"+l.Name] = false
+				}
+			}
+			m.step = stepRole
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewWorkspaceSelect() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(logo))
+	b.WriteString("\n\n")
+	b.WriteString(titleStyle.Render("ExitBox Setup — Select Workspace"))
+	b.WriteString("\n\n")
+	b.WriteString("Which workspace do you want to configure?\n\n")
+
+	for i, ws := range m.workspaces {
+		cursor := "  "
+		if m.cursor == i {
+			cursor = cursorStyle.Render("> ")
+		}
+		paddedName := fmt.Sprintf("%-20s", ws.Name)
+		desc := ""
+		if len(ws.Development) > 0 {
+			desc = strings.Join(ws.Development, ", ")
+		} else {
+			desc = "no development stack"
+		}
+		if m.cursor == i {
+			paddedName = selectedStyle.Render(paddedName)
+		}
+		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, paddedName, dimStyle.Render(desc)))
+	}
+
+	// "Create new workspace" option
+	cursor := "  "
+	createIdx := len(m.workspaces)
+	if m.cursor == createIdx {
+		cursor = cursorStyle.Render("> ")
+	}
+	label := "+ Create new workspace"
+	if m.cursor == createIdx {
+		label = selectedStyle.Render(label)
+	}
+	b.WriteString(fmt.Sprintf("\n%s%s\n", cursor, label))
+
+	b.WriteString(helpStyle.Render("\nEnter to select, q to quit"))
+	return b.String()
+}
+
 // --- Role Step (multi-select) ---
 
 func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -302,12 +526,16 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checked[k] = !m.checked[k]
 		case "enter":
 			m.state.Roles = nil
-			// Pre-check languages and tools from all selected roles
+			// Pre-check languages and tools from all selected roles.
+			// When editing an existing workspace, skip language overrides
+			// so the workspace's development stack is preserved.
 			for _, role := range Roles {
 				if m.checked["role:"+role.Name] {
 					m.state.Roles = append(m.state.Roles, role.Name)
-					for _, l := range role.Languages {
-						m.checked["lang:"+l] = true
+					if !m.editingExisting {
+						for _, l := range role.Languages {
+							m.checked["lang:"+l] = true
+						}
 					}
 					for _, t := range role.ToolCategories {
 						m.checked["tool:"+t] = true
@@ -317,7 +545,12 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepLanguage
 			m.cursor = 0
 		case "esc":
-			m.step = stepWelcome
+			if len(m.workspaces) > 1 {
+				m.step = stepWorkspaceSelect
+			} else {
+				m.step = stepWelcome
+			}
+			m.cursor = 0
 		}
 	}
 	return m, nil
@@ -325,9 +558,17 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewRole() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 1/6 — What kind of developer are you?"))
+	if m.workspaceOnly {
+		b.WriteString(titleStyle.Render("Step 1/3 — What kind of developer are you?"))
+	} else {
+		b.WriteString(titleStyle.Render("Step 1/7 — What kind of developer are you?"))
+	}
 	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render("Select all that apply. Space to toggle.\n"))
+	if m.editingExisting {
+		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Workspace: %s — Select all that apply. Space to toggle.\n", m.workspaceInput)))
+	} else {
+		b.WriteString(subtitleStyle.Render("Select all that apply. Space to toggle.\n"))
+	}
 	b.WriteString("\n")
 
 	for i, role := range Roles {
@@ -374,7 +615,11 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.Languages = append(m.state.Languages, l.Name)
 				}
 			}
-			m.step = stepTools
+			if m.workspaceOnly {
+				m.step = stepReview
+			} else {
+				m.step = stepTools
+			}
 			m.cursor = 0
 		case "esc":
 			m.step = stepRole
@@ -386,9 +631,17 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewLanguage() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 2/6 — Which languages do you use?"))
+	if m.workspaceOnly {
+		b.WriteString(titleStyle.Render("Step 2/3 — Which languages do you use?"))
+	} else {
+		b.WriteString(titleStyle.Render("Step 2/7 — Which languages do you use?"))
+	}
 	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render("These become your default profile, installed in all projects. Space to toggle.\n"))
+	if m.editingExisting {
+		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Workspace: %s — These become the development stack. Space to toggle.\n", m.workspaceInput)))
+	} else {
+		b.WriteString(subtitleStyle.Render("These become the development stack for your workspace. Space to toggle.\n"))
+	}
 	b.WriteString("\n")
 
 	for i, lang := range AllLanguages {
@@ -434,7 +687,7 @@ func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
 				}
 			}
-			m.step = stepAgents
+			m.step = stepProfile
 			m.cursor = 0
 		case "esc":
 			m.step = stepLanguage
@@ -446,7 +699,11 @@ func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewTools() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 3/6 — Which tool categories do you need?"))
+	if m.workspaceOnly {
+		b.WriteString(titleStyle.Render("Step 3/3 — Which tool categories do you need?"))
+	} else {
+		b.WriteString(titleStyle.Render("Step 3/7 — Which tool categories do you need?"))
+	}
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Pre-selected based on your role. Space to toggle.\n"))
 	b.WriteString("\n")
@@ -476,6 +733,58 @@ func (m Model) viewTools() string {
 	return b.String()
 }
 
+// --- Workspace Step ---
+
+func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+			case "enter":
+				name := strings.TrimSpace(m.workspaceInput)
+				if name == "" {
+					name = "default"
+				}
+				m.workspaceInput = name
+				m.state.WorkspaceName = name
+				if m.workspaceOnly {
+					m.state.MakeDefault = false
+				}
+				m.step = stepAgents
+				m.cursor = 0
+		case "esc":
+			m.step = stepTools
+			m.cursor = 0
+		case "backspace", "ctrl+h":
+			if len(m.workspaceInput) > 0 {
+				m.workspaceInput = m.workspaceInput[:len(m.workspaceInput)-1]
+			}
+		default:
+			s := key.String()
+			if len(s) == 1 {
+				c := s[0]
+				isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+				if isAlphaNum || c == '-' || c == '_' {
+					m.workspaceInput += s
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewProfile() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Step 4/7 — Name your workspace"))
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render("This workspace stores development stacks and separate agent configs.\n"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  Workspace name: %s\n", selectedStyle.Render(m.workspaceInput+"█")))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Examples: personal, work, client-a"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("\nType to edit, Enter to confirm, Esc to go back"))
+	return b.String()
+}
+
 // --- Agents Step (multi-select) ---
 
 func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -502,7 +811,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepSettings
 			m.cursor = 0
 		case "esc":
-			m.step = stepTools
+			m.step = stepProfile
 			m.cursor = 0
 		}
 	}
@@ -511,7 +820,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewAgents() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 4/6 — Which agents do you want to enable?"))
+	b.WriteString(titleStyle.Render("Step 5/7 — Which agents do you want to enable?"))
 	b.WriteString("\n\n")
 
 	for i, agent := range AllAgents {
@@ -543,6 +852,11 @@ var settingsOptions = []struct {
 }{
 	{"setting:auto_update", "Auto-update agents", "Check for new versions on every launch (slows down startup)"},
 	{"setting:status_bar", "Status bar", "Show a status bar with version and agent info during sessions"},
+	{"setting:make_default", "Make workspace default", "Use this workspace by default in new sessions"},
+	{"setting:firewall", "Network firewall", "Restrict outbound network to allowlisted domains only"},
+	{"setting:auto_resume", "Auto-resume sessions", "Automatically resume the last agent conversation"},
+	{"setting:pass_env", "Pass host environment", "Forward host environment variables into the container"},
+	{"setting:read_only", "Read-only workspace", "Mount workspace as read-only (agents cannot modify files)"},
 }
 
 func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -562,6 +876,11 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.state.AutoUpdate = m.checked["setting:auto_update"]
 			m.state.StatusBar = m.checked["setting:status_bar"]
+			m.state.MakeDefault = m.checked["setting:make_default"]
+			m.state.EnableFirewall = m.checked["setting:firewall"]
+			m.state.AutoResume = m.checked["setting:auto_resume"]
+			m.state.PassEnv = m.checked["setting:pass_env"]
+			m.state.ReadOnly = m.checked["setting:read_only"]
 			m.step = stepReview
 			m.cursor = 0
 		case "esc":
@@ -574,7 +893,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewSettings() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 5/6 — Settings"))
+	b.WriteString(titleStyle.Render("Step 6/7 — Settings"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Space to toggle. Use 'exitbox rebuild <agent>' to update manually.\n"))
 	b.WriteString("\n")
@@ -588,11 +907,11 @@ func (m Model) viewSettings() string {
 		if m.checked[opt.Key] {
 			check = selectedStyle.Render("[x]")
 		}
-		label := opt.Label
+		paddedLabel := fmt.Sprintf("%-25s", opt.Label)
 		if m.cursor == i {
-			label = selectedStyle.Render(label)
+			paddedLabel = selectedStyle.Render(paddedLabel)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %-25s %s\n", cursor, check, label, dimStyle.Render(opt.Description)))
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedLabel, dimStyle.Render(opt.Description)))
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
@@ -608,8 +927,14 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.confirmed = true
 			m.step = stepDone
 			return m, tea.Quit
+		case "d":
+			m.state.MakeDefault = !m.state.MakeDefault
 		case "esc":
-			m.step = stepSettings
+			if m.workspaceOnly {
+				m.step = stepLanguage
+			} else {
+				m.step = stepSettings
+			}
 			m.cursor = 0
 		case "q", "n":
 			m.cancelled = true
@@ -620,8 +945,12 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) viewReview() string {
+	if m.workspaceOnly {
+		return m.viewWorkspaceOnlyReview()
+	}
+
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 6/6 — Review your configuration"))
+	b.WriteString(titleStyle.Render("Step 7/7 — Review your configuration"))
 	b.WriteString("\n\n")
 
 	if len(m.state.Roles) > 0 {
@@ -641,6 +970,8 @@ func (m Model) viewReview() string {
 	} else {
 		b.WriteString(fmt.Sprintf("  Tools:      %s\n", dimStyle.Render("none")))
 	}
+
+	b.WriteString(fmt.Sprintf("  Workspace:  %s\n", selectedStyle.Render(activeWorkspaceNameOrDefault(m.state.WorkspaceName))))
 
 	if len(m.state.Agents) > 0 {
 		names := make([]string, len(m.state.Agents))
@@ -667,11 +998,41 @@ func (m Model) viewReview() string {
 	}
 	b.WriteString(fmt.Sprintf("  Auto-update:  %s\n", autoUpdateStr))
 	b.WriteString(fmt.Sprintf("  Status bar:   %s\n", statusBarStr))
+	defaultStr := dimStyle.Render("no")
+	if m.state.MakeDefault {
+		defaultStr = successStyle.Render("yes")
+	}
+	b.WriteString(fmt.Sprintf("  Make default: %s\n", defaultStr))
+	firewallStr := successStyle.Render("yes")
+	if !m.state.EnableFirewall {
+		firewallStr = dimStyle.Render("no")
+	}
+	b.WriteString(fmt.Sprintf("  Firewall:     %s\n", firewallStr))
+	autoResumeStr := successStyle.Render("yes")
+	if !m.state.AutoResume {
+		autoResumeStr = dimStyle.Render("no")
+	}
+	b.WriteString(fmt.Sprintf("  Auto-resume:  %s\n", autoResumeStr))
+	passEnvStr := successStyle.Render("yes")
+	if !m.state.PassEnv {
+		passEnvStr = dimStyle.Render("no")
+	}
+	b.WriteString(fmt.Sprintf("  Pass env:     %s\n", passEnvStr))
+	readOnlyStr := dimStyle.Render("no")
+	if m.state.ReadOnly {
+		readOnlyStr = successStyle.Render("yes")
+	}
+	b.WriteString(fmt.Sprintf("  Read-only:    %s\n", readOnlyStr))
 
-	profiles := ComputeProfiles(m.state.Roles, m.state.Languages)
+	var profiles []string
+	if m.state.OriginalDevelopment != nil {
+		profiles = applyLanguageDelta(m.state.OriginalDevelopment, m.state.Languages)
+	} else {
+		profiles = ComputeProfiles(m.state.Roles, m.state.Languages)
+	}
 	if len(profiles) > 0 {
-		b.WriteString(fmt.Sprintf("\n  Default profile: %s\n", selectedStyle.Render(strings.Join(profiles, ", "))))
-		b.WriteString(dimStyle.Render("  (installed in all projects; override per-project with 'exitbox run <agent> profile')"))
+		b.WriteString(fmt.Sprintf("\n  Development stack: %s\n", selectedStyle.Render(strings.Join(profiles, ", "))))
+		b.WriteString(dimStyle.Render("  (saved inside the workspace)"))
 		b.WriteString("\n")
 	}
 
@@ -684,6 +1045,49 @@ func (m Model) viewReview() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter to confirm, Esc to go back, q to cancel"))
+	b.WriteString(helpStyle.Render("Enter to confirm, d to toggle default, Esc to go back, q to cancel"))
+	return b.String()
+}
+
+func (m Model) viewWorkspaceOnlyReview() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Step 3/3 — Review new workspace"))
+	b.WriteString("\n\n")
+
+	name := strings.TrimSpace(m.state.WorkspaceName)
+	if name == "" {
+		name = strings.TrimSpace(m.workspaceInput)
+	}
+	if name == "" {
+		name = "default"
+	}
+	b.WriteString(fmt.Sprintf("  Workspace:  %s\n", selectedStyle.Render(name)))
+
+	if len(m.state.Roles) > 0 {
+		b.WriteString(fmt.Sprintf("  Roles:      %s\n", successStyle.Render(strings.Join(m.state.Roles, ", "))))
+	} else {
+		b.WriteString(fmt.Sprintf("  Roles:      %s\n", dimStyle.Render("none")))
+	}
+
+	if len(m.state.Languages) > 0 {
+		b.WriteString(fmt.Sprintf("  Languages:  %s\n", selectedStyle.Render(strings.Join(m.state.Languages, ", "))))
+	} else {
+		b.WriteString(fmt.Sprintf("  Languages:  %s\n", dimStyle.Render("none")))
+	}
+
+	dev := ComputeProfiles(m.state.Roles, m.state.Languages)
+	if len(dev) > 0 {
+		b.WriteString(fmt.Sprintf("  Development: %s\n", selectedStyle.Render(strings.Join(dev, ", "))))
+	} else {
+		b.WriteString(fmt.Sprintf("  Development: %s\n", dimStyle.Render("none")))
+	}
+	defaultStr := dimStyle.Render("no")
+	if m.state.MakeDefault {
+		defaultStr = successStyle.Render("yes")
+	}
+	b.WriteString(fmt.Sprintf("  Make default: %s\n", defaultStr))
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Enter to create workspace, d to toggle default, Esc to go back, q to cancel"))
 	return b.String()
 }
