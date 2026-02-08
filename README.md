@@ -9,6 +9,12 @@
 
 # ExitBox
 
+[![CI](https://github.com/Cloud-Exit/ExitBox/actions/workflows/test.yml/badge.svg)](https://github.com/Cloud-Exit/ExitBox/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Cloud-Exit/ExitBox/main/.github/badges/coverage.json)](https://github.com/Cloud-Exit/ExitBox/actions/workflows/test.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cloud-exit/exitbox)](https://goreportcard.com/report/github.com/cloud-exit/exitbox)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Release](https://img.shields.io/github/v/release/Cloud-Exit/ExitBox)](https://github.com/Cloud-Exit/ExitBox/releases/latest)
+
 **Multi-Agent Container Sandbox** by [Cloud Exit](https://cloud-exit.com)
 
 Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers with defense-in-depth security.
