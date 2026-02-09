@@ -51,6 +51,9 @@ type Options struct {
 	Verbose           bool
 	StatusBar         bool
 	Version           string
+	Ollama            bool
+	Memory            string
+	CPUs              string
 }
 
 // AgentContainer runs an agent container interactively.
@@ -70,6 +73,12 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Podman-specific
 	if cmd == "podman" {
 		args = append(args, "--userns=keep-id", "--security-opt=no-new-privileges")
+	}
+
+	// Ollama mode: route traffic through the firewall to host Ollama.
+	if opts.Ollama {
+		opts.AllowURLs = append(opts.AllowURLs, "host.docker.internal")
+		ui.Infof("Ollama mode: routing traffic through firewall to host")
 	}
 
 	// Network setup
@@ -113,7 +122,15 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	}()
 
 	// Resource limits
-	args = append(args, "--memory=8g", "--cpus=4")
+	memory := "8g"
+	if opts.Memory != "" {
+		memory = opts.Memory
+	}
+	cpus := "4"
+	if opts.CPUs != "" {
+		cpus = opts.CPUs
+	}
+	args = append(args, "--memory="+memory, "--cpus="+cpus)
 
 	// Mount workspace
 	mountMode := ""
@@ -201,6 +218,9 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	if opts.ResumeToken != "" {
 		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
 	}
+	if opts.Ollama {
+		args = append(args, ollamaEnvVars(opts.Agent)...)
+	}
 
 	// Security options
 	args = append(args,
@@ -261,6 +281,28 @@ func getEnvOr(key, def string) string {
 	return def
 }
 
+// ollamaEnvVars returns the container env flags to point an agent at host Ollama.
+func ollamaEnvVars(agent string) []string {
+	ollamaURL := "http://host.docker.internal:11434"
+	switch agent {
+	case "claude":
+		return []string{
+			"-e", "ANTHROPIC_BASE_URL=" + ollamaURL,
+			"-e", "ANTHROPIC_AUTH_TOKEN=ollama",
+			"-e", "ANTHROPIC_API_KEY=",
+		}
+	case "codex":
+		return []string{
+			"-e", "OPENAI_BASE_URL=" + ollamaURL + "/v1",
+		}
+	case "opencode":
+		return []string{
+			"-e", "OLLAMA_HOST=" + ollamaURL,
+		}
+	}
+	return nil
+}
+
 func isReservedEnvVar(key string) bool {
 	reserved := map[string]bool{
 		"EXITBOX_AGENT":           true,
@@ -280,6 +322,11 @@ func isReservedEnvVar(key string) bool {
 		"HTTPS_PROXY":             true,
 		"no_proxy":                true,
 		"NO_PROXY":                true,
+		"OLLAMA_HOST":             true,
+		"ANTHROPIC_BASE_URL":      true,
+		"ANTHROPIC_AUTH_TOKEN":    true,
+		"ANTHROPIC_API_KEY":       true,
+		"OPENAI_BASE_URL":        true,
 	}
 	return reserved[key]
 }

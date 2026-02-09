@@ -25,6 +25,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/static"
 )
 
 // BuildSquid builds the exitbox-squid proxy image.
@@ -40,20 +41,32 @@ func BuildSquid(ctx context.Context, rt container.Runtime, force bool) error {
 		ui.Infof("Squid image version mismatch (%s != %s). Rebuilding...", v, Version)
 	}
 
+	// For release versions, try pulling the pre-built squid image from GHCR.
+	if isReleaseVersion(Version) {
+		remoteRef := SquidImageRegistry + ":" + Version
+		if err := pullImage(rt, remoteRef, "Pulling Squid image..."); err == nil {
+			if err := container.TagImage(rt, remoteRef, imageName); err == nil {
+				ui.Success("Squid image ready (from registry)")
+				return nil
+			}
+			ui.Warnf("Failed to tag squid image, building locally")
+		} else {
+			ui.Warnf("Could not pull %s, building locally", remoteRef)
+		}
+	}
+
+	// Full local build (dev versions or when pull fails).
+	return buildSquidFull(rt, cmd, imageName)
+}
+
+// buildSquidFull builds the squid image locally from the embedded Dockerfile.
+func buildSquidFull(rt container.Runtime, cmd, imageName string) error {
 	ui.Info("Building Squid proxy image...")
 
 	buildCtx := filepath.Join(config.Cache, "build-squid")
 	_ = os.MkdirAll(buildCtx, 0755)
 
-	dockerfile := fmt.Sprintf(`FROM alpine:3.21
-ARG EXITBOX_VERSION
-RUN apk add --no-cache squid socat ripgrep python3
-RUN mkdir -p /etc/squid
-LABEL exitbox.version="%s"
-CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
-`, Version)
-
-	if err := os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), static.DockerfileSquid, 0644); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
 

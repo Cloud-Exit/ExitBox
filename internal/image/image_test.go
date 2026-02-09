@@ -242,3 +242,39 @@ func TestWorkspaceHash_IncludesSessionTools(t *testing.T) {
 		t.Error("WorkspaceHash should differ when SessionTools are set")
 	}
 }
+
+func TestIsReleaseVersion(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"v3.2.0", true},
+		{"v1.0.0", true},
+		{"v0.1.0-rc1", true},
+		{"3.2.0", false},
+		{"latest", false},
+		{"", false},
+		{"dev", false},
+	}
+	for _, tc := range tests {
+		got := isReleaseVersion(tc.version)
+		if got != tc.want {
+			t.Errorf("isReleaseVersion(%q) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+}
+
+func TestRegistryConstants(t *testing.T) {
+	if !strings.HasPrefix(BaseImageRegistry, "ghcr.io/") {
+		t.Errorf("BaseImageRegistry = %q, want ghcr.io/ prefix", BaseImageRegistry)
+	}
+	if !strings.HasPrefix(SquidImageRegistry, "ghcr.io/") {
+		t.Errorf("SquidImageRegistry = %q, want ghcr.io/ prefix", SquidImageRegistry)
+	}
+	if strings.HasSuffix(BaseImageRegistry, "/") {
+		t.Errorf("BaseImageRegistry = %q, should not end with /", BaseImageRegistry)
+	}
+	if strings.HasSuffix(SquidImageRegistry, "/") {
+		t.Errorf("SquidImageRegistry = %q, should not end with /", SquidImageRegistry)
+	}
+}

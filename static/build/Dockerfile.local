@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# ==============================================================================
+# ExitBox Local Intermediary (User Creation + exitbox-allow)
+# Thin layer on top of the published base image
+# ==============================================================================
+
+ARG BASE_IMAGE=exitbox-base-published
+FROM ${BASE_IMAGE}
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USERNAME=user
+
+ENV HOME=/home/${USERNAME} \
+    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
+
+# Create non-root user (handle GID/UID conflicts, e.g. macOS GID 20 = Alpine's dialout)
+RUN existing_group=$(getent group ${GROUP_ID} | cut -d: -f1) && \
+    if [ -n "$existing_group" ] && [ "$existing_group" != "${USERNAME}" ]; then \
+        delgroup "$existing_group" 2>/dev/null || true; \
+    fi && \
+    existing_user=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    if [ -n "$existing_user" ] && [ "$existing_user" != "${USERNAME}" ]; then \
+        deluser "$existing_user" 2>/dev/null || true; \
+    fi && \
+    addgroup -g ${GROUP_ID} ${USERNAME} && \
+    adduser -u ${USER_ID} -G ${USERNAME} -s /bin/bash -h /home/${USERNAME} -D ${USERNAME} && \
+    mkdir -p /home/${USERNAME}/.local/bin && \
+    mkdir -p /home/${USERNAME}/.config && \
+    mkdir -p /home/${USERNAME}/.cache && \
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+
+# Set up workspace
+RUN mkdir -p /workspace && chown ${USERNAME}:${USERNAME} /workspace

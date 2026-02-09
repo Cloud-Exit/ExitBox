@@ -7,9 +7,6 @@
 FROM alpine:3.21
 
 # Build arguments
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-ARG USERNAME=user
 ARG DELTA_VERSION=0.18.2
 ARG YQ_VERSION=4.52.2
 ARG TARGETARCH=x86_64
@@ -17,9 +14,7 @@ ARG EXITBOX_VERSION=3.2.0
 
 # Environment variables
 ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    HOME=/home/${USERNAME} \
-    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
+    LC_ALL=C.UTF-8
 
 # Install base packages
 RUN --mount=type=cache,target=/var/cache/apk \
@@ -75,25 +70,6 @@ RUN mkdir -p /usr/local/bin && \
     tar -xzf /tmp/delta.tar.gz -C /tmp && \
     mv /tmp/delta-*/delta /usr/local/bin/ && \
     rm -rf /tmp/delta*
-
-# Create non-root user (handle GID/UID conflicts, e.g. macOS GID 20 = Alpine's dialout)
-RUN existing_group=$(getent group ${GROUP_ID} | cut -d: -f1) && \
-    if [ -n "$existing_group" ] && [ "$existing_group" != "${USERNAME}" ]; then \
-        delgroup "$existing_group" 2>/dev/null || true; \
-    fi && \
-    existing_user=$(getent passwd ${USER_ID} | cut -d: -f1) && \
-    if [ -n "$existing_user" ] && [ "$existing_user" != "${USERNAME}" ]; then \
-        deluser "$existing_user" 2>/dev/null || true; \
-    fi && \
-    addgroup -g ${GROUP_ID} ${USERNAME} && \
-    adduser -u ${USER_ID} -G ${USERNAME} -s /bin/bash -h /home/${USERNAME} -D ${USERNAME} && \
-    mkdir -p /home/${USERNAME}/.local/bin && \
-    mkdir -p /home/${USERNAME}/.config && \
-    mkdir -p /home/${USERNAME}/.cache && \
-    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
-
-# Set up workspace
-RUN mkdir -p /workspace && chown ${USERNAME}:${USERNAME} /workspace
 
 # Copy entrypoint
 COPY docker-entrypoint /usr/local/bin/docker-entrypoint

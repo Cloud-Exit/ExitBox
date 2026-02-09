@@ -75,10 +75,12 @@ type SettingsConfig struct {
 
 // DefaultFlags holds the default CLI flag values.
 type DefaultFlags struct {
-	NoFirewall bool `yaml:"no_firewall"`
-	ReadOnly   bool `yaml:"read_only"`
-	NoEnv      bool `yaml:"no_env"`
-	AutoResume bool `yaml:"auto_resume"`
+	NoFirewall bool   `yaml:"no_firewall"`
+	ReadOnly   bool   `yaml:"read_only"`
+	NoEnv      bool   `yaml:"no_env"`
+	AutoResume bool   `yaml:"auto_resume"`
+	Memory     string `yaml:"memory,omitempty"`
+	CPUs       string `yaml:"cpus,omitempty"`
 }
 
 // Allowlist is the domain allowlist (allowlist.yaml).

@@ -22,6 +22,12 @@ import _ "embed"
 //go:embed build/Dockerfile.base
 var DockerfileBase []byte
 
+//go:embed build/Dockerfile.local
+var DockerfileLocal []byte
+
+//go:embed build/Dockerfile.squid
+var DockerfileSquid []byte
+
 //go:embed build/docker-entrypoint
 var DockerEntrypoint []byte
 

@@ -61,12 +61,16 @@ Flags (passed after the agent name):
   -t, --tools PKG         Add Alpine packages to the image
   -i, --include-dir DIR   Mount host dir inside /workspace
   -a, --allow-urls DOM    Allow extra domains for this session
+      --ollama            Use host Ollama for local models
+      --memory SIZE       Container memory limit (default: 8g)
+      --cpus COUNT        Container CPU limit (default: 4)
 
 Examples:
   exitbox run claude
   exitbox run claude -f -e GITHUB_TOKEN=$GITHUB_TOKEN
   exitbox run codex --update
-  exitbox run claude --workspace work`,
+  exitbox run claude --workspace work
+  exitbox run opencode --ollama --memory 16g --cpus 8`,
 }
 
 func newAgentRunCmd(agentName string) *cobra.Command {
@@ -168,6 +172,9 @@ func runAgent(agentName string, passthrough []string) {
 			Verbose:           flags.Verbose,
 			StatusBar:         cfg.Settings.StatusBar,
 			Version:           Version,
+			Ollama:            flags.Ollama,
+			Memory:            flags.Memory,
+			CPUs:              flags.CPUs,
 		}
 
 		exitCode, err := run.AgentContainer(rt, opts)
@@ -206,6 +213,9 @@ type parsedFlags struct {
 	Verbose     bool
 	ForceUpdate bool
 	Workspace   string
+	Ollama      bool
+	Memory      string
+	CPUs        string
 	EnvVars     []string
 	IncludeDirs []string
 	AllowURLs   []string
@@ -219,6 +229,8 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 		ReadOnly:   defaults.ReadOnly,
 		NoEnv:      defaults.NoEnv,
 		Resume:     defaults.AutoResume,
+		Memory:     defaults.Memory,
+		CPUs:       defaults.CPUs,
 	}
 
 	for i := 0; i < len(passthrough); i++ {
@@ -267,6 +279,18 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 			if i+1 < len(passthrough) {
 				i++
 				f.AllowURLs = append(f.AllowURLs, passthrough[i])
+			}
+		case "--ollama":
+			f.Ollama = true
+		case "--memory":
+			if i+1 < len(passthrough) {
+				i++
+				f.Memory = passthrough[i]
+			}
+		case "--cpus":
+			if i+1 < len(passthrough) {
+				i++
+				f.CPUs = passthrough[i]
 			}
 		case "--":
 			f.Remaining = append(f.Remaining, passthrough[i+1:]...)

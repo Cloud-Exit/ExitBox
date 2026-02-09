@@ -241,6 +241,39 @@ func BuildInteractive(rt Runtime, args []string) error {
 	return c.Run()
 }
 
+// PullQuiet runs a pull command capturing all output. Returns combined
+// output and error. Use this for non-verbose pulls with a spinner.
+func PullQuiet(rt Runtime, image string) (string, error) {
+	sr, ok := rt.(*shellRuntime)
+	if !ok {
+		return "", fmt.Errorf("unsupported runtime type")
+	}
+	c := exec.Command(sr.cmd, "pull", image)
+	out, err := c.CombinedOutput()
+	return string(out), err
+}
+
+// PullInteractive runs a pull command with inherited stdout/stderr.
+func PullInteractive(rt Runtime, image string) error {
+	sr, ok := rt.(*shellRuntime)
+	if !ok {
+		return fmt.Errorf("unsupported runtime type")
+	}
+	c := exec.Command(sr.cmd, "pull", image)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// TagImage tags an image with a new name.
+func TagImage(rt Runtime, src, dst string) error {
+	sr, ok := rt.(*shellRuntime)
+	if !ok {
+		return fmt.Errorf("unsupported runtime type")
+	}
+	return exec.Command(sr.cmd, "tag", src, dst).Run()
+}
+
 // Cmd returns the raw command name for the runtime.
 func Cmd(rt Runtime) string {
 	if sr, ok := rt.(*shellRuntime); ok {

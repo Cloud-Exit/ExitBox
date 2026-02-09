@@ -22,12 +22,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/cloud-exit/exitbox/static"
+)
+
+const (
+	// BaseImageRegistry is the GHCR URL for the published base image.
+	BaseImageRegistry = "ghcr.io/cloud-exit/exitbox-base"
+
+	// SquidImageRegistry is the GHCR URL for the published squid image.
+	SquidImageRegistry = "ghcr.io/cloud-exit/exitbox-squid"
 )
 
 // Version is set from cmd package.
@@ -42,6 +51,12 @@ var ForceRebuild bool
 // AutoUpdate enables checking for new agent versions on launch.
 var AutoUpdate bool
 
+// isReleaseVersion returns true if the version string looks like a release
+// (starts with "v", e.g. "v3.2.0").
+func isReleaseVersion(v string) bool {
+	return strings.HasPrefix(v, "v")
+}
+
 // BuildBase builds the exitbox-base image.
 func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	imageName := "exitbox-base"
@@ -55,12 +70,68 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		ui.Infof("Base image version mismatch (%s != %s). Rebuilding...", v, Version)
 	}
 
-	ui.Infof("Building base image with %s...", cmd)
+	// For release versions, try pulling the pre-built base image from GHCR
+	// and building only the thin local intermediary layer.
+	if isReleaseVersion(Version) {
+		remoteRef := BaseImageRegistry + ":" + Version
+		if err := pullImage(rt, remoteRef, "Pulling base image..."); err == nil {
+			if err := buildLocalIntermediary(ctx, rt, cmd, remoteRef, imageName); err == nil {
+				ui.Success("Base image ready (from registry)")
+				return nil
+			}
+			ui.Warnf("Local intermediary build failed, falling back to full build")
+		} else {
+			ui.Warnf("Could not pull %s, building locally", remoteRef)
+		}
+	}
 
+	// Full local build (dev versions or when pull/intermediary fails).
+	return buildBaseFull(ctx, rt, cmd, imageName)
+}
+
+// buildLocalIntermediary builds the thin local layer (user creation + exitbox-allow)
+// on top of the pulled base image.
+func buildLocalIntermediary(ctx context.Context, rt container.Runtime, cmd, baseRef, imageName string) error {
+	buildCtx := filepath.Join(config.Cache, "build-local")
+	_ = os.MkdirAll(buildCtx, 0755)
+
+	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
+	if err := os.WriteFile(dockerfilePath, static.DockerfileLocal, 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile.local: %w", err)
+	}
+
+	// Write pre-built exitbox-allow binary for the container's architecture.
+	if extra, err := writeExitboxAllow(buildCtx); err == nil && extra != "" {
+		if err := appendToFile(dockerfilePath, extra); err != nil {
+			ui.Warnf("Failed to append exitbox-allow to Dockerfile: %v", err)
+		}
+	}
+
+	args := buildArgs(cmd)
+	args = append(args,
+		"--build-arg", fmt.Sprintf("BASE_IMAGE=%s", baseRef),
+		"--build-arg", fmt.Sprintf("USER_ID=%d", os.Getuid()),
+		"--build-arg", fmt.Sprintf("GROUP_ID=%d", os.Getgid()),
+		"--build-arg", "USERNAME=user",
+		"-t", imageName,
+		"-f", dockerfilePath,
+		buildCtx,
+	)
+
+	return buildImage(rt, args, "Building local intermediary...")
+}
+
+// buildBaseFull performs a full local build of the base image from scratch.
+// It first builds the published base image locally, then layers the local
+// intermediary (user creation + exitbox-allow) on top.
+func buildBaseFull(ctx context.Context, rt container.Runtime, cmd, imageName string) error {
+	ui.Infof("Building base image locally with %s...", cmd)
+
+	// Step 1: Build the published base image locally.
+	publishedName := "exitbox-base-published"
 	buildCtx := filepath.Join(config.Cache, "build")
 	_ = os.MkdirAll(buildCtx, 0755)
 
-	// Copy build files from embedded assets
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, static.DockerfileBase, 0644); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)
@@ -72,7 +143,31 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		return fmt.Errorf("failed to write .dockerignore: %w", err)
 	}
 
-	// Write pre-built exitbox-allow binary for the container's architecture.
+	args := buildArgs(cmd)
+	args = append(args,
+		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
+		"-t", publishedName,
+		"-f", dockerfilePath,
+		buildCtx,
+	)
+
+	if err := buildImage(rt, args, "Building base image..."); err != nil {
+		return fmt.Errorf("failed to build base image: %w", err)
+	}
+
+	// Step 2: Build the local intermediary on top.
+	if err := buildLocalIntermediary(ctx, rt, cmd, publishedName, imageName); err != nil {
+		return fmt.Errorf("failed to build local intermediary: %w", err)
+	}
+
+	ui.Success("Base image built")
+	return nil
+}
+
+// writeExitboxAllow writes the exitbox-allow binary into the build context
+// and returns the Dockerfile snippet to COPY it. Returns empty string if
+// the binary could not be written.
+func writeExitboxAllow(buildCtx string) (string, error) {
 	var allowBin []byte
 	switch runtime.GOARCH {
 	case "arm64":
@@ -82,29 +177,29 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	}
 	if err := os.WriteFile(filepath.Join(buildCtx, "exitbox-allow"), allowBin, 0755); err != nil {
 		ui.Warnf("Failed to write exitbox-allow: %v", err)
-	} else {
-		extra := "\n# IPC client\nCOPY exitbox-allow /usr/local/bin/exitbox-allow\n"
-		if err := appendToFile(dockerfilePath, extra); err != nil {
-			ui.Warnf("Failed to append exitbox-allow to Dockerfile: %v", err)
-		}
+		return "", err
 	}
+	return "\n# IPC client\nCOPY exitbox-allow /usr/local/bin/exitbox-allow\n", nil
+}
 
-	args := buildArgs(cmd)
-	args = append(args,
-		"--build-arg", fmt.Sprintf("USER_ID=%d", os.Getuid()),
-		"--build-arg", fmt.Sprintf("GROUP_ID=%d", os.Getgid()),
-		"--build-arg", "USERNAME=user",
-		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
-		"-t", imageName,
-		"-f", filepath.Join(buildCtx, "Dockerfile"),
-		buildCtx,
-	)
-
-	if err := buildImage(rt, args, "Building base image..."); err != nil {
-		return fmt.Errorf("failed to build base image: %w", err)
+// pullImage pulls a container image, using a spinner in quiet mode or
+// full output in verbose mode.
+func pullImage(rt container.Runtime, ref, label string) error {
+	if ui.Verbose {
+		start := time.Now()
+		err := container.PullInteractive(rt, ref)
+		ui.Infof("Pull took %s", formatDuration(time.Since(start)))
+		return err
 	}
-
-	ui.Success("Base image built")
+	spin := ui.NewSpinner(label)
+	spin.Start()
+	output, err := container.PullQuiet(rt, ref)
+	elapsed := spin.Stop()
+	if err != nil {
+		ui.Debugf("Pull output: %s", output)
+		return err
+	}
+	ui.Infof("Pull took %s", formatDuration(elapsed))
 	return nil
 }
 
@@ -157,4 +252,3 @@ func buildArgs(cmd string) []string {
 	}
 	return args
 }
-

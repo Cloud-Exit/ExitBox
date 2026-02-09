@@ -195,6 +195,7 @@ func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []str
 		"--network", EgressNetwork,
 		"-v", configFile + ":/etc/squid/squid.conf",
 		"--restart=unless-stopped",
+		"--add-host=host.docker.internal:host-gateway",
 	}
 
 	// DNS flags

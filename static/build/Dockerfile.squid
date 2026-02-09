@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# ==============================================================================
+# ExitBox Squid Proxy Image
+# ==============================================================================
+
+FROM alpine:3.21
+
+ARG EXITBOX_VERSION
+
+RUN apk add --no-cache squid socat ripgrep python3
+RUN mkdir -p /etc/squid
+
+LABEL exitbox.version="${EXITBOX_VERSION}"
+
+CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
