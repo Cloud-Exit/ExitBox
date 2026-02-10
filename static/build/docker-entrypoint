@@ -508,6 +508,11 @@ You are running inside an ExitBox sandboxed container. Important constraints:
 - You CANNOT run container runtimes (docker, podman, nerdctl, etc.) inside this container.
 - You CANNOT manage containers, images, volumes, or networks from within this environment.
 - Do NOT attempt to debug issues by running docker/podman commands - they are not available.
+- You CANNOT install packages. Do NOT run \`apk add\`, \`apt-get install\`, \`pip install\`,
+  \`npm install -g\`, \`cargo install\`, or any other system-level package manager commands.
+  You do not have permission and they will fail. All tools and packages are pre-installed
+  at image build time by the host user. If you need a tool that is not available, inform
+  the user and suggest they add it via \`exitbox setup\` or \`--tools\` flag on the host.
 - The filesystem at /workspace is your working directory, mounted from the host.
 - Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
 - You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).

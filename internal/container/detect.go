@@ -32,11 +32,11 @@ func Detect() Runtime {
 	return nil
 }
 
-// MustDetect returns a runtime or panics with an error message.
+// MustDetect returns a runtime or panics if none is found.
 func MustDetect() Runtime {
 	rt := Detect()
 	if rt == nil {
-		return nil
+		panic("no container runtime found: install podman or docker")
 	}
 	return rt
 }

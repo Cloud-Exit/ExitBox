@@ -10,11 +10,13 @@ package container
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
 // MockRuntime implements Runtime for testing.
 type MockRuntime struct {
+	mu         sync.Mutex
 	NameVal    string
 	Images     map[string]map[string]string // image -> labels
 	Containers []string
@@ -31,14 +33,30 @@ func NewMockRuntime() *MockRuntime {
 	}
 }
 
-func (m *MockRuntime) Name() string                                        { return m.NameVal }
-func (m *MockRuntime) Build(_ context.Context, args []string) error        { m.Built = append(m.Built, args); return nil }
-func (m *MockRuntime) Run(_ context.Context, _ []string) (int, error)      { return 0, nil }
-func (m *MockRuntime) Exec(_ context.Context, _ string, _ []string) error  { return nil }
-func (m *MockRuntime) ImageExists(image string) bool                       { _, ok := m.Images[image]; return ok }
-func (m *MockRuntime) ImageInspect(image, format string) (string, error)   { return "", nil }
+func (m *MockRuntime) Name() string { return m.NameVal }
+
+func (m *MockRuntime) Build(_ context.Context, args []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Built = append(m.Built, args)
+	return nil
+}
+
+func (m *MockRuntime) Run(_ context.Context, _ []string) (int, error) { return 0, nil }
+func (m *MockRuntime) Exec(_ context.Context, _ string, _ []string) error { return nil }
+
+func (m *MockRuntime) ImageExists(image string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.Images[image]
+	return ok
+}
+
+func (m *MockRuntime) ImageInspect(image, format string) (string, error) { return "", nil }
 
 func (m *MockRuntime) ImageList(filter string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var result []string
 	for name := range m.Images {
 		result = append(result, name)
@@ -47,22 +65,38 @@ func (m *MockRuntime) ImageList(filter string) ([]string, error) {
 }
 
 func (m *MockRuntime) ImageRemove(image string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.Removed = append(m.Removed, image)
 	delete(m.Images, image)
 	return nil
 }
 
 func (m *MockRuntime) PS(filter, format string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.Containers, nil
 }
 
-func (m *MockRuntime) Stop(_ string) error                          { return nil }
-func (m *MockRuntime) Remove(_ string) error                        { return nil }
-func (m *MockRuntime) NetworkCreate(name string, _ bool) error      { m.Networks[name] = true; return nil }
-func (m *MockRuntime) NetworkExists(name string) bool               { return m.Networks[name] }
-func (m *MockRuntime) NetworkConnect(_, _ string) error             { return nil }
-func (m *MockRuntime) NetworkInspect(_, _ string) (string, error)   { return "", nil }
-func (m *MockRuntime) IsRootless() bool                             { return false }
+func (m *MockRuntime) Stop(_ string) error  { return nil }
+func (m *MockRuntime) Remove(_ string) error { return nil }
+
+func (m *MockRuntime) NetworkCreate(name string, _ bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Networks[name] = true
+	return nil
+}
+
+func (m *MockRuntime) NetworkExists(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Networks[name]
+}
+
+func (m *MockRuntime) NetworkConnect(_, _ string) error           { return nil }
+func (m *MockRuntime) NetworkInspect(_, _ string) (string, error) { return "", nil }
+func (m *MockRuntime) IsRootless() bool                           { return false }
 
 func TestMockRuntimeImplementsInterface(t *testing.T) {
 	var _ Runtime = NewMockRuntime()

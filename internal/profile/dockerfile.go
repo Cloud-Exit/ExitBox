@@ -16,43 +16,48 @@
 
 package profile
 
-import "fmt"
+import "strings"
 
-// DockerfileSnippet returns the Dockerfile instructions for installing a profile.
-func DockerfileSnippet(name string) string {
+// Packages returns the space-separated Alpine packages for a profile,
+// or empty string if the profile has none or only custom install steps.
+func Packages(name string) string {
+	// The node/javascript profiles have apk packages too.
 	switch name {
-	case "core", "base":
-		return apkSnippet("base")
-	case "build-tools":
-		return apkSnippet("build-tools")
-	case "shell":
-		return apkSnippet("shell")
-	case "networking":
-		return apkSnippet("networking")
-	case "c":
-		return apkSnippet("c")
-	case "rust":
-		return apkSnippet("rust")
-	case "java":
-		return apkSnippet("java")
-	case "ruby":
-		return apkSnippet("ruby")
-	case "php":
-		return apkSnippet("php")
-	case "database":
-		return apkSnippet("database")
-	case "devops":
-		return apkSnippet("devops")
-	case "web":
-		return apkSnippet("web")
-	case "embedded":
-		return apkSnippet("embedded")
-	case "datascience":
-		return apkSnippet("datascience")
-	case "security":
-		return apkSnippet("security")
-	case "ml":
-		return "# ML profile uses build-tools for compilation\n"
+	case "node", "javascript":
+		return "nodejs npm"
+	}
+	p := Get(name)
+	if p == nil {
+		return ""
+	}
+	return p.Packages
+}
+
+// CollectPackages returns a deduplicated list of all Alpine packages
+// needed by the given profiles.
+func CollectPackages(profiles []string) []string {
+	seen := make(map[string]bool)
+	var pkgs []string
+	for _, name := range profiles {
+		raw := Packages(name)
+		if raw == "" {
+			continue
+		}
+		for _, pkg := range strings.Fields(raw) {
+			if !seen[pkg] {
+				seen[pkg] = true
+				pkgs = append(pkgs, pkg)
+			}
+		}
+	}
+	return pkgs
+}
+
+// CustomSnippet returns the non-apk Dockerfile instructions for a profile
+// (e.g. Go download, Python venv, Flutter install, node npm globals).
+// Returns empty string if the profile only needs apk packages.
+func CustomSnippet(name string) string {
+	switch name {
 	case "python":
 		return `# Python profile - venv with pip, setuptools, wheel
 RUN python3 -m venv /home/user/.venv && \
@@ -112,17 +117,28 @@ RUN set -e && \
     ln -sf /opt/flutter/bin/dart /usr/local/bin/dart
 `
 	case "node", "javascript":
-		return `RUN apk add --no-cache nodejs npm && \
-    npm install -g typescript eslint prettier yarn pnpm
+		// apk packages (nodejs npm) are collected separately;
+		// this is just the npm global installs.
+		return `RUN npm install -g typescript eslint prettier yarn pnpm
 `
+	case "ml":
+		return "# ML profile uses build-tools for compilation\n"
 	}
 	return ""
 }
 
-func apkSnippet(name string) string {
-	p := Get(name)
-	if p == nil || p.Packages == "" {
-		return ""
+// DockerfileSnippet returns the full Dockerfile instructions for a profile.
+// Deprecated: use CollectPackages + CustomSnippet for batched apk installs.
+func DockerfileSnippet(name string) string {
+	pkgs := Packages(name)
+	custom := CustomSnippet(name)
+
+	var parts []string
+	if pkgs != "" {
+		parts = append(parts, "RUN apk add --no-cache "+pkgs)
 	}
-	return fmt.Sprintf("RUN apk add --no-cache %s\n", p.Packages)
+	if custom != "" {
+		parts = append(parts, custom)
+	}
+	return strings.Join(parts, "\n")
 }

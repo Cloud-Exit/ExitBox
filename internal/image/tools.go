@@ -76,7 +76,9 @@ func BuildTools(ctx context.Context, rt container.Runtime, agentName string, for
 	ui.Infof("Building %s tools image with %s...", agentName, cmd)
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName+"-tools")
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	var df strings.Builder

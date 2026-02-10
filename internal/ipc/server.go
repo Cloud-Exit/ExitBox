@@ -19,11 +19,15 @@ package ipc
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
 )
+
+// maxRequestSize is the maximum allowed size of a single IPC request line.
+const maxRequestSize = 64 * 1024 // 64 KB
 
 // HandlerFunc processes an IPC request and returns a response payload.
 type HandlerFunc func(req *Request) (interface{}, error)
@@ -70,7 +74,10 @@ func NewServer() (*Server, error) {
 }
 
 // Handle registers a handler for a message type.
+// Must be called before Start.
 func (s *Server) Handle(msgType string, h HandlerFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.handlers[msgType] = h
 }
 
@@ -101,9 +108,9 @@ func (s *Server) Start() {
 // Stop closes the listener, waits for goroutines, and removes the socket dir.
 func (s *Server) Stop() {
 	close(s.done)
-	s.listener.Close()
+	_ = s.listener.Close()
 	s.wg.Wait()
-	os.RemoveAll(s.socketDir)
+	_ = os.RemoveAll(s.socketDir)
 }
 
 // SocketDir returns the directory containing the socket (for container mount).
@@ -111,38 +118,53 @@ func (s *Server) SocketDir() string {
 	return s.socketDir
 }
 
+// ErrorResponse is a generic error payload for IPC responses.
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, maxRequestSize), maxRequestSize)
 	if !scanner.Scan() {
 		return
 	}
 
 	var req Request
 	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-		resp := Response{Type: "error", Payload: AllowDomainResponse{Error: "invalid request"}}
-		data, _ := json.Marshal(resp)
+		resp := Response{Type: "error", Payload: ErrorResponse{Error: "invalid request"}}
+		data, merr := json.Marshal(resp)
+		if merr != nil {
+			log.Printf("ipc: failed to marshal error response: %v", merr)
+			return
+		}
 		_, _ = conn.Write(append(data, '\n'))
 		return
 	}
 
+	s.mu.Lock()
 	handler, ok := s.handlers[req.Type]
 	if !ok {
+		s.mu.Unlock()
 		resp := Response{
 			Type: req.Type,
 			ID:   req.ID,
-			Payload: AllowDomainResponse{
+			Payload: ErrorResponse{
 				Error: "unknown message type: " + req.Type,
 			},
 		}
-		data, _ := json.Marshal(resp)
+		data, merr := json.Marshal(resp)
+		if merr != nil {
+			log.Printf("ipc: failed to marshal error response: %v", merr)
+			return
+		}
 		_, _ = conn.Write(append(data, '\n'))
 		return
 	}
 
 	// Serialize handler calls so only one TTY prompt runs at a time.
-	s.mu.Lock()
 	payload, err := handler(&req)
 	s.mu.Unlock()
 
@@ -151,11 +173,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		ID:   req.ID,
 	}
 	if err != nil {
-		resp.Payload = AllowDomainResponse{Error: err.Error()}
+		resp.Payload = ErrorResponse{Error: err.Error()}
 	} else {
 		resp.Payload = payload
 	}
 
-	data, _ := json.Marshal(resp)
+	data, merr := json.Marshal(resp)
+	if merr != nil {
+		log.Printf("ipc: failed to marshal response: %v", merr)
+		return
+	}
 	_, _ = conn.Write(append(data, '\n'))
 }

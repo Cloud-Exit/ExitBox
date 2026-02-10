@@ -64,7 +64,9 @@ func buildSquidFull(rt container.Runtime, cmd, imageName string) error {
 	ui.Info("Building Squid proxy image...")
 
 	buildCtx := filepath.Join(config.Cache, "build-squid")
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	if err := os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), static.DockerfileSquid, 0644); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)

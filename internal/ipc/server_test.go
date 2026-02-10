@@ -34,9 +34,15 @@ func TestServerRoundTrip(t *testing.T) {
 		Type: "echo",
 		ID:   "test-1",
 	}
-	payload, _ := json.Marshal(map[string]string{"msg": "hello"})
-	req.Payload = payload
-	data, _ := json.Marshal(req)
+	payloadBytes, err := json.Marshal(map[string]string{"msg": "hello"})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req.Payload = payloadBytes
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
 	if _, err = conn.Write(append(data, '\n')); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -59,7 +65,10 @@ func TestServerRoundTrip(t *testing.T) {
 	}
 
 	// Decode payload.
-	raw, _ := json.Marshal(resp.Payload)
+	raw, err := json.Marshal(resp.Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
 	var got map[string]string
 	if err = json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
@@ -84,7 +93,10 @@ func TestServerUnknownType(t *testing.T) {
 	defer conn.Close()
 
 	req := Request{Type: "nonexistent", ID: "test-2"}
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
 	if _, err = conn.Write(append(data, '\n')); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -99,8 +111,11 @@ func TestServerUnknownType(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	raw, _ := json.Marshal(resp.Payload)
-	var payload AllowDomainResponse
+	raw, err := json.Marshal(resp.Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var payload ErrorResponse
 	if err = json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}

@@ -145,8 +145,8 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Include dirs
 	for _, dir := range opts.IncludeDirs {
 		dir = expandPath(dir, opts.ProjectDir)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			ui.Warnf("Include dir not found: %s", dir)
+		if _, err := os.Stat(dir); err != nil {
+			ui.Warnf("Include dir not accessible: %s: %v", dir, err)
 			continue
 		}
 		dir = strings.TrimSuffix(dir, "/")
@@ -163,8 +163,10 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// Mount config.yaml individually (read-write for in-container workspace switching).
 	configFile := filepath.Join(config.Home, "config.yaml")
-	if _, statErr := os.Stat(configFile); os.IsNotExist(statErr) {
-		_ = config.SaveConfig(cfg)
+	if _, statErr := os.Stat(configFile); statErr != nil {
+		if saveErr := config.SaveConfig(cfg); saveErr != nil {
+			ui.Warnf("Failed to create config file for mount: %v", saveErr)
+		}
 	}
 	args = append(args, "-v", configFile+":/home/user/.exitbox-config/config.yaml")
 

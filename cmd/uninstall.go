@@ -48,7 +48,12 @@ var uninstallCmd = &cobra.Command{
 			fmt.Print("Are you sure? [y/N] ")
 
 			reader := bufio.NewReader(os.Stdin)
-			response, _ := reader.ReadString('\n')
+			response, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				ui.Warnf("Failed to read input: %v", readErr)
+				ui.Info("Cancelled")
+				return
+			}
 			response = strings.TrimSpace(response)
 			if !strings.EqualFold(response, "y") {
 				ui.Info("Cancelled")
@@ -58,7 +63,10 @@ var uninstallCmd = &cobra.Command{
 			if rt != nil {
 				// Stop and remove containers
 				ui.Info("Stopping and removing all exitbox containers...")
-				names, _ := rt.PS("name=exitbox-", "{{.ID}}")
+				names, psErr := rt.PS("name=exitbox-", "{{.ID}}")
+				if psErr != nil {
+					ui.Warnf("Failed to list containers: %v", psErr)
+				}
 				for _, id := range names {
 					_ = rt.Remove(id)
 				}
@@ -74,7 +82,9 @@ var uninstallCmd = &cobra.Command{
 				cfg.SetAgentEnabled(name, false)
 				_ = os.RemoveAll(config.AgentDir(name))
 			}
-			_ = config.SaveConfig(cfg)
+			if saveErr := config.SaveConfig(cfg); saveErr != nil {
+				ui.Warnf("Failed to save config: %v", saveErr)
+			}
 
 			// Remove cache
 			_ = os.RemoveAll(config.Cache)
@@ -93,7 +103,12 @@ var uninstallCmd = &cobra.Command{
 		fmt.Print("Are you sure? [y/N] ")
 
 		reader := bufio.NewReader(os.Stdin)
-		response, _ := reader.ReadString('\n')
+		response, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			ui.Warnf("Failed to read input: %v", readErr)
+			ui.Info("Cancelled")
+			return
+		}
 		response = strings.TrimSpace(response)
 		if !strings.EqualFold(response, "y") {
 			ui.Info("Cancelled")
@@ -106,10 +121,12 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		// Remove config
-		os.RemoveAll(config.AgentDir(name))
+		_ = os.RemoveAll(config.AgentDir(name))
 		cfg := config.LoadOrDefault()
 		cfg.SetAgentEnabled(name, false)
-		_ = config.SaveConfig(cfg)
+		if saveErr := config.SaveConfig(cfg); saveErr != nil {
+			ui.Warnf("Failed to save config: %v", saveErr)
+		}
 
 		ui.Successf("%s completely uninstalled", agent.DisplayName(name))
 	},

@@ -93,7 +93,9 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 // on top of the pulled base image.
 func buildLocalIntermediary(ctx context.Context, rt container.Runtime, cmd, baseRef, imageName string) error {
 	buildCtx := filepath.Join(config.Cache, "build-local")
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, static.DockerfileLocal, 0644); err != nil {
@@ -130,7 +132,9 @@ func buildBaseFull(ctx context.Context, rt container.Runtime, cmd, imageName str
 	// Step 1: Build the published base image locally.
 	publishedName := "exitbox-base-published"
 	buildCtx := filepath.Join(config.Cache, "build")
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, static.DockerfileBase, 0644); err != nil {
@@ -243,7 +247,9 @@ func buildArgs(cmd string) []string {
 	} else {
 		os.Setenv("DOCKER_BUILDKIT", "1")
 		cacheDir := filepath.Join(config.Cache, "buildx")
-		_ = os.MkdirAll(cacheDir, 0755)
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			ui.Warnf("Failed to create buildx cache dir: %v", err)
+		}
 		args = append(args,
 			"--progress=auto",
 			"--cache-from", "type=local,src="+cacheDir,

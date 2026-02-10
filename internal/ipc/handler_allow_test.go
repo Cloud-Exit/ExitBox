@@ -119,13 +119,19 @@ func sendAllowDomain(t *testing.T, srv *Server, domain string) AllowDomainRespon
 	}
 	defer conn.Close()
 
-	payload, _ := json.Marshal(AllowDomainRequest{Domain: domain})
+	payload, err := json.Marshal(AllowDomainRequest{Domain: domain})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
 	req := Request{
 		Type:    "allow_domain",
 		ID:      "test",
 		Payload: payload,
 	}
-	data, _ := json.Marshal(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
 	if _, err = conn.Write(append(data, '\n')); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -140,7 +146,10 @@ func sendAllowDomain(t *testing.T, srv *Server, domain string) AllowDomainRespon
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	raw, _ := json.Marshal(resp.Payload)
+	raw, err := json.Marshal(resp.Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
 	var result AllowDomainResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)

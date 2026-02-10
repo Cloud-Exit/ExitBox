@@ -39,11 +39,15 @@ const (
 func EnsureNetworks(rt container.Runtime) {
 	if !rt.NetworkExists(InternalNetwork) {
 		ui.Infof("Creating internal network %s...", InternalNetwork)
-		_ = rt.NetworkCreate(InternalNetwork, true)
+		if err := rt.NetworkCreate(InternalNetwork, true); err != nil {
+			ui.Warnf("Failed to create internal network: %v", err)
+		}
 	}
 	if !rt.NetworkExists(EgressNetwork) {
 		ui.Infof("Creating egress network %s...", EgressNetwork)
-		_ = rt.NetworkCreate(EgressNetwork, false)
+		if err := rt.NetworkCreate(EgressNetwork, false); err != nil {
+			ui.Warnf("Failed to create egress network: %v", err)
+		}
 	}
 }
 
@@ -107,15 +111,22 @@ func RemoveSessionURLs(rt container.Runtime, containerName string) {
 	// Collect remaining URLs from all sessions and regenerate config
 	remaining := collectAllSessionURLs()
 	if err := writeSquidConfig(rt, remaining); err != nil {
+		ui.Warnf("Failed to regenerate squid config: %v", err)
 		return
 	}
 
 	// Reconfigure squid if running
 	cmd := container.Cmd(rt)
-	names, _ := rt.PS("", "{{.Names}}")
+	names, err := rt.PS("", "{{.Names}}")
+	if err != nil {
+		ui.Warnf("Failed to list containers: %v", err)
+		return
+	}
 	for _, n := range names {
 		if n == SquidContainer {
-			_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
+			if recErr := exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run(); recErr != nil {
+				ui.Warnf("Failed to reconfigure squid: %v", recErr)
+			}
 			break
 		}
 	}
@@ -164,14 +175,19 @@ func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []str
 	allExtraURLs := collectAllSessionURLs()
 
 	// Check if already running
-	names, _ := rt.PS("", "{{.Names}}")
+	names, err := rt.PS("", "{{.Names}}")
+	if err != nil {
+		ui.Warnf("Failed to list containers: %v", err)
+	}
 	for _, n := range names {
 		if n == SquidContainer {
 			// Regenerate config with all session URLs and reload
 			if err := writeSquidConfig(rt, allExtraURLs); err != nil {
 				return err
 			}
-			_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
+			if recErr := exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run(); recErr != nil {
+				ui.Warnf("Failed to reconfigure squid: %v", recErr)
+			}
 			return nil
 		}
 	}
@@ -317,10 +333,16 @@ func AddSessionURLAndReload(rt container.Runtime, containerName string, domain s
 	}
 
 	// Hot-reload Squid.
-	names, _ := rt.PS("", "{{.Names}}")
+	names, psErr := rt.PS("", "{{.Names}}")
+	if psErr != nil {
+		ui.Warnf("Failed to list containers for squid reload: %v", psErr)
+		return nil
+	}
 	for _, n := range names {
 		if n == SquidContainer {
-			_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
+			if recErr := exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run(); recErr != nil {
+				ui.Warnf("Failed to reconfigure squid: %v", recErr)
+			}
 			break
 		}
 	}
@@ -339,7 +361,9 @@ func writeSquidConfig(rt container.Runtime, extraURLs []string) error {
 
 	content := GenerateSquidConfig(subnet, domains, extraURLs)
 	configFile := filepath.Join(config.Cache, "squid.conf")
-	_ = os.MkdirAll(filepath.Dir(configFile), 0755)
+	if err := os.MkdirAll(filepath.Dir(configFile), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
 	return os.WriteFile(configFile, []byte(content), 0644)
 }
 

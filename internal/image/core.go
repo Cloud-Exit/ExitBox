@@ -45,7 +45,11 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	// Only check for new agent versions when auto_update is on or --update passed
 	var latestVersion string
 	if AutoUpdate || force {
-		latestVersion, _ = a.GetLatestVersion()
+		var verErr error
+		latestVersion, verErr = a.GetLatestVersion()
+		if verErr != nil {
+			ui.Warnf("Failed to check for %s updates: %v", agentName, verErr)
+		}
 	}
 
 	if !force && !ForceRebuild && rt.ImageExists(imageName) {
@@ -68,7 +72,11 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 
 	// Fetch version now if we haven't already (needed for download URLs)
 	if latestVersion == "" {
-		latestVersion, _ = a.GetLatestVersion()
+		var verErr error
+		latestVersion, verErr = a.GetLatestVersion()
+		if verErr != nil {
+			ui.Warnf("Failed to fetch %s version: %v", agentName, verErr)
+		}
 	}
 
 	// Build base first
@@ -77,7 +85,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	}
 
 	// Build squid if missing (no longer force-rebuilt on every core rebuild)
-	_ = BuildSquid(ctx, rt, false)
+	if squidErr := BuildSquid(ctx, rt, false); squidErr != nil {
+		ui.Warnf("Failed to build squid image: %v", squidErr)
+	}
 
 	if !ui.Verbose {
 		ui.Info("Building containers (use -v for build output)")
@@ -90,7 +100,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	}
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName)
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 
@@ -127,7 +139,10 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		ui.Infof("Codex SHA-256: %s", checksum)
 
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG CODEX_VERSION=%s\nARG CODEX_CHECKSUM=%s\n", version, checksum)
-		install, _ := a.GetDockerfileInstall(buildCtx)
+		install, installErr := a.GetDockerfileInstall(buildCtx)
+		if installErr != nil {
+			return fmt.Errorf("failed to get Codex install instructions: %w", installErr)
+		}
 		df += install
 		if err := os.WriteFile(dockerfilePath, []byte(df), 0644); err != nil {
 			return fmt.Errorf("failed to write Dockerfile: %w", err)
@@ -156,7 +171,10 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		ui.Infof("OpenCode SHA-256: %s", checksum)
 
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\nARG OPENCODE_CHECKSUM=%s\n", version, checksum)
-		install, _ := a.GetDockerfileInstall(buildCtx)
+		install, installErr := a.GetDockerfileInstall(buildCtx)
+		if installErr != nil {
+			return fmt.Errorf("failed to get OpenCode install instructions: %w", installErr)
+		}
 		df += install
 		if err := os.WriteFile(dockerfilePath, []byte(df), 0644); err != nil {
 			return fmt.Errorf("failed to write Dockerfile: %w", err)
@@ -185,12 +203,16 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 
 	// Save installed version
 	versionFile := filepath.Join(config.AgentDir(agentName), "installed_version")
-	_ = os.MkdirAll(filepath.Dir(versionFile), 0755)
+	if err := os.MkdirAll(filepath.Dir(versionFile), 0755); err != nil {
+		ui.Warnf("Failed to create agent dir: %v", err)
+	}
 	v := latestVersion
 	if v == "" {
 		v = "unknown"
 	}
-	_ = os.WriteFile(versionFile, []byte(v), 0644)
+	if err := os.WriteFile(versionFile, []byte(v), 0644); err != nil {
+		ui.Warnf("Failed to save installed version: %v", err)
+	}
 
 	ui.Successf("%s core image built (version: %s)", agentName, v)
 	return nil

@@ -88,7 +88,9 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	ui.Infof("Building %s project image with %s...", agentName, cmd)
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName+"-project")
-	_ = os.MkdirAll(buildCtx, 0755)
+	if err := os.MkdirAll(buildCtx, 0755); err != nil {
+		return fmt.Errorf("failed to create build context dir: %w", err)
+	}
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	var df strings.Builder
@@ -100,28 +102,34 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// but be explicit in case that changes)
 	df.WriteString("USER root\n\n")
 
-	// Install workspace-specific packages
-	if active != nil && len(active.Workspace.Packages) > 0 {
-		fmt.Fprintf(&df, "RUN --mount=type=cache,target=/var/cache/apk apk add --no-cache %s\n\n", strings.Join(active.Workspace.Packages, " "))
-	}
-
-	// Add development profile installations from active workspace.
+	// Validate all development profiles up front.
 	for _, p := range developmentProfiles {
 		if !profile.Exists(p) {
 			return fmt.Errorf("unknown development profile '%s'. Run 'exitbox setup' to configure your development stack", p)
 		}
-		snippet := profile.DockerfileSnippet(p)
+	}
+
+	// Collect ALL Alpine packages into a single apk add call:
+	// workspace packages + profile packages + session tools.
+	var allPkgs []string
+	if active != nil {
+		allPkgs = append(allPkgs, active.Workspace.Packages...)
+	}
+	allPkgs = append(allPkgs, profile.CollectPackages(developmentProfiles)...)
+	allPkgs = append(allPkgs, SessionTools...)
+	allPkgs = dedup(allPkgs)
+
+	if len(allPkgs) > 0 {
+		fmt.Fprintf(&df, "RUN --mount=type=cache,target=/var/cache/apk apk add --no-cache %s\n\n", strings.Join(allPkgs, " "))
+	}
+
+	// Add non-apk custom install steps (Go download, Python venv, etc.).
+	for _, p := range developmentProfiles {
+		snippet := profile.CustomSnippet(p)
 		if snippet != "" {
 			df.WriteString(snippet)
 			df.WriteString("\n")
 		}
-	}
-
-	// Install session tools (from --tools flag) LAST — these are the most
-	// volatile input (per-run), so placing them at the end avoids
-	// invalidating the dev-profile layers above.
-	if len(SessionTools) > 0 {
-		fmt.Fprintf(&df, "RUN --mount=type=cache,target=/var/cache/apk apk add --no-cache %s\n\n", strings.Join(SessionTools, " "))
 	}
 
 	// Fix home dir ownership after root package installs
@@ -150,4 +158,17 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 
 	ui.Successf("%s project image built", agentName)
 	return nil
+}
+
+// dedup returns a new slice with duplicate strings removed, preserving order.
+func dedup(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
