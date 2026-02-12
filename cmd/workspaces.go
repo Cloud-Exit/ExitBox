@@ -123,7 +123,7 @@ func newWorkspacesStatusCmd() *cobra.Command {
 				}
 			}
 			fmt.Println()
-			fmt.Println("Use Ctrl+P inside an ExitBox session to switch workspaces instantly.")
+			fmt.Println("Use Ctrl+Alt+P for the workspace menu and Ctrl+Alt+S for the session menu inside an ExitBox session.")
 		},
 	}
 }

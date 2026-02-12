@@ -20,7 +20,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -29,6 +31,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
 	"github.com/cloud-exit/exitbox/internal/run"
+	"github.com/cloud-exit/exitbox/internal/session"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -48,12 +51,19 @@ Workspaces:
   and separate agent config storage.
   Manage them with: exitbox workspaces --help
 
+Sessions:
+  Each run creates a session. By default sessions are named with a timestamp.
+  Use --name to give a session a memorable name. Named sessions auto-resume:
+  running --name "foo" resumes "foo" if it exists, or starts fresh if new.
+  Use --no-resume with --name to force a fresh start.
+
 Flags (passed after the agent name):
   -f, --no-firewall       Disable network firewall
   -r, --read-only         Mount workspace as read-only
   -n, --no-env            Don't pass host environment variables
-      --resume [TOKEN]     Resume a session (omit token for last active session)
-      --no-resume         Don't auto-resume (overrides config default)
+      --name SESSION      Name this session (resumes if it already exists)
+      --resume [SESSION]  Resume a session by name/id (or last active if bare)
+      --no-resume         Force a fresh session (overrides --name auto-resume)
   -u, --update            Check for and apply agent updates
   -v, --verbose           Enable verbose output
   -w, --workspace NAME    Use a specific workspace for this session
@@ -66,9 +76,12 @@ Flags (passed after the agent name):
       --cpus COUNT        Container CPU limit (default: 4)
 
 Examples:
-  exitbox run claude
+  exitbox run claude                        Start a new session
+  exitbox run claude --name "feature-x"     Start or resume session "feature-x"
+  exitbox run claude --name "feature-x" --no-resume  Fresh start, named "feature-x"
+  exitbox run claude --resume               Resume last active session
+  exitbox run claude --resume "feature-x"   Resume session "feature-x" by name
   exitbox run claude -f -e GITHUB_TOKEN=$GITHUB_TOKEN
-  exitbox run codex --update
   exitbox run claude --workspace work
   exitbox run opencode --ollama --memory 16g --cpus 8`,
 }
@@ -80,6 +93,9 @@ func newAgentRunCmd(agentName string) *cobra.Command {
 		Short:              "Run " + display,
 		Long:               "Run " + display + " in an isolated container.",
 		DisableFlagParsing: true,
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			return completeAgentRunArgs(agentName, args, toComplete)
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			// DisableFlagParsing swallows --help; handle it manually
 			for _, a := range args {
@@ -121,6 +137,7 @@ func runAgent(agentName string, passthrough []string) {
 	image.Version = Version
 
 	flags := parseRunFlags(passthrough, cfg.Settings.DefaultFlags)
+	flags = applySessionResumeDefaults(flags)
 
 	if flags.Verbose {
 		ui.Verbose = true
@@ -142,7 +159,28 @@ func runAgent(agentName string, passthrough []string) {
 		}
 	}
 
+	// If user passed --resume <value> without --name, treat value as a possible
+	// named session selector first (name or session id). Fall back to token.
+	if flags.Resume && flags.ResumeToken != "" && strings.TrimSpace(flags.SessionName) == "" {
+		active, err := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		if err == nil && active != nil {
+			if resolved, ok, resolveErr := session.ResolveSelector(active.Workspace.Name, agentName, projectDir, flags.ResumeToken); resolveErr != nil {
+				ui.Warnf("Could not resolve session selector '%s': %v", flags.ResumeToken, resolveErr)
+			} else if ok {
+				flags.SessionName = resolved
+				flags.ResumeToken = ""
+			}
+		}
+	}
+	// Only assign a default session name when NOT doing a bare resume.
+	// Bare --resume (no --name, no selector) should let the entrypoint
+	// resolve the last active session from .active-session.
+	if strings.TrimSpace(flags.SessionName) == "" && !flags.Resume {
+		flags.SessionName = defaultSessionName()
+	}
+
 	switchFile := filepath.Join(projectDir, ".exitbox", "workspace-switch")
+	actionFile := filepath.Join(projectDir, ".exitbox", "session-action")
 
 	// Main run loop: re-launches on workspace switch.
 	for {
@@ -165,6 +203,7 @@ func runAgent(agentName string, passthrough []string) {
 			NoEnv:             flags.NoEnv,
 			Resume:            flags.Resume,
 			ResumeToken:       flags.ResumeToken,
+			SessionName:       flags.SessionName,
 			EnvVars:           flags.EnvVars,
 			IncludeDirs:       flags.IncludeDirs,
 			AllowURLs:         flags.AllowURLs,
@@ -175,11 +214,45 @@ func runAgent(agentName string, passthrough []string) {
 			Ollama:            flags.Ollama,
 			Memory:            flags.Memory,
 			CPUs:              flags.CPUs,
+			Keybindings:       cfg.Settings.Keybindings.EnvValue(),
 		}
 
 		exitCode, err := run.AgentContainer(rt, opts)
 		if err != nil {
 			ui.Errorf("%v", err)
+		}
+
+		// Check for session action signal from the container.
+		if data, readErr := os.ReadFile(actionFile); readErr == nil {
+			_ = os.Remove(actionFile)
+			action := parseSessionAction(string(data))
+			shouldContinue := false
+
+			if action.Workspace != "" {
+				switchCfg := config.LoadOrDefault()
+				if profile.FindWorkspace(switchCfg, action.Workspace) == nil {
+					ui.Warnf("Workspace '%s' not found. Available: %s", action.Workspace, strings.Join(profile.WorkspaceNames(switchCfg), ", "))
+				} else {
+					ui.Infof("Switching to workspace '%s'...", action.Workspace)
+					flags.Workspace = action.Workspace
+					shouldContinue = true
+				}
+			}
+
+			if action.SessionName != "" {
+				flags.SessionName = action.SessionName
+				ui.Infof("Switching to session '%s'...", action.SessionName)
+				shouldContinue = true
+			}
+
+			if action.Resume {
+				flags.Resume = true
+				flags.ResumeToken = "" // Use stored token for the selected session
+			}
+
+			if shouldContinue {
+				continue
+			}
 		}
 
 		// Check for workspace switch signal from the container.
@@ -193,8 +266,8 @@ func runAgent(agentName string, passthrough []string) {
 				} else {
 					ui.Infof("Switching to workspace '%s'...", newWorkspace)
 					flags.Workspace = newWorkspace
-					flags.Resume = true      // Auto-resume when switching workspaces
-					flags.ResumeToken = ""   // Use stored token, not an explicit one
+					flags.Resume = true    // Auto-resume when switching workspaces
+					flags.ResumeToken = "" // Use stored token, not an explicit one
 					continue
 				}
 			}
@@ -205,12 +278,15 @@ func runAgent(agentName string, passthrough []string) {
 }
 
 type parsedFlags struct {
-	NoFirewall  bool
-	ReadOnly    bool
-	NoEnv       bool
-	Resume      bool
-	ResumeToken string
-	Verbose     bool
+	NoFirewall     bool
+	ReadOnly       bool
+	NoEnv          bool
+	Resume         bool
+	NoResumeSet    bool
+	ResumeToken    string
+	SessionName    string
+	SessionNameSet bool // true when --name was explicitly passed
+	Verbose        bool
 	ForceUpdate bool
 	Workspace   string
 	Ollama      bool
@@ -251,6 +327,13 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 			}
 		case "--no-resume":
 			f.Resume = false
+			f.NoResumeSet = true
+		case "--name":
+			if i+1 < len(passthrough) {
+				i++
+				f.SessionName = passthrough[i]
+				f.SessionNameSet = true
+			}
 		case "-v", "--verbose":
 			f.Verbose = true
 		case "-u", "--update":
@@ -301,6 +384,53 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 	}
 
 	return f
+}
+
+func applySessionResumeDefaults(f parsedFlags) parsedFlags {
+	// Named sessions (--name) imply auto-resume: if the session already
+	// exists it will be resumed, otherwise a fresh one is created.
+	// Users can force a fresh start with --no-resume.
+	if f.SessionNameSet && !f.NoResumeSet {
+		f.Resume = true
+	}
+	return f
+}
+
+func defaultSessionName() string {
+	return time.Now().Format("2006-01-02 15:04:05")
+}
+
+type sessionAction struct {
+	Workspace   string
+	SessionName string
+	Resume      bool
+}
+
+func parseSessionAction(raw string) sessionAction {
+	var out sessionAction
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		switch key {
+		case "workspace":
+			out.Workspace = value
+		case "session":
+			out.SessionName = value
+		case "resume":
+			if b, err := strconv.ParseBool(value); err == nil {
+				out.Resume = b
+			}
+		}
+	}
+	return out
 }
 
 func init() {

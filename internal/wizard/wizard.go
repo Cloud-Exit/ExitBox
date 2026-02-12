@@ -140,6 +140,19 @@ func applyResult(state State, existingCfg *config.Config) error {
 		NoEnv:      !state.PassEnv,
 		ReadOnly:   state.ReadOnly,
 	}
+
+	// Persist keybindings — only store non-default values (omitempty in YAML).
+	if len(state.Keybindings) > 0 {
+		defaults := config.DefaultKeybindings()
+		kb := config.KeybindingsConfig{}
+		if v := state.Keybindings["workspace_menu"]; v != "" && v != defaults.WorkspaceMenu {
+			kb.WorkspaceMenu = v
+		}
+		if v := state.Keybindings["session_menu"]; v != "" && v != defaults.SessionMenu {
+			kb.SessionMenu = v
+		}
+		cfg.Settings.Keybindings = kb
+	}
 	cfg.Workspaces.Active = workspaceName
 	cfg.Workspaces.Items = upsertWorkspace(cfg.Workspaces.Items, config.Workspace{
 		Name:        workspaceName,

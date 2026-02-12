@@ -67,10 +67,17 @@ type BinaryConfig struct {
 
 // SettingsConfig holds global settings.
 type SettingsConfig struct {
-	AutoUpdate       bool         `yaml:"auto_update"`
-	StatusBar        bool         `yaml:"status_bar"`
-	DefaultWorkspace string       `yaml:"default_workspace,omitempty"`
-	DefaultFlags     DefaultFlags `yaml:"default_flags"`
+	AutoUpdate       bool              `yaml:"auto_update"`
+	StatusBar        bool              `yaml:"status_bar"`
+	DefaultWorkspace string            `yaml:"default_workspace,omitempty"`
+	DefaultFlags     DefaultFlags      `yaml:"default_flags"`
+	Keybindings      KeybindingsConfig `yaml:"keybindings,omitempty"`
+}
+
+// KeybindingsConfig holds configurable tmux keybinding overrides.
+type KeybindingsConfig struct {
+	WorkspaceMenu string `yaml:"workspace_menu,omitempty"`
+	SessionMenu   string `yaml:"session_menu,omitempty"`
 }
 
 // DefaultFlags holds the default CLI flag values.

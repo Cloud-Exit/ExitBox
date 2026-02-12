@@ -16,6 +16,33 @@
 
 package config
 
+// DefaultKeybindings returns the default keybinding configuration.
+func DefaultKeybindings() KeybindingsConfig {
+	return KeybindingsConfig{
+		WorkspaceMenu: "C-M-p",
+		SessionMenu:   "C-M-s",
+	}
+}
+
+// EnvValue serializes keybindings to a compact string for passing via
+// environment variable (e.g. "workspace_menu=C-M-p,session_menu=C-M-s").
+// Returns empty string when both bindings are at their defaults.
+func (kb KeybindingsConfig) EnvValue() string {
+	def := DefaultKeybindings()
+	wm := kb.WorkspaceMenu
+	if wm == "" {
+		wm = def.WorkspaceMenu
+	}
+	sm := kb.SessionMenu
+	if sm == "" {
+		sm = def.SessionMenu
+	}
+	if wm == def.WorkspaceMenu && sm == def.SessionMenu {
+		return ""
+	}
+	return "workspace_menu=" + wm + ",session_menu=" + sm
+}
+
 // DefaultConfig returns a minimal default configuration.
 func DefaultConfig() *Config {
 	return &Config{
@@ -38,6 +65,7 @@ func DefaultConfig() *Config {
 			DefaultFlags: DefaultFlags{
 				AutoResume: false,
 			},
+			Keybindings: DefaultKeybindings(),
 		},
 	}
 }

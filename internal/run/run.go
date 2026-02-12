@@ -44,6 +44,7 @@ type Options struct {
 	NoEnv             bool
 	Resume            bool
 	ResumeToken       string
+	SessionName       string
 	EnvVars           []string
 	IncludeDirs       []string
 	AllowURLs         []string
@@ -54,6 +55,7 @@ type Options struct {
 	Ollama            bool
 	Memory            string
 	CPUs              string
+	Keybindings       string
 }
 
 // AgentContainer runs an agent container interactively.
@@ -216,9 +218,13 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		"-e", "EXITBOX_VERSION="+opts.Version,
 		"-e", "EXITBOX_STATUS_BAR="+fmt.Sprint(opts.StatusBar),
 		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(opts.Resume),
+		"-e", "EXITBOX_SESSION_NAME="+opts.SessionName,
 	)
 	if opts.ResumeToken != "" {
 		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
+	}
+	if opts.Keybindings != "" {
+		args = append(args, "-e", "EXITBOX_KEYBINDINGS="+opts.Keybindings)
 	}
 	if opts.Ollama {
 		args = append(args, ollamaEnvVars(opts.Agent)...)
@@ -317,6 +323,8 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_AUTO_RESUME":     true,
 		"EXITBOX_IPC_SOCKET":      true,
 		"EXITBOX_RESUME_TOKEN":    true,
+		"EXITBOX_SESSION_NAME":    true,
+		"EXITBOX_KEYBINDINGS":     true,
 		"TERM":                    true,
 		"http_proxy":              true,
 		"https_proxy":             true,
@@ -328,7 +336,7 @@ func isReservedEnvVar(key string) bool {
 		"ANTHROPIC_BASE_URL":      true,
 		"ANTHROPIC_AUTH_TOKEN":    true,
 		"ANTHROPIC_API_KEY":       true,
-		"OPENAI_BASE_URL":        true,
+		"OPENAI_BASE_URL":         true,
 	}
 	return reserved[key]
 }

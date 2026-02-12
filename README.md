@@ -89,15 +89,17 @@ If the file already exists (e.g., from your own global instructions), ExitBox ap
 - **Development Profiles**: Pre-configured environments for Rust, Python, Go, Node.js, and more
 - **Custom Tools**: Add Alpine packages to any image via `-t` flag or `config.yaml`
 
-### Auto-Resume Sessions
+### Named Resumable Sessions
 
 When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox captures this token and can pass it on the next run, so you seamlessly resume where you left off.
 
+- **Named sessions** — set a session name explicitly with `--name "<session>"`; if omitted, ExitBox auto-generates one using local time (`YYYY-MM-DD HH:MM:SS`)
+- **Named session resume** — when `--name "<session>"` is provided, ExitBox resumes that named session automatically if it exists (use `--no-resume` to force fresh)
 - **Disabled by default** — enable via "Auto-resume sessions" in `exitbox setup` or set `auto_resume: true` in `config.yaml`
-- **Always shown at exit** — ExitBox always prints the full resume command after a session ends (e.g. `exitbox run claude --resume <token>`)
+- **Always shown at exit** — ExitBox always prints a resume command after a session ends (e.g. `exitbox run codex --name "2026-02-11 14:51:02" --resume`)
 - **Workspace-aware** — resume commands include `--workspace` when running a non-default workspace
 - **Disable per-session** with `--no-resume` to start a fresh session
-- Resume tokens are stored per-workspace, per-agent, per-project at `~/.config/exitbox/profiles/global/<workspace>/<agent>/projects/<project_key>/.resume-token`
+- Resume tokens are stored per-workspace, per-agent, per-project, and per-session at `~/.config/exitbox/profiles/global/<workspace>/<agent>/projects/<project_key>/sessions/<session_key>/.resume-token`
 
 ### Usability
 - **Cross-Platform**: Native binaries for Linux, macOS, and Windows
@@ -270,6 +272,22 @@ exitbox workspaces default [name]          # Get or set the default workspace
 exitbox workspaces status                  # Show workspace resolution chain
 ```
 
+### Session Management
+
+Named sessions are stored per-project. You can list and remove them from the CLI:
+
+```bash
+exitbox sessions list                          # List saved sessions for current project/workspace
+exitbox sessions list --agent codex            # Filter by agent
+exitbox sessions list -w work                  # Inspect another workspace
+exitbox sessions rm "2026-02-11 14:51:02"      # Remove one named session
+exitbox sessions rm "my-session" --agent claude # Remove for a specific agent only
+```
+
+Shell completion:
+- `exitbox sessions rm <Tab>` suggests saved session names for the current project
+- `exitbox run <agent> --resume <Tab>` suggests saved session names for that agent
+
 #### How Workspaces Work
 
 - **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
@@ -286,9 +304,12 @@ exitbox workspaces status                  # Show workspace resolution chain
 4. **Active workspace**: The last-used workspace from `config.yaml`
 5. **Fallback**: `default`
 
-#### In-Container Workspace Switching
+#### In-Container Menus
 
-While inside a running agent session, press **Ctrl+Alt+P** to open an interactive workspace picker (powered by `fzf`). Selecting a different workspace exits the current session and relaunches the agent with the new workspace.
+Inside a running agent session, ExitBox provides two dedicated `fzf` menus:
+
+- **Ctrl+Alt+P** — workspace menu (save current session, then switch workspace)
+- **Ctrl+Alt+S** — session menu (switch to another named session or start a new timestamp session)
 
 **Note**: Credentials are bind-mounted at container start for security isolation. If you switch to a workspace that wasn't mounted, ExitBox warns you that credentials for that workspace aren't available and suggests re-running with the `--workspace` flag.
 
@@ -375,10 +396,12 @@ exitbox run -t nodejs,go claude    # Add Alpine packages to image (persisted)
 exitbox run -a api.example.com claude  # Allow extra domains for this session
 exitbox run -u claude              # Check for and apply agent updates
 exitbox run --no-resume claude     # Start a fresh session (don't resume previous)
+exitbox run --name "my-session" claude   # No --resume needed; resumes if session exists
+exitbox run --resume "my-session" claude # Resume by named session (or by session id)
 exitbox run -w work claude         # Use a specific workspace for this session
 ```
 
-All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--no-resume`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`.
+All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--resume [SESSION|TOKEN]`, `--no-resume`, `--name`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`.
 
 ## Available Profiles
 

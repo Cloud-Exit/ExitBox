@@ -32,6 +32,7 @@ type Step int
 const (
 	stepWelcome Step = iota
 	stepWorkspaceSelect
+	stepTopMenu
 	stepRole
 	stepLanguage
 	stepTools
@@ -39,6 +40,7 @@ const (
 	stepProfile
 	stepAgents
 	stepSettings
+	stepKeybindings
 	stepDomains
 	stepCopyCredentials
 	stepReview
@@ -64,6 +66,7 @@ type State struct {
 	OriginalDevelopment []string          // non-nil when editing an existing workspace
 	DomainCategories    []domainCategory  // editable allowlist categories
 	CopyFrom            string            // workspace to copy credentials from (empty = none)
+	Keybindings         map[string]string // configurable keybindings (e.g. "workspace_menu" -> "C-M-p")
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -103,6 +106,17 @@ type Model struct {
 	domainItemCursor int              // highlighted domain within category
 	domainInputMode  bool             // typing new domain
 	domainInput      string           // current input text
+
+	// Top menu step (re-run only)
+	topMenuCursor int // 0=workspace management, 1=general settings
+	topMenuChoice int // -1=not chosen, 0=workspace, 1=settings
+
+	// Keybindings step
+	keybindings   map[string]string // current keybinding values
+	kbCursor      int               // highlighted action index
+	kbEditMode    bool              // true when editing a binding
+	kbEditInput   string            // current text input for tmux notation
+	kbEditErr     string            // validation error message
 }
 
 // stepInfo describes a wizard step for sidebar display.
@@ -122,14 +136,16 @@ var sidebarSteps = []stepInfo{
 	{stepCopyCredentials, "Credentials", 6},
 	{stepAgents, "Agents", 7},
 	{stepSettings, "Settings", 8},
-	{stepDomains, "Firewall", 9},
-	{stepReview, "Review", 10},
+	{stepKeybindings, "Keybindings", 9},
+	{stepDomains, "Firewall", 10},
+	{stepReview, "Review", 11},
 }
 
 const sidebarWidth = 22
 
 // visibleSidebarSteps returns sidebar steps filtered by current state
-// (e.g. hides Firewall when disabled) with renumbered step labels.
+// (e.g. hides Firewall when disabled, filters by top menu choice on re-run)
+// with renumbered step labels.
 func (m Model) visibleSidebarSteps() []stepInfo {
 	var out []stepInfo
 	num := 1
@@ -139,6 +155,20 @@ func (m Model) visibleSidebarSteps() []stepInfo {
 		}
 		if si.Step == stepCopyCredentials && !m.hasCopyCredentialsStep() {
 			continue
+		}
+		// On re-run with a top menu choice, filter steps by section.
+		if !m.isFirstRun && m.topMenuChoice >= 0 {
+			if m.topMenuChoice == 0 {
+				// Workspace management: hide Keybindings (Settings stays, it's workspace-bound)
+				if si.Step == stepKeybindings {
+					continue
+				}
+			} else if m.topMenuChoice == 1 {
+				// General settings: only show Keybindings, Review
+				if si.Step != stepKeybindings && si.Step != stepReview {
+					continue
+				}
+			}
 		}
 		out = append(out, stepInfo{Step: si.Step, Label: si.Label, Num: num})
 		num++
@@ -157,6 +187,7 @@ func NewModel() Model {
 	checked["setting:auto_resume"] = false
 	checked["setting:pass_env"] = true
 	checked["setting:read_only"] = false
+	kb := config.DefaultKeybindings()
 	return Model{
 		step:             stepWelcome,
 		checked:          checked,
@@ -166,6 +197,11 @@ func NewModel() Model {
 		visitedSteps:     make(map[Step]bool),
 		isFirstRun:       true,
 		domainCategories: allowlistToCategories(config.DefaultAllowlist()),
+		topMenuChoice:    -1,
+		keybindings: map[string]string{
+			"workspace_menu": kb.WorkspaceMenu,
+			"session_menu":   kb.SessionMenu,
+		},
 	}
 }
 
@@ -243,11 +279,12 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	checked["setting:pass_env"] = !cfg.Settings.DefaultFlags.NoEnv
 	checked["setting:read_only"] = cfg.Settings.DefaultFlags.ReadOnly
 
-	startStep := stepWelcome
+	// On re-run, always start at the top menu so the user can choose
+	// between workspace management and general settings.
+	startStep := stepTopMenu
 	var workspaces []config.Workspace
 	activeCursor := 0
 	if len(cfg.Workspaces.Items) > 1 {
-		startStep = stepWorkspaceSelect
 		workspaces = cfg.Workspaces.Items
 		for i, w := range workspaces {
 			if w.Name == activeWorkspaceNameOrDefault(activeWorkspaceName) {
@@ -280,6 +317,15 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	// Start with no steps visited — checkmarks are earned during this session.
 	visited := make(map[Step]bool)
 
+	// Keybindings: start from defaults, overlay config values.
+	kb := config.DefaultKeybindings()
+	if cfg.Settings.Keybindings.WorkspaceMenu != "" {
+		kb.WorkspaceMenu = cfg.Settings.Keybindings.WorkspaceMenu
+	}
+	if cfg.Settings.Keybindings.SessionMenu != "" {
+		kb.SessionMenu = cfg.Settings.Keybindings.SessionMenu
+	}
+
 	return Model{
 		step:             startStep,
 		cursor:           activeCursor,
@@ -292,6 +338,11 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		visitedSteps:     visited,
 		isFirstRun:       false,
 		domainCategories: allowlistToCategories(config.LoadAllowlistOrDefault()),
+		topMenuChoice:    -1,
+		keybindings: map[string]string{
+			"workspace_menu": kb.WorkspaceMenu,
+			"session_menu":   kb.SessionMenu,
+		},
 	}
 }
 
@@ -352,7 +403,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Tab toggles sidebar focus (only on re-run, non-workspaceOnly, past welcome screens)
-		if msg.String() == "tab" && !m.isFirstRun && !m.workspaceOnly && m.step >= stepRole && m.step <= stepReview {
+		if msg.String() == "tab" && !m.isFirstRun && !m.workspaceOnly && m.step >= stepRole && m.step <= stepReview && m.step != stepTopMenu {
 			m.sidebarFocused = !m.sidebarFocused
 			if m.sidebarFocused {
 				// Position cursor on current step
@@ -377,6 +428,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateWelcome(msg)
 	case stepWorkspaceSelect:
 		return m.updateWorkspaceSelect(msg)
+	case stepTopMenu:
+		return m.updateTopMenu(msg)
 	case stepRole:
 		return m.updateRole(msg)
 	case stepLanguage:
@@ -391,6 +444,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateAgents(msg)
 	case stepSettings:
 		return m.updateSettings(msg)
+	case stepKeybindings:
+		return m.updateKeybindings(msg)
 	case stepCopyCredentials:
 		return m.updateCopyCredentials(msg)
 	case stepDomains:
@@ -409,6 +464,8 @@ func (m Model) View() string {
 		return m.viewWelcome()
 	case stepWorkspaceSelect:
 		return m.viewWorkspaceSelect()
+	case stepTopMenu:
+		return m.viewTopMenu()
 	case stepRole:
 		content = m.viewRole()
 	case stepLanguage:
@@ -423,6 +480,8 @@ func (m Model) View() string {
 		content = m.viewAgents()
 	case stepSettings:
 		content = m.viewSettings()
+	case stepKeybindings:
+		content = m.viewKeybindings()
 	case stepCopyCredentials:
 		content = m.viewCopyCredentials()
 	case stepDomains:
@@ -514,7 +573,12 @@ func findWorkspace(items []config.Workspace, name string) *config.Workspace {
 func (m Model) updateWelcome(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if key.String() == "enter" {
-			m.step = stepRole
+			if m.isFirstRun {
+				m.step = stepRole
+			} else {
+				m.step = stepTopMenu
+				m.topMenuCursor = 0
+			}
 			m.cursor = 0
 		}
 	}
@@ -570,6 +634,12 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_ = config.SaveConfig(cfg)
 					return nil
 				}
+			}
+		case "esc":
+			if m.topMenuChoice >= 0 {
+				m.step = stepTopMenu
+				m.topMenuCursor = 0
+				m.topMenuChoice = -1
 			}
 		case "enter":
 			if m.cursor < len(m.workspaces) {
@@ -710,7 +780,11 @@ func (m Model) viewWorkspaceSelect() string {
 	}
 	b.WriteString(fmt.Sprintf("\n%s%s\n", cursor, label))
 
-	b.WriteString(helpStyle.Render("\nEnter to select, d to toggle default, q to quit"))
+	if m.topMenuChoice >= 0 {
+		b.WriteString(helpStyle.Render("\nEnter to select, d to toggle default, Esc to go back, q to quit"))
+	} else {
+		b.WriteString(helpStyle.Render("\nEnter to select, d to toggle default, q to quit"))
+	}
 	b.WriteString("\n\n" + dimStyle.Render("* Default workspace for new sessions"))
 	return b.String()
 }
@@ -764,7 +838,14 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepLanguage
 			m.cursor = 0
 		case "esc":
-			if len(m.workspaces) > 1 {
+			if !m.isFirstRun && m.topMenuChoice >= 0 {
+				if m.topMenuChoice == 0 && len(m.workspaces) > 1 {
+					m.step = stepWorkspaceSelect
+				} else {
+					m.step = stepTopMenu
+					m.topMenuCursor = 0
+				}
+			} else if len(m.workspaces) > 1 {
 				m.step = stepWorkspaceSelect
 			} else {
 				m.step = stepWelcome
@@ -1565,13 +1646,21 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.ReadOnly = m.checked["setting:read_only"]
 			m.state.MakeDefault = m.checked["setting:make_default"]
 			m.visitedSteps[stepSettings] = true
-			if m.firewallEnabled() {
-				m.step = stepDomains
-				m.domainCatCursor = 0
-				m.domainItemCursor = 0
+			if !m.isFirstRun && m.topMenuChoice == 0 {
+				// Workspace management: Settings → Domains or Review
+				if m.firewallEnabled() {
+					m.step = stepDomains
+					m.domainCatCursor = 0
+					m.domainItemCursor = 0
+				} else {
+					m = m.collectAllStepState()
+					m.step = stepReview
+				}
 			} else {
-				m = m.collectAllStepState()
-				m.step = stepReview
+				// First-run: Settings → Keybindings
+				m.step = stepKeybindings
+				m.kbCursor = 0
+				m.kbEditMode = false
 			}
 			m.cursor = 0
 		case "esc":
@@ -1622,6 +1711,294 @@ func (m Model) viewSettings() string {
 	return b.String()
 }
 
+// --- Top Menu Step (re-run only) ---
+
+var topMenuOptions = []struct {
+	Label       string
+	Description string
+}{
+	{"Workspace management", "Configure roles, languages, tools, packages, and workspace settings"},
+	{"General settings", "Configure keybindings and global preferences"},
+}
+
+func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "up", "k":
+			if m.topMenuCursor > 0 {
+				m.topMenuCursor--
+			}
+		case "down", "j":
+			if m.topMenuCursor < len(topMenuOptions)-1 {
+				m.topMenuCursor++
+			}
+		case "enter":
+			m.topMenuChoice = m.topMenuCursor
+			if m.topMenuChoice == 0 {
+				// Workspace management flow
+				if len(m.workspaces) > 1 {
+					m.step = stepWorkspaceSelect
+				} else {
+					m.step = stepRole
+				}
+			} else {
+				// General settings flow — single screen: keybindings
+				m.step = stepKeybindings
+				m.kbCursor = 0
+			}
+			m.cursor = 0
+		case "esc", "q":
+			m.cancelled = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewTopMenu() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(logo))
+	b.WriteString("\n\n")
+	b.WriteString(titleStyle.Render("ExitBox Setup — What would you like to configure?"))
+	b.WriteString("\n\n")
+
+	for i, opt := range topMenuOptions {
+		cursor := "  "
+		if m.topMenuCursor == i {
+			cursor = cursorStyle.Render("> ")
+		}
+		label := opt.Label
+		if m.topMenuCursor == i {
+			label = selectedStyle.Render(label)
+		}
+		b.WriteString(fmt.Sprintf("%s%s\n", cursor, label))
+		b.WriteString(fmt.Sprintf("    %s\n\n", dimStyle.Render(opt.Description)))
+	}
+
+	b.WriteString(helpStyle.Render("Up/Down to move, Enter to select, q to quit"))
+	return b.String()
+}
+
+// --- Keybindings Step ---
+
+var allKeybindingActions = []struct {
+	Key, Label, Description, Default string
+}{
+	{"workspace_menu", "Workspace menu", "Open workspace switcher", "C-M-p"},
+	{"session_menu", "Session menu", "Open session manager", "C-M-s"},
+}
+
+func (m Model) updateKeybindings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if m.kbEditMode {
+			return m.updateKeybindingEdit(key)
+		}
+
+		switch key.String() {
+		case "up", "k":
+			if m.kbCursor > 0 {
+				m.kbCursor--
+			}
+		case "down", "j":
+			if m.kbCursor < len(allKeybindingActions)-1 {
+				m.kbCursor++
+			}
+		case " ", "e":
+			// Enter edit mode — pre-fill with current value
+			m.kbEditMode = true
+			m.kbEditInput = m.keybindings[allKeybindingActions[m.kbCursor].Key]
+		case "enter":
+			m.visitedSteps[stepKeybindings] = true
+			if !m.isFirstRun && m.topMenuChoice == 1 {
+				// General settings flow — go to review
+				m = m.collectAllStepState()
+				m.step = stepReview
+			} else if m.firewallEnabled() {
+				m.step = stepDomains
+				m.domainCatCursor = 0
+				m.domainItemCursor = 0
+			} else {
+				m = m.collectAllStepState()
+				m.step = stepReview
+			}
+			m.cursor = 0
+		case "esc":
+			if !m.isFirstRun && m.topMenuChoice == 1 {
+				// General settings: back to top menu
+				m.step = stepTopMenu
+				m.topMenuCursor = 0
+			} else {
+				// First-run or workspace management (via sidebar): back to Settings
+				m.step = stepSettings
+			}
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateKeybindingEdit(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "enter":
+		val := strings.TrimSpace(m.kbEditInput)
+		if val == "" {
+			m.kbEditMode = false
+			m.kbEditInput = ""
+			m.kbEditErr = ""
+			break
+		}
+		if err := validTmuxKey(val); err != "" {
+			m.kbEditErr = err
+			break
+		}
+		action := allKeybindingActions[m.kbCursor]
+		m.keybindings[action.Key] = val
+		m.kbEditMode = false
+		m.kbEditInput = ""
+		m.kbEditErr = ""
+	case "esc":
+		m.kbEditMode = false
+		m.kbEditInput = ""
+		m.kbEditErr = ""
+	case "backspace", "ctrl+h":
+		m.kbEditErr = ""
+		if len(m.kbEditInput) > 0 {
+			m.kbEditInput = m.kbEditInput[:len(m.kbEditInput)-1]
+		}
+	default:
+		m.kbEditErr = ""
+		s := key.String()
+		for _, c := range s {
+			if c >= ' ' && c <= '~' {
+				m.kbEditInput += string(c)
+			}
+		}
+	}
+	return m, nil
+}
+
+// validTmuxKey validates tmux key notation. Returns an error message if
+// invalid, or empty string if valid.
+// Valid: optional prefixes C- M- S- followed by a base key (single char,
+// function key F1-F20, or special name like Enter, Tab, Space, etc.).
+func validTmuxKey(s string) string {
+	rest := s
+
+	// Strip valid modifier prefixes (in any order, each at most once)
+	sawC, sawM, sawS := false, false, false
+	for {
+		if strings.HasPrefix(rest, "C-") && !sawC {
+			sawC = true
+			rest = rest[2:]
+		} else if strings.HasPrefix(rest, "M-") && !sawM {
+			sawM = true
+			rest = rest[2:]
+		} else if strings.HasPrefix(rest, "S-") && !sawS {
+			sawS = true
+			rest = rest[2:]
+		} else {
+			break
+		}
+	}
+
+	if rest == "" {
+		return "Missing key after modifier prefix"
+	}
+
+	// Single printable character (a-z, 0-9, punctuation)
+	if len(rest) == 1 {
+		c := rest[0]
+		if c >= '!' && c <= '~' {
+			return ""
+		}
+		return fmt.Sprintf("Invalid key: %q", rest)
+	}
+
+	// Function keys F1-F20
+	if rest[0] == 'F' && len(rest) >= 2 && len(rest) <= 3 {
+		num := rest[1:]
+		valid := false
+		for _, fk := range []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"} {
+			if num == fk {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			return ""
+		}
+	}
+
+	// Special named keys
+	specials := map[string]bool{
+		"Enter": true, "Tab": true, "Space": true, "BSpace": true,
+		"Escape": true, "Up": true, "Down": true, "Left": true,
+		"Right": true, "Home": true, "End": true, "PPage": true,
+		"NPage": true, "DC": true, "IC": true,
+	}
+	if specials[rest] {
+		return ""
+	}
+
+	return fmt.Sprintf("Invalid key %q. Use: single char, F1-F20, or Enter/Tab/Space/Up/Down/etc.", rest)
+}
+
+func (m Model) viewKeybindings() string {
+	var b strings.Builder
+	total := len(m.visibleSidebarSteps())
+	// Find our step number in the visible sidebar
+	num := 0
+	for _, si := range m.visibleSidebarSteps() {
+		if si.Step == stepKeybindings {
+			num = si.Num
+			break
+		}
+	}
+	if num == 0 {
+		num = total
+	}
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Step %d/%d — Keybindings", num, total)))
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render("Customize tmux key shortcuts. Notation: C- = Ctrl, M- = Alt, S- = Shift\n"))
+	b.WriteString(subtitleStyle.Render("Examples: C-M-p (Ctrl+Alt+p), C-b (Ctrl+b), F2, S-Tab (Shift+Tab)\n"))
+	b.WriteString("\n")
+
+	for i, action := range allKeybindingActions {
+		cursor := "  "
+		if m.kbCursor == i && !m.kbEditMode {
+			cursor = cursorStyle.Render("> ")
+		}
+
+		currentVal := m.keybindings[action.Key]
+		if currentVal == "" {
+			currentVal = action.Default
+		}
+
+		label := fmt.Sprintf("%-20s", action.Label)
+		if m.kbCursor == i && !m.kbEditMode {
+			label = selectedStyle.Render(label)
+		}
+
+		binding := selectedStyle.Render(currentVal)
+		if currentVal != action.Default {
+			binding = successStyle.Render(currentVal)
+		}
+
+		desc := dimStyle.Render(action.Description)
+		b.WriteString(fmt.Sprintf("%s%s %s  %s\n", cursor, label, binding, desc))
+
+		if m.kbCursor == i && m.kbEditMode {
+			b.WriteString(fmt.Sprintf("    Tmux notation: %s\n", selectedStyle.Render(m.kbEditInput+"█")))
+			if m.kbEditErr != "" {
+				b.WriteString(fmt.Sprintf("    %s\n", warnStyle.Render(m.kbEditErr)))
+			}
+		}
+	}
+
+	b.WriteString(helpStyle.Render("\nSpace to edit, Enter to confirm, Esc to go back" + m.tabHint()))
+	return b.String()
+}
+
 // --- Review Step ---
 
 func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1646,10 +2023,20 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.step = stepLanguage
 				}
+			} else if !m.isFirstRun && m.topMenuChoice == 0 {
+				// Workspace management: previous step is Domains or Settings
+				if m.firewallEnabled() {
+					m.step = stepDomains
+				} else {
+					m.step = stepSettings
+				}
+			} else if !m.isFirstRun && m.topMenuChoice == 1 {
+				// General settings: previous step is Keybindings
+				m.step = stepKeybindings
 			} else if m.firewallEnabled() {
 				m.step = stepDomains
 			} else {
-				m.step = stepSettings
+				m.step = stepKeybindings
 			}
 			m.cursor = 0
 		case "q", "n":
@@ -1663,6 +2050,9 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) viewReview() string {
 	if m.workspaceOnly {
 		return m.viewWorkspaceOnlyReview()
+	}
+	if !m.isFirstRun && m.topMenuChoice == 1 {
+		return m.viewGeneralSettingsReview()
 	}
 
 	var b strings.Builder
@@ -1780,8 +2170,47 @@ func (m Model) viewReview() string {
 		b.WriteString(fmt.Sprintf("  Allowlist:  %s\n", selectedStyle.Render(domainStr)))
 	}
 
+	// Keybindings
+	if len(m.state.Keybindings) > 0 {
+		b.WriteString("\n")
+		for _, action := range allKeybindingActions {
+			val := m.state.Keybindings[action.Key]
+			if val == "" {
+				val = action.Default
+			}
+			style := dimStyle
+			if val != action.Default {
+				style = successStyle
+			}
+			b.WriteString(fmt.Sprintf("  %-14s %s\n", action.Label+":", style.Render(val)))
+		}
+	}
+
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("Enter to confirm, d to toggle default, Esc to go back, q to cancel" + m.tabHint()))
+	return b.String()
+}
+
+func (m Model) viewGeneralSettingsReview() string {
+	var b strings.Builder
+	total := len(m.visibleSidebarSteps())
+	b.WriteString(m.stepTitle(total, "Review your settings"))
+	b.WriteString("\n\n")
+
+	for _, action := range allKeybindingActions {
+		val := m.state.Keybindings[action.Key]
+		if val == "" {
+			val = action.Default
+		}
+		style := dimStyle
+		if val != action.Default {
+			style = successStyle
+		}
+		b.WriteString(fmt.Sprintf("  %-14s %s  %s\n", action.Label+":", style.Render(val), dimStyle.Render(action.Description)))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Enter to confirm, Esc to go back, q to cancel" + m.tabHint()))
 	return b.String()
 }
 
@@ -2009,7 +2438,19 @@ func (m Model) collectAllStepState() Model {
 	m.state.ReadOnly = m.checked["setting:read_only"]
 	m.state.MakeDefault = m.checked["setting:make_default"]
 	m.state.DomainCategories = m.domainCategories
+	m.state.Keybindings = copyMap(m.keybindings)
 	return m
+}
+
+func copyMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // collectCurrentStepState saves current step data from model fields into m.state.
@@ -2060,6 +2501,8 @@ func (m Model) collectCurrentStepState() Model {
 		m.state.PassEnv = m.checked["setting:pass_env"]
 		m.state.ReadOnly = m.checked["setting:read_only"]
 		m.state.MakeDefault = m.checked["setting:make_default"]
+	case stepKeybindings:
+		m.state.Keybindings = copyMap(m.keybindings)
 	case stepDomains:
 		m.state.DomainCategories = m.domainCategories
 	}
@@ -2126,7 +2569,13 @@ func (m Model) updateDomains(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.step = stepReview
 		m.cursor = 0
 	case "esc":
-		m.step = stepSettings
+		if !m.isFirstRun && m.topMenuChoice == 0 {
+			// Workspace management: previous step is Settings
+			m.step = stepSettings
+		} else {
+			// First-run: previous step is Keybindings
+			m.step = stepKeybindings
+		}
 		m.cursor = 0
 	}
 	return m, nil

@@ -11,6 +11,7 @@ CODEX_CALLBACK_PORT="1455"
 CODEX_RELAY_PORT="2455"
 RELAY_PID=""
 WORKSPACE_SWITCH_FILE="/workspace/.exitbox/workspace-switch"
+SESSION_ACTION_FILE="/workspace/.exitbox/session-action"
 GLOBAL_CONFIG_FILE="/home/user/.exitbox-config/config.yaml"
 GLOBAL_WORKSPACE_ROOT="/home/user/.exitbox-config/profiles/global"
 # Save the workspace that was bind-mounted at container start (for isolation detection).
@@ -25,6 +26,24 @@ agent_display_name() {
     esac
 }
 
+parse_keybindings() {
+    KB_WORKSPACE_MENU="C-M-p"
+    KB_SESSION_MENU="C-M-s"
+    if [[ -n "${EXITBOX_KEYBINDINGS:-}" ]]; then
+        IFS=',' read -ra KB_PAIRS <<< "$EXITBOX_KEYBINDINGS"
+        for pair in "${KB_PAIRS[@]}"; do
+            key="${pair%%=*}"
+            val="${pair#*=}"
+            case "$key" in
+                workspace_menu) KB_WORKSPACE_MENU="$val" ;;
+                session_menu)   KB_SESSION_MENU="$val" ;;
+            esac
+        done
+    fi
+}
+
+parse_keybindings
+
 update_tmux_status() {
     local display ws_name ver
     display="$(agent_display_name "$AGENT")"
@@ -32,7 +51,7 @@ update_tmux_status() {
     ver="${EXITBOX_VERSION:-dev}"
     tmux set -g status-left " ExitBox  ${display} " 2>/dev/null || true
     tmux set -g window-status-current-format " Workspace: ${ws_name} " 2>/dev/null || true
-    tmux set -g status-right " ${ver}  C-M-p: switch workspace " 2>/dev/null || true
+    tmux set -g status-right " ${ver}  ${KB_WORKSPACE_MENU}: workspaces  ${KB_SESSION_MENU}: sessions " 2>/dev/null || true
 }
 
 write_tmux_conf() {
@@ -49,8 +68,8 @@ set -g status-position top
 set -g status-style "bg=colour236,fg=colour255"
 set -g status-left " ExitBox  ${display} "
 set -g status-left-length 80
-set -g status-right " ${ver}  C-M-p: switch workspace "
-set -g status-right-length 60
+set -g status-right " ${ver}  ${KB_WORKSPACE_MENU}: workspaces  ${KB_SESSION_MENU}: sessions "
+set -g status-right-length 90
 set -g status-justify centre
 set -g window-status-format ""
 set -g window-status-current-format " Workspace: ${ws_name} "
@@ -271,44 +290,227 @@ apply_active_workspace_links() {
     esac
 }
 
-switch_workspace_interactive() {
+default_session_name() {
+    date +"%Y-%m-%d %H:%M:%S"
+}
+
+current_session_name() {
+    echo "${EXITBOX_SESSION_NAME:-}"
+}
+
+effective_session_name() {
+    local name
+    name="$(current_session_name)"
+    if [[ -z "$name" ]]; then
+        name="$(default_session_name)"
+    fi
+    echo "$name"
+}
+
+project_resume_dir() {
+    local resume_dir project_key
+    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
+    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
+        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
+        resume_dir="${resume_dir}/projects/${project_key}"
+    fi
+    echo "$resume_dir"
+}
+
+active_session_file() {
+    echo "$(project_resume_dir)/.active-session"
+}
+
+set_active_session_name() {
+    local name="$1"
+    local file
+    file="$(active_session_file)"
+    mkdir -p "$(dirname "$file")"
+    printf '%s' "$name" > "$file"
+}
+
+get_active_session_name() {
+    local file
+    file="$(active_session_file)"
+    if [[ -f "$file" ]]; then
+        cat "$file"
+    fi
+}
+
+session_key_for_name() {
+    local name="$1"
+    local slug hash
+    slug="$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^_\\+//; s/_\\+$//; s/_\\+/_/g')"
+    if [[ -z "$slug" ]]; then
+        slug="session"
+    fi
+    hash="$(printf '%s' "$name" | cksum | awk '{print $1}')"
+    echo "${slug}_${hash}"
+}
+
+session_dir_for_name() {
+    local name="$1"
+    local key
+    key="$(session_key_for_name "$name")"
+    echo "$(project_resume_dir)/sessions/${key}"
+}
+
+ensure_named_session_dir() {
+    local name="$1"
+    local session_dir
+    session_dir="$(session_dir_for_name "$name")"
+    mkdir -p "$session_dir"
+    printf '%s' "$name" > "${session_dir}/.name"
+}
+
+legacy_resume_file() {
+    echo "$(project_resume_dir)/.resume-token"
+}
+
+session_entries() {
+    local root
+    root="$(project_resume_dir)/sessions"
+    [[ -d "$root" ]] || return 0
+    for session_dir in "$root"/*; do
+        [[ -d "$session_dir" ]] || continue
+        if [[ -f "$session_dir/.name" ]]; then
+            cat "$session_dir/.name"
+        fi
+    done | sed '/^$/d' | awk '!seen[$0]++'
+}
+
+write_session_action() {
+    local workspace="$1"
+    local session_name="$2"
+    local resume="${3:-true}"
+    mkdir -p "$(dirname "$SESSION_ACTION_FILE")"
+    {
+        if [[ -n "$workspace" ]]; then
+            printf 'workspace=%s\n' "$workspace"
+        fi
+        if [[ -n "$session_name" ]]; then
+            printf 'session=%s\n' "$session_name"
+        fi
+        printf 'resume=%s\n' "$resume"
+    } > "$SESSION_ACTION_FILE"
+}
+
+request_graceful_switch() {
+    if [[ -n "${EXITBOX_PARENT_PANE:-}" ]]; then
+        tmux send-keys -t "${EXITBOX_PARENT_PANE}" C-c >/dev/null 2>&1 || true
+    fi
+}
+
+session_switch_menu() {
     ensure_workspace_files
-    local choice scope name
+    local current_session new_session choices choice
+    current_session="$(effective_session_name)"
+    new_session="$(default_session_name)"
+
+    choices="${choices}${new_session}"$'\t'"new"$'\n'
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        if [[ "$s" == "$current_session" ]]; then
+            continue
+        fi
+        choices="${choices}${s}"$'\t'"existing"$'\n'
+    done < <(session_entries)
+
+    local header prompt rc target_session kind
+    header="Enter: Switch session"
+    prompt="Sessions > "
+
     set +e
-    choice="$(workspace_entries | fzf --height=40% --reverse --border --prompt='Switch workspace > ')"
-    local rc=$?
+    choice="$(printf '%s' "$choices" | sed '/^$/d' | fzf --height=45% --reverse --border --prompt="$prompt" --header="$header" --delimiter=$'\t' --with-nth=1)"
+    rc=$?
     set -e
     if [[ $rc -ne 0 || -z "$choice" ]]; then
         exit 0
     fi
 
-    scope="${choice%%:*}"
-    name="${choice#*:}"
-    # Strip directory info display suffix if present
+    target_session="$(printf '%s' "$choice" | awk -F'\t' '{print $1}')"
+    kind="$(printf '%s' "$choice" | awk -F'\t' '{print $2}')"
+    if [[ -z "$target_session" ]]; then
+        exit 0
+    fi
+    if [[ "$kind" == "existing" && "$target_session" == "$current_session" ]]; then
+        exit 0
+    fi
+
+    write_session_action "" "$target_session" "true"
+    echo "Saving current session and switching to session '${target_session}'..."
+    request_graceful_switch
+    exit 0
+}
+
+workspace_switch_menu() {
+    ensure_workspace_files
+    local current_session choices choice
+    current_session="$(effective_session_name)"
+
+    while IFS= read -r w; do
+        [[ -z "$w" ]] && continue
+        choices="${choices}${w}"$'\n'
+    done < <(workspace_entries)
+    if [[ -z "$choices" ]]; then
+        choices="workspace:none"
+    fi
+
+    local header prompt rc
+    header="Enter: Switch workspace"
+    prompt="Workspaces > "
+
+    set +e
+    choice="$(printf '%s' "$choices" | sed '/^$/d' | fzf --height=45% --reverse --border --prompt="$prompt" --header="$header")"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 || -z "$choice" ]]; then
+        exit 0
+    fi
+
+    if [[ "$choice" == "workspace:none" ]]; then
+        exit 0
+    fi
+
+    local workspace_choice scope name
+    workspace_choice="$choice"
+    scope="${workspace_choice%%:*}"
+    name="${workspace_choice#*:}"
     name="${name%% \[*}"
-    # No-op if already on this workspace.
     if [[ "$name" == "${EXITBOX_WORKSPACE_NAME:-}" ]]; then
         exit 0
     fi
+
     set_active_workspace "$scope" "$name"
-    # Signal the Go host to re-launch with the new workspace.
-    mkdir -p "$(dirname "$WORKSPACE_SWITCH_FILE")"
-    echo "$name" > "$WORKSPACE_SWITCH_FILE"
-    echo "Switching to workspace '${name}'..."
+    write_session_action "$name" "$current_session" "true"
+    echo "Saving current session and switching to workspace '${name}'..."
+    request_graceful_switch
+    exit 0
+}
+
+smart_switch_menu() {
+    # Backward-compatible alias: open sessions menu.
+    session_switch_menu
 }
 
 capture_resume_token() {
-    # Always capture tokens so they're available for explicit --resume later.
+    # Always capture tokens so they are available for explicit resume later.
     local output
     output="$(tmux capture-pane -p -S -100 2>/dev/null || true)"
-    if [[ -z "$output" ]]; then
-        return
-    fi
+    local session_name token session_dir token_file
+    session_name="$(effective_session_name)"
+    ensure_named_session_dir "$session_name"
+    set_active_session_name "$session_name"
+    session_dir="$(session_dir_for_name "$session_name")"
+    token_file="${session_dir}/.resume-token"
+
     local token=""
     case "$AGENT" in
         claude)
             # Match: claude --resume <token>  or  claude -r <token>
-            token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}' || true)"
+            if [[ -n "$output" ]]; then
+                token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}' || true)"
+            fi
             ;;
         codex)
             # Codex auto-saves sessions to ~/.codex/sessions/; no token printed at exit
@@ -319,23 +521,26 @@ capture_resume_token() {
             token="last"
             ;;
     esac
-    local resume_dir project_key
-    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
-    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
-        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
-        resume_dir="${resume_dir}/projects/${project_key}"
-    fi
-    mkdir -p "$resume_dir"
+
     if [[ -n "$token" ]]; then
-        echo "$token" > "${resume_dir}/.resume-token"
+        echo "$token" > "$token_file"
+        # Keep a single-slot token as compatibility fallback for older logic.
+        echo "$token" > "$(legacy_resume_file)"
     fi
 }
 
 build_resume_args() {
     RESUME_ARGS=()
+    local session_name session_dir session_file token legacy_file
+    session_name="$(current_session_name)"
 
     # If an explicit token was passed via --resume <token>, use it directly.
     if [[ -n "${EXITBOX_RESUME_TOKEN:-}" ]]; then
+        if [[ -z "$session_name" ]]; then
+            session_name="$(effective_session_name)"
+        fi
+        ensure_named_session_dir "$session_name"
+        set_active_session_name "$session_name"
         case "$AGENT" in
             claude)
                 RESUME_ARGS=("--resume" "$EXITBOX_RESUME_TOKEN")
@@ -355,29 +560,55 @@ build_resume_args() {
         return
     fi
 
-    local resume_dir resume_file project_key
-    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
-    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
-        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
-        resume_dir="${resume_dir}/projects/${project_key}"
-    fi
-    resume_file="${resume_dir}/.resume-token"
-    if [[ -f "$resume_file" ]]; then
-        local token
-        token="$(cat "$resume_file")"
-        if [[ -n "$token" ]]; then
-            case "$AGENT" in
-                claude)
-                    RESUME_ARGS=("--resume" "$token")
-                    ;;
-                codex)
-                    RESUME_ARGS=("resume" "--last")
-                    ;;
-                opencode)
-                    RESUME_ARGS=("--continue")
-                    ;;
-            esac
+    # Track whether the session name was explicitly provided (via --name) or
+    # loaded from .active-session. The legacy fallback should only apply in
+    # the .active-session case — explicitly named new sessions must start fresh.
+    local from_active=false
+    if [[ -z "$session_name" ]]; then
+        session_name="$(get_active_session_name)"
+        if [[ -z "$session_name" ]]; then
+            return
         fi
+        EXITBOX_SESSION_NAME="$session_name"
+        from_active=true
+    fi
+
+    ensure_named_session_dir "$session_name"
+    set_active_session_name "$session_name"
+
+    session_dir="$(session_dir_for_name "$session_name")"
+    session_file="${session_dir}/.resume-token"
+    token=""
+    if [[ -f "$session_file" ]]; then
+        token="$(cat "$session_file")"
+    fi
+
+    if [[ -z "$token" && "$from_active" == "true" ]]; then
+        # Compatibility fallback for older single-slot sessions that predate
+        # the per-session token storage. Only used when resuming via
+        # .active-session (no explicit --name). Named sessions that have no
+        # saved token are new and should start fresh.
+        legacy_file="$(legacy_resume_file)"
+        if [[ -f "$legacy_file" ]]; then
+            token="$(cat "$legacy_file")"
+            if [[ -n "$token" ]]; then
+                echo "$token" > "$session_file"
+            fi
+        fi
+    fi
+
+    if [[ -n "$token" ]]; then
+        case "$AGENT" in
+            claude)
+                RESUME_ARGS=("--resume" "$token")
+                ;;
+            codex)
+                RESUME_ARGS=("resume" "--last")
+                ;;
+            opencode)
+                RESUME_ARGS=("--continue")
+                ;;
+        esac
     fi
 }
 
@@ -486,7 +717,25 @@ fi
 
 if [[ "${1:-}" == "__switch-workspace" ]]; then
     shift
-    switch_workspace_interactive
+    workspace_switch_menu
+    exit 0
+fi
+
+if [[ "${1:-}" == "__workspace-menu" ]]; then
+    shift
+    workspace_switch_menu
+    exit 0
+fi
+
+if [[ "${1:-}" == "__session-menu" ]]; then
+    shift
+    session_switch_menu
+    exit 0
+fi
+
+if [[ "${1:-}" == "__smart-menu" ]]; then
+    shift
+    session_switch_menu
     exit 0
 fi
 
@@ -581,7 +830,8 @@ fi
 
 if [[ "${1:-}" == "__agent-loop" ]]; then
     shift
-    tmux bind-key -n C-M-p run-shell 'tmux display-popup -E "/usr/local/bin/docker-entrypoint __switch-workspace"; if [ -f /workspace/.exitbox/workspace-switch ]; then tmux kill-session; fi' 2>/dev/null || true
+    tmux bind-key -n "$KB_WORKSPACE_MENU" run-shell 'tmux display-popup -E "EXITBOX_PARENT_PANE=#{pane_id} /usr/local/bin/docker-entrypoint __workspace-menu"' 2>/dev/null || true
+    tmux bind-key -n "$KB_SESSION_MENU" run-shell 'tmux display-popup -E "EXITBOX_PARENT_PANE=#{pane_id} /usr/local/bin/docker-entrypoint __session-menu"' 2>/dev/null || true
     run_agent_loop "$@"
     exit $?
 fi
@@ -596,13 +846,10 @@ if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v
     tmux -f "$TMUX_CONF" new-session -A -s "exitbox-${AGENT}" "/usr/local/bin/docker-entrypoint __agent-loop"
     TMUX_EXIT=$?
 
-    # Show resume status after tmux exits (visible on the host terminal)
-    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
-    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
-        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
-        resume_dir="${resume_dir}/projects/${project_key}"
-    fi
-    resume_file="${resume_dir}/.resume-token"
+    # Show resume status after tmux exits (visible on the host terminal).
+    session_name="$(effective_session_name)"
+    session_dir="$(session_dir_for_name "$session_name")"
+    resume_file="${session_dir}/.resume-token"
     if [[ -f "$resume_file" ]]; then
         saved_token="$(cat "$resume_file" 2>/dev/null)"
         if [[ -n "$saved_token" ]]; then
@@ -611,7 +858,10 @@ if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v
             if [[ -n "${EXITBOX_WORKSPACE_NAME:-}" && "${EXITBOX_WORKSPACE_NAME}" != "default" ]]; then
                 resume_cmd="${resume_cmd} --workspace ${EXITBOX_WORKSPACE_NAME}"
             fi
-            echo "[INFO] Session saved. To resume: ${resume_cmd} --resume ${saved_token}"
+            if [[ -n "$session_name" ]]; then
+                resume_cmd="${resume_cmd} --name \"${session_name}\""
+            fi
+            echo "[INFO] Session saved (${session_name}). To resume: ${resume_cmd}"
         fi
     fi
 
