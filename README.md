@@ -32,21 +32,24 @@ curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/ins
 exitbox setup
 ```
 
-The setup wizard guides you through:
-1. **Developer role** — Frontend, Backend, Fullstack, DevOps, Data Science, Mobile, Embedded, or Security
-2. **Languages** — Pre-selected based on your role, customize as needed
-3. **Tool categories** — Build tools, databases, networking, DevOps, security, and more
-4. **Extra packages** — Search and add Alpine packages beyond the tool categories
-5. **Workspace name** — Named context for isolated agent configs (e.g. personal, work)
-6. **Credentials** — Import credentials from host or copy from an existing workspace
-7. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
-8. **Settings** — Auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only
-9. **Firewall** — Edit the domain allowlist categories interactively
-10. **Review** — Confirm your selections before saving
-
-The wizard generates a tailored `config.yaml` and `allowlist.yaml` with your preferences. You can re-run it at any time with `exitbox setup`.
+The wizard generates a tailored `config.yaml` and `allowlist.yaml` based on your developer role, languages, tools, and preferences. Re-run it at any time with `exitbox setup`.
 
 ## Features
+
+- **Rootless Containers** — runs without host root privileges using Podman's user namespaces (Docker fallback supported)
+- **Squid Proxy Firewall** — strict domain allowlisting with hard egress isolation; agents can only reach approved destinations
+- **Runtime Domain Requests** — agents request access to new domains at runtime via `exitbox-allow`; host user approves via popup
+- **Encrypted Vault** — AES-256 + Argon2id encrypted secret storage with per-read approval popups; replaces `.env` files inside containers
+- **Sandbox-Aware Agents** — automatic instruction injection tells agents about container restrictions, vault usage, and security rules
+- **Named Resumable Sessions** — save and resume agent conversations by name across container restarts
+- **Multi-Agent Support** — run Claude Code, OpenAI Codex, or OpenCode in the same isolated environment
+- **Workspace Isolation** — named contexts (personal, work, client) with separate credentials, tools, and vault per workspace
+- **Supply-Chain Hardened Installs** — Claude Code installed via direct binary download with SHA-256 checksum verification
+- **Alpine Base Image** — minimal ~5 MB base with 3-layer image hierarchy and incremental rebuilds
+- **Setup Wizard** — interactive TUI that configures roles, languages, tools, agents, firewall, and vault in one pass
+- **Cross-Platform** — native binaries for Linux, macOS, and Windows
+
+---
 
 ### Security
 
@@ -100,6 +103,39 @@ When agents like Claude Code and Codex exit, they display a resume token (e.g. `
 - **Workspace-aware** — resume commands include `--workspace` when running a non-default workspace
 - **Disable per-session** with `--no-resume` to start a fresh session
 - Resume tokens are stored per-workspace, per-agent, per-project, and per-session at `~/.config/exitbox/profiles/global/<workspace>/<agent>/projects/<project_key>/sessions/<session_key>/.resume-token`
+
+### Encrypted Vault
+
+ExitBox includes a built-in encrypted secret vault so agents can access API keys, tokens, and credentials without `.env` files being exposed inside the container.
+
+- **AES-256 encryption** with **Argon2id** key derivation — no external dependencies required
+- **Per-read approval**: Every secret access triggers a tmux popup requiring explicit user confirmation
+- **`.env` masking**: When vault is enabled, all `.env*` files are automatically hidden inside the container
+- **Embedded storage**: Secrets are stored in an encrypted [Badger](https://github.com/dgraph-io/badger) database per workspace
+
+**Host-side CLI:**
+
+```bash
+exitbox vault init -w <workspace>       # Initialize a new vault (prompts for password)
+exitbox vault set <KEY> -w <workspace>  # Set a secret (value prompted securely)
+exitbox vault get <KEY> -w <workspace>  # Retrieve a secret
+exitbox vault list -w <workspace>       # List secret keys
+exitbox vault delete <KEY>              # Delete a secret
+exitbox vault import .env               # Import from a .env file
+exitbox vault edit                      # Edit secrets in $EDITOR
+exitbox vault status                    # Show vault state
+exitbox vault destroy                   # Permanently delete the vault
+```
+
+**Inside the container**, agents access secrets via IPC:
+
+```bash
+exitbox-vault list                      # List available keys
+exitbox-vault get <KEY>                 # Get a secret (host user approves via popup)
+TOKEN=$(exitbox-vault get API_KEY)      # Capture into a variable
+```
+
+The first access in a session prompts for the vault password. Subsequent reads only require the per-key approval popup. Agents are instructed via sandbox instructions to never print, log, or commit secret values.
 
 ### Usability
 - **Cross-Platform**: Native binaries for Linux, macOS, and Windows
@@ -288,6 +324,20 @@ Shell completion:
 - `exitbox sessions rm <Tab>` suggests saved session names for the current project
 - `exitbox run <agent> --resume <Tab>` suggests saved session names for that agent
 
+### Vault Management
+
+```bash
+exitbox vault init -w <workspace>       # Initialize a new vault
+exitbox vault set <KEY> -w <workspace>  # Set a secret (value prompted securely)
+exitbox vault get <KEY> -w <workspace>  # Retrieve a secret
+exitbox vault list -w <workspace>       # List secret keys
+exitbox vault delete <KEY>              # Delete a secret
+exitbox vault import <file>             # Import key-value pairs from a .env file
+exitbox vault edit                      # Edit secrets in $EDITOR (KEY=VALUE format)
+exitbox vault status                    # Show vault state for a workspace
+exitbox vault destroy                   # Permanently delete a vault
+```
+
 #### How Workspaces Work
 
 - **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
@@ -462,6 +512,8 @@ workspaces:
       development:
         - node
         - python
+      vault:
+        enabled: true
 
 agents:
   claude:

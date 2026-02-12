@@ -101,3 +101,13 @@ func ProjectsDir() string {
 func AgentDir(agent string) string {
 	return filepath.Join(Home, agent)
 }
+
+// VaultDir returns the vault directory for a workspace.
+func VaultDir(workspace string) string {
+	return filepath.Join(Data, "vaults", workspace)
+}
+
+// VaultFile returns the path to the encrypted vault file for a workspace.
+func VaultFile(workspace string) string {
+	return filepath.Join(VaultDir(workspace), "vault.enc")
+}

@@ -56,7 +56,7 @@ trap 'rm -rf "$TEST_TMPDIR"' EXIT
 # Clear env vars that might leak from a host ExitBox sandbox and affect tests.
 unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
 unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET EXITBOX_KEYBINDINGS
-unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN
+unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN EXITBOX_VAULT_ENABLED
 
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
@@ -638,6 +638,106 @@ test_parse_keybindings_default
 test_parse_keybindings_custom
 test_parse_keybindings_partial
 test_write_tmux_conf_dynamic_keybindings
+
+# ============================================================================
+# Vault sandbox instructions
+# ============================================================================
+echo ""
+echo "Testing vault sandbox instructions..."
+
+# Extract the sandbox instructions block from the entrypoint.
+# The block starts with SANDBOX_INSTRUCTIONS= and the vault conditional follows.
+extract_sandbox_instructions() {
+    # Extract everything from the SANDBOX_INSTRUCTIONS section through the vault conditional.
+    awk '/^SANDBOX_INSTRUCTIONS="/,/^fi$/{print}' "$ENTRYPOINT"
+}
+
+SANDBOX_BLOCK="$(extract_sandbox_instructions)"
+
+test_vault_instructions_absent_when_disabled() {
+    local result
+    result="$(unset EXITBOX_VAULT_ENABLED; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"exitbox-vault"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: vault instructions should be absent when EXITBOX_VAULT_ENABLED is unset")
+    else
+        ((PASS++))
+    fi
+}
+
+test_vault_instructions_present_when_enabled() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"exitbox-vault"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: vault instructions should be present when EXITBOX_VAULT_ENABLED=true")
+    fi
+}
+
+test_vault_instructions_contain_security_rules() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"NEVER print"* && "$result" == *"NEVER commit"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: vault instructions should contain security rules about not printing/committing secrets")
+    fi
+}
+
+test_vault_instructions_contain_usage_pattern() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"exitbox-vault get"* && "$result" == *"Bearer"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: vault instructions should contain usage patterns with Bearer token example")
+    fi
+}
+
+test_sandbox_workspace_restriction() {
+    local result
+    result="$(eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"ALWAYS mounted at /workspace"* && "$result" == *"CANNOT access files"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: sandbox should instruct that workspace is at /workspace and nothing else is accessible")
+    fi
+}
+
+test_sandbox_redacted_instructions() {
+    local result
+    result="$(eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"<redacted>"* && "$result" == *"SENSITIVE DATA"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: sandbox should instruct to use <redacted> for sensitive data")
+    fi
+}
+
+test_vault_instructions_contain_redacted() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"<redacted>"* && "$result" == *"redact"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: vault instructions should contain redaction guidance")
+    fi
+}
+
+test_sandbox_workspace_restriction
+test_sandbox_redacted_instructions
+test_vault_instructions_absent_when_disabled
+test_vault_instructions_present_when_enabled
+test_vault_instructions_contain_security_rules
+test_vault_instructions_contain_usage_pattern
+test_vault_instructions_contain_redacted
 
 # ============================================================================
 # Results

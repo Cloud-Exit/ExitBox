@@ -88,6 +88,7 @@ func TestIsReservedEnvVar(t *testing.T) {
 		"EXITBOX_AUTO_RESUME",
 		"EXITBOX_SESSION_NAME",
 		"EXITBOX_KEYBINDINGS",
+		"EXITBOX_VAULT_ENABLED",
 		"TERM",
 		"http_proxy",
 		"https_proxy",

@@ -530,6 +530,20 @@ capture_resume_token() {
 }
 
 build_resume_args() {
+    # Session resume resolution (called from run_agent_loop):
+    #
+    # Priority order:
+    #   1. Explicit token (EXITBOX_RESUME_TOKEN set) → use it directly.
+    #   2. Auto-resume enabled (EXITBOX_AUTO_RESUME=true):
+    #      a. EXITBOX_SESSION_NAME set → look up per-session .resume-token.
+    #      b. EXITBOX_SESSION_NAME empty → load from .active-session, then
+    #         look up per-session token with legacy single-slot fallback.
+    #   3. Neither → no resume args, agent starts fresh.
+    #
+    # The legacy fallback (project-level .resume-token) is ONLY used when
+    # the session name came from .active-session (backward compat for
+    # pre-named-session data). Explicitly named sessions that have no
+    # stored token are new and always start fresh.
     RESUME_ARGS=()
     local session_name session_dir session_file token legacy_file
     session_name="$(current_session_name)"
@@ -762,7 +776,10 @@ You are running inside an ExitBox sandboxed container. Important constraints:
   You do not have permission and they will fail. All tools and packages are pre-installed
   at image build time by the host user. If you need a tool that is not available, inform
   the user and suggest they add it via \`exitbox setup\` or \`--tools\` flag on the host.
-- The filesystem at /workspace is your working directory, mounted from the host.
+- WORKSPACE: The project codebase is ALWAYS mounted at /workspace. This is your ONLY
+  working directory. You CANNOT access files, directories, or paths outside of /workspace.
+  All file operations (read, write, search, git) must be within /workspace.
+  Do NOT attempt to access /home, /etc, /var, or any other system path for project files.
 - Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
 - You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
 - If you encounter permission errors or network issues, they are likely due to sandbox restrictions.
@@ -778,9 +795,72 @@ You are running inside an ExitBox sandboxed container. Important constraints:
     exitbox-allow registry.npmjs.org
     exitbox-allow api.github.com
     exitbox-allow bunny.net
+- SENSITIVE DATA: When any command output, log, or file content contains sensitive
+  information (passwords, API keys, tokens, secrets, credentials, private keys),
+  you MUST replace the actual values with \`<redacted>\` before displaying them to the
+  user. NEVER show raw secret values in your responses, tool outputs, or summaries.
+  Examples: \`Authorization: Bearer <redacted>\`, \`password: <redacted>\`,
+  \`API_KEY=<redacted>\`. This applies to ALL contexts — code output, logs, configs, etc.
 - Focus on writing, testing, and debugging code within /workspace. That is your scope.
 <!-- END-EXITBOX-SANDBOX -->
 "
+
+# Append vault-specific instructions when vault is enabled.
+if [[ "${EXITBOX_VAULT_ENABLED:-}" == "true" ]]; then
+    SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
+<!-- BEGIN-EXITBOX-VAULT -->
+# Vault-Secured Secrets
+
+This workspace uses an encrypted vault (AES-256 + Argon2id) for secret management.
+All \`.env\` files are masked inside the container — secrets are ONLY accessible
+through the vault IPC commands below.
+
+## Accessing Secrets
+
+Use the vault commands to retrieve secrets. The host user will be prompted to
+approve each access request via a popup.
+
+  \`\`\`bash
+  exitbox-vault list                    # List available secret key names
+  exitbox-vault get <KEY>               # Get a specific secret value (stdout)
+  exitbox-vault env                     # Print all KEY=VALUE pairs
+  \`\`\`
+
+## Usage Patterns
+
+When the user asks you to use a specific secret (e.g. an API key, token, or
+credential) by name, follow this pattern:
+
+1. Fetch the secret value into a variable (NEVER display it):
+   \`\`\`bash
+   TOKEN=\$(exitbox-vault get GITHUB_TOKEN)
+   \`\`\`
+2. Use it directly in the command that needs it (e.g. API call):
+   \`\`\`bash
+   curl -H \"Authorization: Bearer \$TOKEN\" https://api.github.com/user
+   \`\`\`
+3. When showing the command to the user, ALWAYS redact the value:
+   \`\`\`
+   curl -H \"Authorization: Bearer <redacted>\" https://api.github.com/user
+   \`\`\`
+
+The host user will see an approval popup for each secret read. Wait for
+approval before proceeding. If denied, inform the user.
+
+## Security Rules
+
+- CRITICAL: NEVER print, log, echo, or display secret values in output or files.
+  Always show \`<redacted>\` in place of any secret value in your responses.
+- NEVER commit secrets to version control.
+- NEVER write secrets to disk (no temp files, no .env copies).
+- Use secrets ONLY in-memory for API calls, environment variables, or direct usage.
+- When the user says \"use my API key\" or \"use the token\", always fetch it via
+  \`exitbox-vault get <KEY>\` rather than asking the user to paste it.
+- When displaying command output that contains secret values, replace them with
+  \`<redacted>\` before showing to the user.
+<!-- END-EXITBOX-VAULT -->
+"
+fi
 
 inject_sandbox_instructions() {
     local target=""

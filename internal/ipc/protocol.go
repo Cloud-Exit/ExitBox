@@ -42,3 +42,25 @@ type AllowDomainResponse struct {
 	Approved bool   `json:"approved"`
 	Error    string `json:"error,omitempty"`
 }
+
+// VaultGetRequest is the payload for "vault_get" requests.
+type VaultGetRequest struct {
+	Key string `json:"key"`
+}
+
+// VaultGetResponse is the payload for "vault_get" responses.
+type VaultGetResponse struct {
+	Value    string `json:"value,omitempty"`
+	Approved bool   `json:"approved"`
+	Error    string `json:"error,omitempty"`
+}
+
+// VaultListRequest is the payload for "vault_list" requests.
+type VaultListRequest struct{}
+
+// VaultListResponse is the payload for "vault_list" responses.
+type VaultListResponse struct {
+	Keys     []string `json:"keys,omitempty"`
+	Approved bool     `json:"approved"`
+	Error    string   `json:"error,omitempty"`
+}

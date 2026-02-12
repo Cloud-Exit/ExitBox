@@ -43,6 +43,7 @@ const (
 	stepKeybindings
 	stepDomains
 	stepCopyCredentials
+	stepVault
 	stepReview
 	stepDone
 )
@@ -66,6 +67,8 @@ type State struct {
 	OriginalDevelopment []string          // non-nil when editing an existing workspace
 	DomainCategories    []domainCategory  // editable allowlist categories
 	CopyFrom            string            // workspace to copy credentials from (empty = none)
+	VaultEnabled        bool              // enable encrypted vault for secrets
+	VaultPassword       string            // vault encryption password (set during wizard init)
 	Keybindings         map[string]string // configurable keybindings (e.g. "workspace_menu" -> "C-M-p")
 }
 
@@ -117,6 +120,12 @@ type Model struct {
 	kbEditMode    bool              // true when editing a binding
 	kbEditInput   string            // current text input for tmux notation
 	kbEditErr     string            // validation error message
+
+	// Vault step: 0=choice, 1=password, 2=confirm
+	vaultPhase    int
+	vaultPwInput  string // password being typed
+	vaultPwConfirm string // confirmation password
+	vaultPwErr    string // mismatch/empty error
 }
 
 // stepInfo describes a wizard step for sidebar display.
@@ -138,7 +147,8 @@ var sidebarSteps = []stepInfo{
 	{stepSettings, "Settings", 8},
 	{stepKeybindings, "Keybindings", 9},
 	{stepDomains, "Firewall", 10},
-	{stepReview, "Review", 11},
+	{stepVault, "Vault", 11},
+	{stepReview, "Review", 12},
 }
 
 const sidebarWidth = 22
@@ -154,6 +164,10 @@ func (m Model) visibleSidebarSteps() []stepInfo {
 			continue
 		}
 		if si.Step == stepCopyCredentials && !m.hasCopyCredentialsStep() {
+			continue
+		}
+		// Vault is hidden in general-settings-only re-run.
+		if si.Step == stepVault && !m.isFirstRun && m.topMenuChoice == 1 {
 			continue
 		}
 		// On re-run with a top menu choice, filter steps by section.
@@ -448,6 +462,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateKeybindings(msg)
 	case stepCopyCredentials:
 		return m.updateCopyCredentials(msg)
+	case stepVault:
+		return m.updateVault(msg)
 	case stepDomains:
 		return m.updateDomains(msg)
 	case stepReview:
@@ -484,6 +500,8 @@ func (m Model) View() string {
 		content = m.viewKeybindings()
 	case stepCopyCredentials:
 		content = m.viewCopyCredentials()
+	case stepVault:
+		content = m.viewVault()
 	case stepDomains:
 		content = m.viewDomains()
 	case stepReview:
@@ -932,7 +950,7 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.workspaces) > 0 {
 					m.step = stepCopyCredentials
 				} else {
-					m.step = stepReview
+					m.step = stepVault
 				}
 			} else {
 				m.step = stepTools
@@ -1441,8 +1459,8 @@ func (m Model) updateCopyCredentials(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state.CopyFrom = options[m.cursor-2].Name
 			}
 			if m.workspaceOnly {
-				m = m.collectAllStepState()
-				m.step = stepReview
+				m.visitedSteps[stepCopyCredentials] = true
+				m.step = stepVault
 			} else {
 				m.visitedSteps[stepCopyCredentials] = true
 				m.step = stepAgents
@@ -1517,10 +1535,211 @@ func (m Model) viewCopyCredentials() string {
 
 // workspaceOnlyStepCount returns the total step count for workspace-only mode.
 func (m Model) workspaceOnlyStepCount() int {
+	n := 3 // Role, Language, Review
 	if m.hasCopyCredentialsStep() {
-		return 4 // Role, Language, Copy Credentials, Review
+		n++ // + Copy Credentials
 	}
-	return 3 // Role, Language, Review
+	n++ // + Vault
+	return n
+}
+
+// --- Vault Step (toggle) ---
+
+func (m Model) updateVault(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch m.vaultPhase {
+		case 0: // Choice: enable or skip
+			return m.updateVaultChoice(key)
+		case 1: // Password entry
+			return m.updateVaultPassword(key)
+		case 2: // Password confirmation
+			return m.updateVaultConfirm(key)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateVaultChoice(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if m.cursor < 1 {
+			m.cursor++
+		}
+	case "enter":
+		if m.cursor == 0 {
+			// Enable vault → enter password
+			m.vaultPhase = 1
+			m.vaultPwInput = ""
+			m.vaultPwErr = ""
+		} else {
+			// Skip vault
+			m.state.VaultEnabled = false
+			m.state.VaultPassword = ""
+			m.visitedSteps[stepVault] = true
+			m = m.collectAllStepState()
+			m.step = stepReview
+			m.cursor = 0
+		}
+	case "esc":
+		m = m.vaultGoBack()
+	}
+	return m, nil
+}
+
+func (m Model) updateVaultPassword(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "enter":
+		if len(m.vaultPwInput) < 1 {
+			m.vaultPwErr = "Password cannot be empty"
+			return m, nil
+		}
+		m.vaultPhase = 2
+		m.vaultPwConfirm = ""
+		m.vaultPwErr = ""
+	case "esc":
+		m.vaultPhase = 0
+		m.vaultPwInput = ""
+		m.vaultPwErr = ""
+		m.cursor = 0
+	case "backspace", "ctrl+h":
+		if len(m.vaultPwInput) > 0 {
+			m.vaultPwInput = m.vaultPwInput[:len(m.vaultPwInput)-1]
+		}
+	default:
+		s := key.String()
+		if len(s) == 1 && s[0] >= 32 && s[0] <= 126 {
+			m.vaultPwInput += s
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateVaultConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "enter":
+		if m.vaultPwConfirm != m.vaultPwInput {
+			m.vaultPwErr = "Passwords do not match"
+			m.vaultPwConfirm = ""
+			return m, nil
+		}
+		// Passwords match — vault is ready
+		m.state.VaultEnabled = true
+		m.state.VaultPassword = m.vaultPwInput
+		m.vaultPwInput = ""
+		m.vaultPwConfirm = ""
+		m.vaultPwErr = ""
+		m.visitedSteps[stepVault] = true
+		m = m.collectAllStepState()
+		m.step = stepReview
+		m.cursor = 0
+	case "esc":
+		m.vaultPhase = 1
+		m.vaultPwConfirm = ""
+		m.vaultPwErr = ""
+	case "backspace", "ctrl+h":
+		if len(m.vaultPwConfirm) > 0 {
+			m.vaultPwConfirm = m.vaultPwConfirm[:len(m.vaultPwConfirm)-1]
+		}
+	default:
+		s := key.String()
+		if len(s) == 1 && s[0] >= 32 && s[0] <= 126 {
+			m.vaultPwConfirm += s
+		}
+	}
+	return m, nil
+}
+
+func (m Model) vaultGoBack() Model {
+	m.vaultPhase = 0
+	m.vaultPwInput = ""
+	m.vaultPwConfirm = ""
+	m.vaultPwErr = ""
+	if m.workspaceOnly {
+		if m.hasCopyCredentialsStep() {
+			m.step = stepCopyCredentials
+		} else {
+			m.step = stepLanguage
+		}
+	} else if m.firewallEnabled() {
+		m.step = stepDomains
+		m.domainCatCursor = 0
+		m.domainItemCursor = 0
+	} else {
+		m.step = stepKeybindings
+		m.kbCursor = 0
+	}
+	m.cursor = 0
+	return m
+}
+
+func (m Model) viewVault() string {
+	var b strings.Builder
+
+	if m.workspaceOnly {
+		b.WriteString(titleStyle.Render(fmt.Sprintf("Step %d/%d — Encrypted Vault", m.workspaceOnlyStepCount()-1, m.workspaceOnlyStepCount())))
+	} else {
+		total := len(m.visibleSidebarSteps())
+		b.WriteString(m.stepTitle(total-1, "Encrypted Vault"))
+	}
+	b.WriteString("\n")
+
+	switch m.vaultPhase {
+	case 0:
+		b.WriteString(subtitleStyle.Render("Encrypt secrets (API keys, tokens, credentials) in an encrypted vault."))
+		b.WriteString("\n")
+		b.WriteString(subtitleStyle.Render("Agents request secrets by name; each read shows an approval popup."))
+		b.WriteString("\n\n")
+		b.WriteString(dimStyle.Render("  How it works:"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  1. Your secrets are stored encrypted on disk (AES-256 + Argon2id)"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  2. First access in a session prompts for the vault password"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  3. Each secret read shows a y/n approval popup"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  4. .env files are masked (hidden) inside the container"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  5. Agents use: exitbox-vault get <KEY> to fetch secrets"))
+		b.WriteString("\n\n")
+
+		options := []string{"Enable vault (set password now)", "Skip (use .env files directly)"}
+		for i, opt := range options {
+			cursor := "  "
+			if m.cursor == i {
+				cursor = cursorStyle.Render("> ")
+			}
+			b.WriteString(fmt.Sprintf("%s%s\n", cursor, opt))
+		}
+		b.WriteString(helpStyle.Render("\nUp/Down to move, Enter to confirm, Esc to go back"))
+
+	case 1:
+		b.WriteString(subtitleStyle.Render("Choose a password to encrypt the vault."))
+		b.WriteString("\n")
+		b.WriteString(subtitleStyle.Render("You'll need this password when the agent first accesses secrets."))
+		b.WriteString("\n\n")
+		mask := strings.Repeat("*", len(m.vaultPwInput))
+		b.WriteString(fmt.Sprintf("  Password: %s\n", selectedStyle.Render(mask+"█")))
+		if m.vaultPwErr != "" {
+			b.WriteString(fmt.Sprintf("\n  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.vaultPwErr)))
+		}
+		b.WriteString(helpStyle.Render("\nType your password, Enter to confirm, Esc to go back"))
+
+	case 2:
+		b.WriteString(subtitleStyle.Render("Confirm your vault password."))
+		b.WriteString("\n\n")
+		mask := strings.Repeat("*", len(m.vaultPwConfirm))
+		b.WriteString(fmt.Sprintf("  Confirm:  %s\n", selectedStyle.Render(mask+"█")))
+		if m.vaultPwErr != "" {
+			b.WriteString(fmt.Sprintf("\n  %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.vaultPwErr)))
+		}
+		b.WriteString(helpStyle.Render("\nType your password again, Enter to confirm, Esc to go back"))
+	}
+
+	return b.String()
 }
 
 // --- Agents Step (multi-select) ---
@@ -1647,14 +1866,14 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.MakeDefault = m.checked["setting:make_default"]
 			m.visitedSteps[stepSettings] = true
 			if !m.isFirstRun && m.topMenuChoice == 0 {
-				// Workspace management: Settings → Domains or Review
+				// Workspace management: Settings → Domains or Vault
 				if m.firewallEnabled() {
 					m.step = stepDomains
 					m.domainCatCursor = 0
 					m.domainItemCursor = 0
 				} else {
-					m = m.collectAllStepState()
-					m.step = stepReview
+					m.step = stepVault
+					m.cursor = 0
 				}
 			} else {
 				// First-run: Settings → Keybindings
@@ -1818,8 +2037,8 @@ func (m Model) updateKeybindings(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.domainCatCursor = 0
 				m.domainItemCursor = 0
 			} else {
-				m = m.collectAllStepState()
-				m.step = stepReview
+				m.step = stepVault
+				m.cursor = 0
 			}
 			m.cursor = 0
 		case "esc":
@@ -2130,6 +2349,11 @@ func (m Model) viewReview() string {
 		readOnlyStr = successStyle.Render("yes")
 	}
 	b.WriteString(fmt.Sprintf("  Read-only:    %s\n", readOnlyStr))
+	vaultStr := dimStyle.Render("no (.env files)")
+	if m.state.VaultEnabled {
+		vaultStr = successStyle.Render("yes (encrypted, password set)")
+	}
+	b.WriteString(fmt.Sprintf("  Vault:        %s\n", vaultStr))
 
 	var profiles []string
 	if m.state.OriginalDevelopment != nil {
@@ -2216,10 +2440,7 @@ func (m Model) viewGeneralSettingsReview() string {
 
 func (m Model) viewWorkspaceOnlyReview() string {
 	var b strings.Builder
-	totalSteps := 3
-	if len(m.workspaces) > 0 {
-		totalSteps = 4
-	}
+	totalSteps := m.workspaceOnlyStepCount()
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Step %d/%d — Review new workspace", totalSteps, totalSteps)))
 	b.WriteString("\n\n")
 
@@ -2256,6 +2477,12 @@ func (m Model) viewWorkspaceOnlyReview() string {
 	} else {
 		b.WriteString(fmt.Sprintf("  Credentials:  %s\n", dimStyle.Render("fresh (seeded from host)")))
 	}
+
+	vaultStr := dimStyle.Render("no (.env files)")
+	if m.state.VaultEnabled {
+		vaultStr = successStyle.Render("yes (encrypted, password set)")
+	}
+	b.WriteString(fmt.Sprintf("  Vault:        %s\n", vaultStr))
 
 	defaultStr := dimStyle.Render("no")
 	if m.state.MakeDefault {
@@ -2565,8 +2792,7 @@ func (m Model) updateDomains(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.state.DomainCategories = m.domainCategories
 		m.visitedSteps[stepDomains] = true
-		m = m.collectAllStepState()
-		m.step = stepReview
+		m.step = stepVault
 		m.cursor = 0
 	case "esc":
 		if !m.isFirstRun && m.topMenuChoice == 0 {

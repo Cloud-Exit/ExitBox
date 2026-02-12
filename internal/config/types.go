@@ -33,12 +33,18 @@ type WorkspaceCatalog struct {
 	Items  []Workspace `yaml:"items,omitempty"`
 }
 
+// VaultConfig holds encrypted vault settings for a workspace.
+type VaultConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 // Workspace is a named workspace (e.g. personal/work) with development stacks.
 type Workspace struct {
-	Name        string   `yaml:"name"`
-	Development []string `yaml:"development,omitempty"`
-	Packages    []string `yaml:"packages,omitempty"`
-	Directory   string   `yaml:"directory,omitempty"`
+	Name        string      `yaml:"name"`
+	Development []string    `yaml:"development,omitempty"`
+	Packages    []string    `yaml:"packages,omitempty"`
+	Directory   string      `yaml:"directory,omitempty"`
+	Vault       VaultConfig `yaml:"vault,omitempty"`
 }
 
 // AgentConfig holds enable/disable state for each agent.

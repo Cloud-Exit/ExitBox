@@ -30,6 +30,8 @@ type SetupResult struct {
 	CopyFrom      string   // workspace to copy credentials from ("__host__" = import from host, "" = skip)
 	IsDefault     bool     // true if this workspace is the default
 	Agents        []string // enabled agent names (e.g. ["claude", "codex"])
+	VaultEnabled  bool     // enable encrypted vault for secrets
+	VaultPassword string   // vault encryption password (non-empty when VaultEnabled)
 }
 
 // Run executes the setup wizard TUI and writes config files on completion.
@@ -69,14 +71,18 @@ func Run(existingCfg *config.Config) (*SetupResult, error) {
 		CopyFrom:      result.CopyFrom,
 		IsDefault:     isDefault,
 		Agents:        result.Agents,
+		VaultEnabled:  result.VaultEnabled,
+		VaultPassword: result.VaultPassword,
 	}, nil
 }
 
 // WorkspaceCreationResult holds the result of the workspace creation wizard.
 type WorkspaceCreationResult struct {
-	Workspace   *config.Workspace
-	MakeDefault bool
-	CopyFrom    string // workspace to copy credentials from (empty = none)
+	Workspace     *config.Workspace
+	MakeDefault   bool
+	CopyFrom      string // workspace to copy credentials from (empty = none)
+	VaultEnabled  bool   // enable encrypted vault for secrets
+	VaultPassword string // vault encryption password (non-empty when VaultEnabled)
 }
 
 // RunWorkspaceCreation runs the wizard from step 1 and returns a configured workspace.
@@ -107,9 +113,12 @@ func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*Wo
 			Name:        name,
 			Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
 			Packages:    wm.Result().CustomPackages,
+			Vault:       config.VaultConfig{Enabled: wm.Result().VaultEnabled},
 		},
-		MakeDefault: wm.Result().MakeDefault,
-		CopyFrom:    wm.Result().CopyFrom,
+		MakeDefault:   wm.Result().MakeDefault,
+		CopyFrom:      wm.Result().CopyFrom,
+		VaultEnabled:  wm.Result().VaultEnabled,
+		VaultPassword: wm.Result().VaultPassword,
 	}, nil
 }
 
@@ -158,6 +167,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 		Name:        workspaceName,
 		Development: development,
 		Packages:    state.CustomPackages,
+		Vault:       config.VaultConfig{Enabled: state.VaultEnabled},
 	})
 	cfg.Settings.DefaultWorkspace = state.DefaultWorkspace
 

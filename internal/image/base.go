@@ -109,6 +109,13 @@ func buildLocalIntermediary(ctx context.Context, rt container.Runtime, cmd, base
 		}
 	}
 
+	// Write pre-built exitbox-vault binary for the container's architecture.
+	if extra, err := writeExitboxVault(buildCtx); err == nil && extra != "" {
+		if err := appendToFile(dockerfilePath, extra); err != nil {
+			ui.Warnf("Failed to append exitbox-vault to Dockerfile: %v", err)
+		}
+	}
+
 	args := buildArgs(cmd)
 	args = append(args,
 		"--build-arg", fmt.Sprintf("BASE_IMAGE=%s", baseRef),
@@ -184,6 +191,24 @@ func writeExitboxAllow(buildCtx string) (string, error) {
 		return "", err
 	}
 	return "\n# IPC client\nCOPY exitbox-allow /usr/local/bin/exitbox-allow\n", nil
+}
+
+// writeExitboxVault writes the exitbox-vault binary into the build context
+// and returns the Dockerfile snippet to COPY it. Returns empty string if
+// the binary could not be written.
+func writeExitboxVault(buildCtx string) (string, error) {
+	var vaultBin []byte
+	switch runtime.GOARCH {
+	case "arm64":
+		vaultBin = static.ExitboxVaultArm64
+	default:
+		vaultBin = static.ExitboxVaultAmd64
+	}
+	if err := os.WriteFile(filepath.Join(buildCtx, "exitbox-vault"), vaultBin, 0755); err != nil {
+		ui.Warnf("Failed to write exitbox-vault: %v", err)
+		return "", err
+	}
+	return "\n# Vault IPC client\nCOPY exitbox-vault /usr/local/bin/exitbox-vault\n", nil
 }
 
 // pullImage pulls a container image, using a spinner in quiet mode or

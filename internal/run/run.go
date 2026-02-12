@@ -33,6 +33,12 @@ import (
 	"golang.org/x/term"
 )
 
+// isEnvSampleFile returns true for .env.sample, .env-sample, .env.example, etc.
+func isEnvSampleFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "sample") || strings.Contains(lower, "example")
+}
+
 // Options holds all the flags for running a container.
 type Options struct {
 	Agent             string
@@ -187,6 +193,47 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		)
 	}
 
+	// Register vault IPC handlers when vault is enabled for the workspace.
+	var vaultState *ipc.VaultState
+	if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled && ipcServer != nil {
+		vaultState = &ipc.VaultState{}
+		vCfg := ipc.VaultHandlerConfig{
+			Runtime:       rt,
+			ContainerName: containerName,
+			WorkspaceName: activeWorkspace.Workspace.Name,
+		}
+		ipcServer.Handle("vault_get", ipc.NewVaultGetHandler(vCfg, vaultState))
+		ipcServer.Handle("vault_list", ipc.NewVaultListHandler(vCfg, vaultState))
+	}
+	defer func() {
+		if vaultState != nil {
+			vaultState.Cleanup()
+		}
+	}()
+
+	// Vault env var and .env masking
+	if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled {
+		args = append(args, "-e", "EXITBOX_VAULT_ENABLED=true")
+
+		// Mask all .env* files (except sample/example files) by mounting /dev/null over them.
+		matches, _ := filepath.Glob(filepath.Join(opts.ProjectDir, ".env*"))
+		for _, f := range matches {
+			info, statErr := os.Stat(f)
+			if statErr != nil || info.IsDir() {
+				continue
+			}
+			base := filepath.Base(f)
+			if isEnvSampleFile(base) {
+				continue
+			}
+			rel, relErr := filepath.Rel(opts.ProjectDir, f)
+			if relErr != nil {
+				continue
+			}
+			args = append(args, "-v", "/dev/null:/workspace/"+rel+":ro")
+		}
+	}
+
 	// Environment variables
 	projectName := filepath.Base(opts.ProjectDir)
 	projectKey := project.GenerateFolderName(opts.ProjectDir)
@@ -325,6 +372,7 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_RESUME_TOKEN":    true,
 		"EXITBOX_SESSION_NAME":    true,
 		"EXITBOX_KEYBINDINGS":     true,
+		"EXITBOX_VAULT_ENABLED":   true,
 		"TERM":                    true,
 		"http_proxy":              true,
 		"https_proxy":             true,

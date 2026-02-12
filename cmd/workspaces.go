@@ -26,6 +26,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/vault"
 	"github.com/cloud-exit/exitbox/internal/wizard"
 	"github.com/spf13/cobra"
 )
@@ -173,6 +174,17 @@ func newWorkspacesAddCmd() *cobra.Command {
 					}
 					if err := profile.EnsureAgentConfig(w.Name, a); err != nil {
 						ui.Warnf("Could not seed %s config for workspace '%s': %v", a, w.Name, err)
+					}
+				}
+			}
+
+			// Initialize vault if enabled in the wizard.
+			if result.VaultEnabled && result.VaultPassword != "" {
+				if !vault.IsInitialized(w.Name) {
+					if initErr := vault.Init(w.Name, result.VaultPassword); initErr != nil {
+						ui.Warnf("Failed to initialize vault: %v", initErr)
+					} else {
+						ui.Successf("Vault initialized for workspace '%s'", w.Name)
 					}
 				}
 			}

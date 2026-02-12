@@ -159,6 +159,24 @@ func runAgent(agentName string, passthrough []string) {
 		}
 	}
 
+	// Session resolution logic:
+	//
+	// --name "X"            → SessionName="X", Resume=true (implied). Container
+	//                         resumes "X" if it has a stored token, starts fresh
+	//                         otherwise. Session token is saved under "X" on exit.
+	// --name "X" --no-resume → SessionName="X", Resume=false. Always fresh start,
+	//                          but still saves the session under "X" for later.
+	// --resume "X"          → Resolves "X" as a session name/id below, then
+	//                         sets SessionName="X", Resume=true.
+	// --resume              → Resume=true, SessionName="". Entrypoint loads last
+	//                         active session from .active-session file.
+	// (no flags)            → Resume=false, SessionName=<timestamp>. Fresh session.
+	//
+	// The entrypoint (build_resume_args) handles the actual token lookup:
+	// it checks the per-session .resume-token file for the given session name
+	// and only falls back to the legacy single-slot .resume-token when the
+	// session name came from .active-session (not from an explicit --name).
+
 	// If user passed --resume <value> without --name, treat value as a possible
 	// named session selector first (name or session id). Fall back to token.
 	if flags.Resume && flags.ResumeToken != "" && strings.TrimSpace(flags.SessionName) == "" {

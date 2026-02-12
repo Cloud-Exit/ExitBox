@@ -24,6 +24,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/vault"
 	"github.com/cloud-exit/exitbox/internal/wizard"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -75,6 +76,17 @@ func runSetup() error {
 	// Handle credential import/copy from wizard selection.
 	if result.CopyFrom != "" && result.WorkspaceName != "" {
 		handleCredentialSetup(result.WorkspaceName, result.CopyFrom)
+	}
+
+	// Initialize vault if enabled during setup.
+	if result.VaultEnabled && result.VaultPassword != "" && result.WorkspaceName != "" {
+		if !vault.IsInitialized(result.WorkspaceName) {
+			if err := vault.Init(result.WorkspaceName, result.VaultPassword); err != nil {
+				ui.Warnf("Failed to initialize vault: %v", err)
+			} else {
+				ui.Successf("Vault initialized for workspace '%s'", result.WorkspaceName)
+			}
+		}
 	}
 
 	ui.Success("ExitBox configured!")

@@ -133,13 +133,14 @@ func promptViaTmuxPopup(rt container.Runtime, containerName, domain string) (boo
 }
 
 // sanitizeForShell strips any characters that aren't safe for embedding
-// in a single-quoted shell string. Domains validated by NormalizeAllowlistEntry
-// only contain [a-zA-Z0-9.-:] so this is defense in depth.
+// in a single-quoted shell string. Allows alphanumeric, dots, dashes, colons,
+// underscores, and spaces (vault keys use underscores, display labels use spaces).
 func sanitizeForShell(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '.' || r == '-' || r == ':' {
+			(r >= '0' && r <= '9') || r == '.' || r == '-' || r == ':' ||
+			r == '_' || r == ' ' {
 			b.WriteRune(r)
 		}
 	}
