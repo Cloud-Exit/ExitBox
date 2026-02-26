@@ -63,8 +63,14 @@ var logsCmd = &cobra.Command{
 				filepath.Join(agentCfgDir, ".opencode"),
 				filepath.Join(agentCfgDir, ".config", "opencode"),
 			}
-		case "quwen":
-			searchDirs = []string{""}
+		case "qwencode":
+			searchDirs = []string{
+				filepath.Join(home, ".local", "share", "qwencode", "log"),
+				filepath.Join(home, ".local", "share", "qwencode", "logs"),
+				filepath.Join(home, ".qwencode"),
+				filepath.Join(agentCfgDir, ".qwencode"),
+				filepath.Join(agentCfgDir, ".config", "qwencode"),
+			}
 		}
 		searchDirs = append(searchDirs, agentCfgDir)
 
