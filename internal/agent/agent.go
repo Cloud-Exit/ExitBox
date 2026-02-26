@@ -52,6 +52,8 @@ func DisplayName(name string) string {
 		return "OpenAI Codex"
 	case "opencode":
 		return "OpenCode"
+	case "qwencode":
+		return "QwenCode"
 	}
 	return name
 }

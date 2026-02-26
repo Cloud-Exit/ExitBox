@@ -57,6 +57,7 @@ func DefaultConfig() *Config {
 			Claude:   AgentEntry{Enabled: false},
 			Codex:    AgentEntry{Enabled: false},
 			OpenCode: AgentEntry{Enabled: false},
+			QwenCode: AgentEntry{Enabled: false},
 		},
 		Settings: SettingsConfig{
 			AutoUpdate:       false,

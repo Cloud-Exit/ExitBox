@@ -70,7 +70,7 @@ func Init(path string) error {
 	}
 
 	// Create per-agent directories
-	for _, agent := range []string{"claude", "codex", "opencode"} {
+	for _, agent := range []string{"claude", "codex", "opencode", "qwencode"} {
 		if err := os.MkdirAll(filepath.Join(parent, agent), 0755); err != nil {
 			return err
 		}

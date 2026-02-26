@@ -184,6 +184,10 @@ func EnsureAgentConfig(workspaceName, agent string) error {
 
 		ocCache := ensureDir(root, ".cache", "opencode")
 		seedDirOnce(filepath.Join(home, ".cache", "opencode"), ocCache)
+	case "qwencode":
+		// TODO: Check dir path
+		ocDir := ensureDir(root, ".qwencode")
+		seedDirOnce(filepath.Join(home, ".qwencode"), ocDir)
 	}
 	return nil
 }

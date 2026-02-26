@@ -54,6 +54,7 @@ type AgentConfig struct {
 	Claude   AgentEntry `yaml:"claude"`
 	Codex    AgentEntry `yaml:"codex"`
 	OpenCode AgentEntry `yaml:"opencode"`
+	QwenCode AgentEntry `yaml:"qwencode"`
 }
 
 // AgentEntry is the per-agent configuration.
@@ -91,13 +92,13 @@ type KeybindingsConfig struct {
 
 // DefaultFlags holds the default CLI flag values.
 type DefaultFlags struct {
-	NoFirewall      bool   `yaml:"no_firewall"`
-	ReadOnly        bool   `yaml:"read_only"`
-	NoEnv           bool   `yaml:"no_env"`
-	AutoResume      bool   `yaml:"auto_resume"`
-	FullGitSupport  bool   `yaml:"full_git_support"`
-	Memory          string `yaml:"memory,omitempty"`
-	CPUs            string `yaml:"cpus,omitempty"`
+	NoFirewall     bool   `yaml:"no_firewall"`
+	ReadOnly       bool   `yaml:"read_only"`
+	NoEnv          bool   `yaml:"no_env"`
+	AutoResume     bool   `yaml:"auto_resume"`
+	FullGitSupport bool   `yaml:"full_git_support"`
+	Memory         string `yaml:"memory,omitempty"`
+	CPUs           string `yaml:"cpus,omitempty"`
 }
 
 // Allowlist is the domain allowlist (allowlist.yaml).
@@ -140,6 +141,8 @@ func (c *Config) IsAgentEnabled(name string) bool {
 		return c.Agents.Codex.Enabled
 	case "opencode":
 		return c.Agents.OpenCode.Enabled
+	case "qwencode":
+		return c.Agents.QwenCode.Enabled
 	}
 	return false
 }
@@ -153,5 +156,7 @@ func (c *Config) SetAgentEnabled(name string, enabled bool) {
 		c.Agents.Codex.Enabled = enabled
 	case "opencode":
 		c.Agents.OpenCode.Enabled = enabled
+	case "qwencode":
+		c.Agents.QwenCode.Enabled = enabled
 	}
 }
