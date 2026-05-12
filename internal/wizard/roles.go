@@ -24,11 +24,12 @@ import (
 	"github.com/cloud-exit/exitbox/internal/agents"
 )
 
-// Role represents a developer role with preset defaults.
+// Role represents a developer role preset (Frontend, Backend, etc.) that
+// composes one or more dev roles (python, go, etc.) plus default tools.
 type Role struct {
 	Name           string
 	Description    string
-	Profiles       []string // Default profiles to activate
+	Roles          []string // Default dev roles (python, go, ml, ...) to activate
 	Languages      []string // Pre-checked language names in language step
 	ToolCategories []string // Pre-checked tool category names in tools step
 }
@@ -64,70 +65,70 @@ var Roles = []Role{
 	{
 		Name:           "Frontend",
 		Description:    "Web frontend development",
-		Profiles:       []string{"node", "web", "build-tools"},
+		Roles:          []string{"node", "web", "build-tools"},
 		Languages:      []string{"Node/JS"},
 		ToolCategories: []string{"Build Tools", "Web"},
 	},
 	{
 		Name:           "Backend",
 		Description:    "Server-side development",
-		Profiles:       []string{"python", "database", "build-tools"},
+		Roles:          []string{"python", "database", "build-tools"},
 		Languages:      []string{"Python", "Go"},
 		ToolCategories: []string{"Build Tools", "Database"},
 	},
 	{
 		Name:           "Fullstack",
 		Description:    "Full-stack web development",
-		Profiles:       []string{"node", "python", "database", "web", "dotnet", "build-tools"},
+		Roles:          []string{"node", "python", "database", "web", "dotnet", "build-tools"},
 		Languages:      []string{"Node/JS", "Python", ".NET"},
 		ToolCategories: []string{"Build Tools", "Database", "Web"},
 	},
 	{
 		Name:           "DevOps",
 		Description:    "Infrastructure and operations",
-		Profiles:       []string{"devops", "node", "networking", "shell", "build-tools"},
+		Roles:          []string{"devops", "node", "networking", "shell", "build-tools"},
 		Languages:      []string{"Go", "Python", "Node/JS"},
 		ToolCategories: []string{"Build Tools", "Networking", "DevOps", "Shell Utils"},
 	},
 	{
 		Name:           "Kubernetes",
 		Description:    "Kubernetes development and operations",
-		Profiles:       []string{"kubernetes", "devops", "networking", "shell", "build-tools"},
+		Roles:          []string{"kubernetes", "devops", "networking", "shell", "build-tools"},
 		Languages:      []string{"Go", "Python"},
 		ToolCategories: []string{"Build Tools", "Networking", "Kubernetes", "DevOps", "Shell Utils"},
 	},
 	{
 		Name:           "Data Science",
 		Description:    "Data analysis and machine learning",
-		Profiles:       []string{"python", "datascience", "database"},
+		Roles:          []string{"python", "datascience", "database"},
 		Languages:      []string{"Python"},
 		ToolCategories: []string{"Database"},
 	},
 	{
 		Name:           "Mobile",
 		Description:    "Mobile application development",
-		Profiles:       []string{"flutter", "node"},
+		Roles:          []string{"flutter", "node"},
 		Languages:      []string{"Flutter/Dart", "Node/JS"},
 		ToolCategories: []string{"Build Tools"},
 	},
 	{
 		Name:           "Embedded",
 		Description:    "Embedded systems and IoT",
-		Profiles:       []string{"c", "embedded", "build-tools"},
+		Roles:          []string{"c", "embedded", "build-tools"},
 		Languages:      []string{"C/C++", "Rust"},
 		ToolCategories: []string{"Build Tools"},
 	},
 	{
 		Name:           "Security",
 		Description:    "Security research and tooling",
-		Profiles:       []string{"security", "networking", "shell"},
+		Roles:          []string{"security", "networking", "shell"},
 		Languages:      []string{"Python", "Go"},
 		ToolCategories: []string{"Networking", "Security", "Shell Utils"},
 	},
 	{
 		Name:           "AI Developer",
 		Description:    "AI/ML development (huggingface-cli, model tooling)",
-		Profiles:       []string{"python", "ml", "build-tools"},
+		Roles:          []string{"python", "ml", "build-tools"},
 		Languages:      []string{"Python"},
 		ToolCategories: []string{"Build Tools"},
 	},
@@ -221,8 +222,8 @@ func GetRole(name string) *Role {
 	return nil
 }
 
-// ComputeProfiles computes the profile list from roles + language selections.
-func ComputeProfiles(roleNames []string, languages []string) []string {
+// ComputeRoles computes the dev role list from role presets + language selections.
+func ComputeRoles(roleNames []string, languages []string) []string {
 	seen := make(map[string]bool)
 	var result []string
 
@@ -235,7 +236,7 @@ func ComputeProfiles(roleNames []string, languages []string) []string {
 
 	for _, roleName := range roleNames {
 		if role := GetRole(roleName); role != nil {
-			for _, p := range role.Profiles {
+			for _, p := range role.Roles {
 				add(p)
 			}
 		}

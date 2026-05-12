@@ -18,15 +18,15 @@ package profile
 
 import "strings"
 
-// Packages returns the space-separated Alpine packages for a profile,
-// or empty string if the profile has none or only custom install steps.
+// Packages returns the space-separated Alpine packages for a role,
+// or empty string if the role has none or only custom install steps.
 func Packages(name string) string {
-	// The node/javascript profiles have apk packages too.
+	// The node/javascript roles have apk packages too.
 	switch name {
 	case "node", "javascript":
 		return "nodejs npm"
 	}
-	p := Get(name)
+	p := GetRole(name)
 	if p == nil {
 		return ""
 	}

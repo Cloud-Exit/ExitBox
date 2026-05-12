@@ -67,8 +67,20 @@ func TestOpenCodeAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDockerfileInstall() error: %v", err)
 	}
+	if !strings.Contains(df, "api.github.com/repos/anomalyco/opencode") {
+		t.Error("GetDockerfileInstall() should fetch release metadata from GitHub API")
+	}
 	if !strings.Contains(df, "sha256sum") {
-		t.Error("GetDockerfileInstall() should contain sha256sum verification")
+		t.Error("GetDockerfileInstall() should verify SHA-256 checksum")
+	}
+	if !strings.Contains(df, "Checksum mismatch") {
+		t.Error("GetDockerfileInstall() should fail on checksum mismatch")
+	}
+	if !strings.Contains(df, "/usr/local/bin/opencode") {
+		t.Error("GetDockerfileInstall() should install opencode binary to /usr/local/bin")
+	}
+	if !strings.Contains(df, "/usr/local/bin/opencode --version") {
+		t.Error("GetDockerfileInstall() should verify opencode binary works")
 	}
 
 	// GetFullDockerfile

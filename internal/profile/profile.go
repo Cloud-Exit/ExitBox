@@ -16,16 +16,16 @@
 
 package profile
 
-// Profile defines a development profile with its packages and description.
-type Profile struct {
+// Role defines a development role (formerly "profile") with its packages and description.
+type Role struct {
 	Name        string
 	Description string
 	Packages    string // Space-separated Alpine packages
 }
 
-// All returns all available profiles.
-func All() []Profile {
-	return []Profile{
+// AllRoles returns all available development roles.
+func AllRoles() []Role {
+	return []Role{
 		{"core", "Compatibility alias for base profile", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux"},
 		{"base", "Base development tools (git, vim, curl)", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux"},
 		{"build-tools", "Build toolchain helpers (cmake, autoconf, libtool)", "cmake samurai autoconf automake libtool"},
@@ -53,21 +53,21 @@ func All() []Profile {
 	}
 }
 
-// Exists returns true if the profile name is valid.
-func Exists(name string) bool {
-	for _, p := range All() {
-		if p.Name == name {
+// RoleExists returns true if the role name is valid.
+func RoleExists(name string) bool {
+	for _, r := range AllRoles() {
+		if r.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-// Get returns a profile by name, or nil if not found.
-func Get(name string) *Profile {
-	for _, p := range All() {
-		if p.Name == name {
-			return &p
+// GetRole returns a role by name, or nil if not found.
+func GetRole(name string) *Role {
+	for _, r := range AllRoles() {
+		if r.Name == name {
+			return &r
 		}
 	}
 	return nil

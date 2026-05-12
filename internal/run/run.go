@@ -53,6 +53,7 @@ type Options struct {
 	ProjectDir        string
 	WorkspaceHash     string
 	WorkspaceOverride string
+	EnvProfile        string
 	NoFirewall        bool
 	ReadOnly          bool
 	NoEnv             bool
@@ -178,21 +179,15 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		}
 	}
 
-	// IPC server for runtime domain allow requests.
-	var ipcServer *ipc.Server
-	if !opts.NoFirewall {
-		var ipcErr error
-		ipcServer, ipcErr = ipc.NewServer()
-		if ipcErr != nil {
-			ui.Warnf("Failed to start IPC server: %v", ipcErr)
-		} else {
-			ipcServer.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
-				Runtime:       rt,
-				ContainerName: containerName,
-			}))
-			ipcServer.Start()
-			defer ipcServer.Stop()
-		}
+	// IPC server: always start (vault/kv depend on it).
+	// Domain-allow handler only required when firewall is enabled.
+	ipcServer, ipcErr := newIPCServer(!opts.NoFirewall, rt, containerName)
+	if ipcErr != nil {
+		ui.Warnf("Failed to start IPC server: %v", ipcErr)
+		ipcServer = nil
+	} else {
+		ipcServer.Start()
+		defer ipcServer.Stop()
 	}
 
 	// IDE relay: bridge the host IDE's WebSocket to a Unix socket in the
@@ -400,6 +395,9 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	if opts.ResumeToken != "" {
 		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
 	}
+	if opts.EnvProfile != "" {
+		args = append(args, "-e", "EXITBOX_ENV_PROFILE="+opts.EnvProfile)
+	}
 	if opts.Keybindings != "" {
 		args = append(args, "-e", "EXITBOX_KEYBINDINGS="+opts.Keybindings)
 	}
@@ -565,4 +563,20 @@ func portAvailable(host string, port int) bool {
 	}
 	_ = ln.Close()
 	return true
+}
+
+// newIPCServer creates and configures an IPC server.
+// When firewallEnabled is true, it also registers the allow_domain handler.
+func newIPCServer(firewallEnabled bool, rt container.Runtime, containerName string) (*ipc.Server, error) {
+	s, err := ipc.NewServer()
+	if err != nil {
+		return nil, err
+	}
+	if firewallEnabled {
+		s.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
+			Runtime:       rt,
+			ContainerName: containerName,
+		}))
+	}
+	return s, nil
 }

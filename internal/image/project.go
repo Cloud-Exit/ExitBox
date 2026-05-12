@@ -60,7 +60,7 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	cmd := container.Cmd(rt)
 
 	// Ensure tools image exists (tools → core → base cascade)
-	if err := BuildTools(ctx, rt, agentName, false); err != nil {
+	if err := BuildTools(ctx, rt, agentName, force); err != nil {
 		return err
 	}
 
@@ -102,10 +102,10 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// but be explicit in case that changes)
 	df.WriteString("USER root\n\n")
 
-	// Validate all development profiles up front.
+	// Validate all development roles up front.
 	for _, p := range developmentProfiles {
-		if !profile.Exists(p) {
-			return fmt.Errorf("unknown development profile '%s'. Run 'exitbox setup' to configure your development stack", p)
+		if !profile.RoleExists(p) {
+			return fmt.Errorf("unknown development role '%s'. Run 'exitbox setup' to configure your development stack", p)
 		}
 	}
 

@@ -301,6 +301,22 @@ apply_active_workspace_links() {
 
     workspace_root="${GLOBAL_WORKSPACE_ROOT}/${name}/${AGENT}"
 
+    # If an env profile is selected, scope agent config to its subdirectory.
+    # Seeded on first edit via 'exitbox config edit <agent> --profile <name>'.
+    if [[ -n "${EXITBOX_ENV_PROFILE:-}" ]]; then
+        local profile_root="${workspace_root}/profiles/${EXITBOX_ENV_PROFILE}"
+        if [[ ! -d "$profile_root" ]]; then
+            mkdir -p "$profile_root"
+            # Seed from default agent config so first run has working defaults.
+            if [[ -d "$workspace_root" ]]; then
+                cp -a "${workspace_root}/." "${profile_root}/" 2>/dev/null || true
+                # Don't recursively nest profiles within profiles.
+                rm -rf "${profile_root}/profiles" 2>/dev/null || true
+            fi
+        fi
+        workspace_root="$profile_root"
+    fi
+
     # Credential isolation: only the workspace that was mounted at container
     # start has real data. If the user switched to a different workspace via
     # Ctrl+P, its directory is empty (not bind-mounted from host).
@@ -851,6 +867,9 @@ build_resume_args() {
 
 run_agent_once() {
     if [[ $# -gt 0 ]]; then
+        if should_exec_raw "$1"; then
+            exec "$@"
+        fi
         case "$1" in
             claude|codex|opencode)
                 exec "$@"
@@ -909,6 +928,9 @@ run_agent_loop() {
 
     set +e
     if [[ $# -gt 0 ]]; then
+        if should_exec_raw "$1"; then
+            "$@"
+        else
         case "$1" in
             claude|codex|opencode)
                 if [[ "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
@@ -925,6 +947,7 @@ run_agent_loop() {
                 fi
                 ;;
         esac
+        fi
     else
         if [[ ${#RESUME_ARGS[@]} -gt 0 ]]; then
             "$AGENT" "${RESUME_ARGS[@]}"
@@ -937,6 +960,23 @@ run_agent_loop() {
     capture_resume_token
 
     exit "$code"
+}
+
+should_exec_raw() {
+    local cmd="${1:-}"
+    [[ -z "$cmd" ]] && return 1
+
+    if [[ "${EXITBOX_RAW_COMMAND:-}" == "true" ]]; then
+        return 0
+    fi
+
+    case "$cmd" in
+        sh|bash|ash|zsh|fish|env|printenv|pwd|ls|cat|find|which|whereis|stat|test)
+            return 0
+            ;;
+    esac
+
+    return 1
 }
 
 setup_git_credential_helper() {

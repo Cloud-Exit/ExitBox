@@ -1,45 +1,53 @@
-// ExitBox - Multi-Agent Container Sandbox
-// Copyright (C) 2026 Cloud Exit B.V.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 package opencode
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
 )
 
-// opencodeReleaseRepo is the GitHub org/repo for OpenCode release downloads (v-prefixed tags).
-const opencodeReleaseRepo = "anomalyco/opencode"
-
 func (o *OpenCode) GetDockerfileInstall(buildCtx string) (string, error) {
-	return fmt.Sprintf(`# Install OpenCode binary with SHA-256 verification
+	if o.NpmPackageName() == "" {
+		return "", fmt.Errorf("unsupported architecture for OpenCode")
+	}
+	return `# Install OpenCode via direct GitHub release download with SHA-256 verification.
+# No "curl | bash" — fetches tarball, verifies digest from GitHub API, extracts.
 ARG OPENCODE_VERSION
-ARG OPENCODE_CHECKSUM
-COPY %s /tmp/opencode.tar.gz
-RUN echo "${OPENCODE_CHECKSUM}  /tmp/opencode.tar.gz" | sha256sum -c - && \
-    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin && \
-    chmod +x /usr/local/bin/opencode && \
-    rm -f /tmp/opencode.tar.gz`, o.BinaryName()), nil
+RUN set -e && \
+    case "$(uname -m)" in \
+        x86_64|amd64) OC_ARCH="x64" ;; \
+        aarch64|arm64) OC_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    ASSET="opencode-linux-${OC_ARCH}.tar.gz" && \
+    echo "Installing OpenCode v${OPENCODE_VERSION} (${ASSET})..." && \
+    META=$(curl -fsSL "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}") && \
+    DIGEST=$(printf '%s' "$META" | jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .digest') && \
+    EXPECTED="${DIGEST#sha256:}" && \
+    if ! echo "$EXPECTED" | grep -qE '^[a-f0-9]{64}$'; then \
+        echo "ERROR: No valid sha256 digest found for ${ASSET}" >&2; exit 1; \
+    fi && \
+    curl -fsSL -o /tmp/opencode.tar.gz \
+        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${ASSET}" && \
+    ACTUAL=$(sha256sum /tmp/opencode.tar.gz | cut -d' ' -f1) && \
+    if [ "$ACTUAL" != "$EXPECTED" ]; then \
+        echo "ERROR: Checksum mismatch" >&2; \
+        echo "  Expected: $EXPECTED" >&2; \
+        echo "  Actual:   $ACTUAL" >&2; \
+        rm -f /tmp/opencode.tar.gz; exit 1; \
+    fi && \
+    echo "Checksum verified: $ACTUAL" && \
+    mkdir -p /tmp/opencode-extract && \
+    tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-extract && \
+    OC_BIN=$(find /tmp/opencode-extract -type f -name opencode | head -n1) && \
+    test -n "$OC_BIN" && \
+    install -m 755 "$OC_BIN" /usr/local/bin/opencode && \
+    rm -rf /tmp/opencode.tar.gz /tmp/opencode-extract && \
+    /usr/local/bin/opencode --version`, nil
 }
 
 // GetFullDockerfile returns the complete Dockerfile for OpenCode.
-// Builds on exitbox-base with pre-downloaded musl binary (same pattern as Claude/Codex).
 func (o *OpenCode) GetFullDockerfile(version string) (string, error) {
 	install, err := o.GetDockerfileInstall("")
 	if err != nil {
@@ -56,28 +64,16 @@ func (o *OpenCode) GetFullDockerfile(version string) (string, error) {
 func (o *OpenCode) PrepareBuild(in agent.PrepareBuildInput) error {
 	version := in.Version
 	if version == "" {
-		version = "latest"
+		var err error
+		version, err = o.GetLatestVersion()
+		if err != nil {
+			return fmt.Errorf("failed to get latest OpenCode version: %w", err)
+		}
 	}
-	binaryName := o.BinaryName()
-	if binaryName == "" {
-		return fmt.Errorf("unsupported architecture for OpenCode")
-	}
-	if in.Download == nil || in.FileSHA256 == nil {
-		return fmt.Errorf("PrepareBuildInput.Download and FileSHA256 are required for OpenCode")
-	}
-	url := fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", opencodeReleaseRepo, version, binaryName)
 	if in.Logf != nil {
-		in.Logf("Downloading OpenCode %s...", version)
+		in.Logf("Building OpenCode image with version %s (bun install at build time)", version)
 	}
-	dlPath := filepath.Join(in.BuildDir, binaryName)
-	if err := in.Download(in.Ctx, url, dlPath); err != nil {
-		return fmt.Errorf("failed to download OpenCode: %w", err)
-	}
-	checksum := in.FileSHA256(dlPath)
-	if in.Logf != nil {
-		in.Logf("OpenCode SHA-256: %s", checksum)
-	}
-	df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\nARG OPENCODE_CHECKSUM=%s\n", version, checksum)
+	df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\n", version)
 	install, err := o.GetDockerfileInstall(in.BuildDir)
 	if err != nil {
 		return fmt.Errorf("failed to get OpenCode install instructions: %w", err)

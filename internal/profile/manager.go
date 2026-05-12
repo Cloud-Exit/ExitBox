@@ -117,7 +117,7 @@ func AddWorkspace(w config.Workspace, cfg *config.Config) error {
 		return fmt.Errorf("workspace name cannot be empty")
 	}
 	for _, dev := range w.Development {
-		if !Exists(dev) {
+		if !RoleExists(dev) {
 			return &InvalidWorkspaceError{Name: dev}
 		}
 	}

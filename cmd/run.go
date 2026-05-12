@@ -30,6 +30,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/agents"
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
+	"github.com/cloud-exit/exitbox/internal/env"
 	"github.com/cloud-exit/exitbox/internal/image"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
@@ -72,6 +73,7 @@ Flags (passed after the agent name):
       --version VERSION   Pin specific agent version (e.g., 1.0.123)
   -v, --verbose           Enable verbose output
   -w, --workspace NAME    Use a specific workspace for this session
+      --profile NAME      Apply an env profile (loads vars + profile-scoped config)
   -e, --env KEY=VALUE     Pass environment variables
   -t, --tools PKG         Add Alpine packages to the image
   -i, --include-dir DIR   Mount host dir inside /workspace
@@ -174,6 +176,37 @@ func runAgent(agentName string, passthrough []string) {
 		}
 	}
 
+	// Load env profile vars and prepend to EnvVars so CLI -e flags override
+	// profile values. If no --profile given, check for a workspace default.
+	if flags.EnvProfile == "" {
+		active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		if active != nil {
+			if defName, err := env.GetDefault(active.Workspace.Name); err == nil && defName != "" {
+				flags.EnvProfile = defName
+			}
+		}
+	}
+	if flags.EnvProfile != "" {
+		if err := validateProfileName(flags.EnvProfile); err != nil {
+			ui.Errorf("%v", err)
+		}
+		active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		if active == nil {
+			ui.Errorf("Cannot resolve workspace for env profile '%s'", flags.EnvProfile)
+		}
+		envProfile, err := env.Load(active.Workspace.Name, flags.EnvProfile)
+		if err != nil {
+			ui.Errorf("%v", err)
+		}
+		var profileVars []string
+		for k, v := range envProfile.Vars {
+			profileVars = append(profileVars, k+"="+v)
+		}
+		flags.EnvVars = append(profileVars, flags.EnvVars...)
+		ui.Infof("Loaded env profile '%s' (%d vars) from workspace '%s'",
+			flags.EnvProfile, len(envProfile.Vars), active.Workspace.Name)
+	}
+
 	// Session resolution logic:
 	//
 	// --name "X"            → SessionName="X", Resume=true (implied). Container
@@ -239,6 +272,7 @@ func runAgent(agentName string, passthrough []string) {
 			ProjectDir:        projectDir,
 			WorkspaceHash:     workspaceHash,
 			WorkspaceOverride: flags.Workspace,
+			EnvProfile:        flags.EnvProfile,
 			NoFirewall:        flags.NoFirewall,
 			ReadOnly:          flags.ReadOnly,
 			NoEnv:             flags.NoEnv,
@@ -346,6 +380,7 @@ type parsedFlags struct {
 	AgentVersion   string
 	ForceUpdate    bool
 	Workspace      string
+	EnvProfile     string
 	Ollama         bool
 	Memory         string
 	CPUs           string
@@ -404,6 +439,11 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 			if i+1 < len(passthrough) {
 				i++
 				f.Workspace = passthrough[i]
+			}
+		case "--profile":
+			if i+1 < len(passthrough) {
+				i++
+				f.EnvProfile = passthrough[i]
 			}
 		case "-e", "--env":
 			if i+1 < len(passthrough) {

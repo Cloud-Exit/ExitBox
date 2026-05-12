@@ -147,18 +147,21 @@ Examples:
 
 func newConfigEditCmd() *cobra.Command {
 	var workspace string
+	var envProfile string
 
 	cmd := &cobra.Command{
 		Use:   "edit <agent>",
 		Short: "Open agent config file in $EDITOR",
 		Long: `Opens the agent's primary config file in your $EDITOR (or vi).
 
-Creates the file if it doesn't exist.
+Creates the file if it doesn't exist. With --profile, edits the
+profile-scoped config (seeded from the default config on first edit).
 
 Examples:
-  exitbox config edit claude           Edit Claude settings.json
-  exitbox config edit codex            Edit Codex config.toml
-  exitbox config edit opencode -w work Edit OpenCode config in 'work' workspace`,
+  exitbox config edit claude                       Edit Claude settings.json (default)
+  exitbox config edit codex                        Edit Codex config.toml
+  exitbox config edit opencode -w work             Edit OpenCode config in 'work' workspace
+  exitbox config edit claude --profile openrouter  Edit Claude settings.json scoped to 'openrouter' profile`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
@@ -169,16 +172,36 @@ Examples:
 
 			cfg := config.LoadOrDefault()
 			workspaceName := resolveConfigWorkspace(cfg, workspace)
-			wsDir := profile.WorkspaceAgentDir(workspaceName, name)
+
+			if envProfile != "" {
+				if err := validateProfileName(envProfile); err != nil {
+					ui.Errorf("%v", err)
+				}
+			}
+
+			wsDir := envProfileConfigDir(workspaceName, name, envProfile)
 			p := a.ConfigFilePath(wsDir)
 
-			// Create parent dirs + empty file if it doesn't exist.
+			// Seed from default config on first edit of a profile-scoped file.
 			if _, err := os.Stat(p); os.IsNotExist(err) {
 				if mkErr := os.MkdirAll(filepath.Dir(p), 0755); mkErr != nil {
 					ui.Errorf("Failed to create directory: %v", mkErr)
 				}
-				if wErr := os.WriteFile(p, []byte{}, 0644); wErr != nil {
-					ui.Errorf("Failed to create config file: %v", wErr)
+				if envProfile != "" {
+					defaultPath := a.ConfigFilePath(profile.WorkspaceAgentDir(workspaceName, name))
+					if data, readErr := os.ReadFile(defaultPath); readErr == nil {
+						if wErr := os.WriteFile(p, data, 0644); wErr != nil {
+							ui.Errorf("Failed to seed profile config: %v", wErr)
+						}
+					} else {
+						if wErr := os.WriteFile(p, []byte{}, 0644); wErr != nil {
+							ui.Errorf("Failed to create config file: %v", wErr)
+						}
+					}
+				} else {
+					if wErr := os.WriteFile(p, []byte{}, 0644); wErr != nil {
+						ui.Errorf("Failed to create config file: %v", wErr)
+					}
 				}
 			}
 
@@ -197,6 +220,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Workspace name (default: active workspace)")
+	cmd.Flags().StringVar(&envProfile, "profile", "", "Scope to a named env profile (creates profile-specific config)")
 	return cmd
 }
 

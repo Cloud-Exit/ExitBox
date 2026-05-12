@@ -141,6 +141,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	}
 
 	args := buildArgs(cmd)
+	if force {
+		args = append(args, "--no-cache")
+	}
 	args = append(args,
 		"-t", imageName,
 		"-f", dockerfilePath,
