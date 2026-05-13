@@ -176,9 +176,14 @@ Examples:
 			if envProfile != "" {
 				if err := validateProfileName(envProfile); err != nil {
 					ui.Errorf("%v", err)
+					return
 				}
 			}
 
+			// Profile-scoped config is seeded from the default config on first
+			// edit. If the default contains API keys or tokens, they are copied
+			// into the profile directory. Rotate secrets if you split profiles
+			// between providers.
 			wsDir := envProfileConfigDir(workspaceName, name, envProfile)
 			p := a.ConfigFilePath(wsDir)
 

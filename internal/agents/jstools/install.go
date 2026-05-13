@@ -4,6 +4,7 @@ import "strings"
 
 // InstallDependencies generates a Dockerfile RUN step for apk-installed
 // packages and globally installed npm packages.
+// Callers must pass trusted package specifiers only (shell-injection-prone).
 func InstallDependencies(apkPackages, npmPackages []string) string {
 	var parts []string
 

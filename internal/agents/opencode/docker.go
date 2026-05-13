@@ -13,8 +13,11 @@ func (o *OpenCode) GetDockerfileInstall(buildCtx string) (string, error) {
 	}
 	return `# Install OpenCode via direct GitHub release download with SHA-256 verification.
 # No "curl | bash" — fetches tarball, verifies digest from GitHub API, extracts.
+# Note: base image must include curl, jq, sha256sum.
+# For CI rate limits, pass GITHUB_TOKEN as build-arg or env to reduce 403s.
 ARG OPENCODE_VERSION
 RUN set -e && \
+    apk add --no-cache curl jq && \
     case "$(uname -m)" in \
         x86_64|amd64) OC_ARCH="x64" ;; \
         aarch64|arm64) OC_ARCH="arm64" ;; \
@@ -22,7 +25,9 @@ RUN set -e && \
     esac && \
     ASSET="opencode-linux-${OC_ARCH}.tar.gz" && \
     echo "Installing OpenCode v${OPENCODE_VERSION} (${ASSET})..." && \
-    META=$(curl -fsSL "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}") && \
+    META=$(curl -fsSL \
+        -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+        "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}") && \
     DIGEST=$(printf '%s' "$META" | jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .digest') && \
     EXPECTED="${DIGEST#sha256:}" && \
     if ! echo "$EXPECTED" | grep -qE '^[a-f0-9]{64}$'; then \
@@ -40,8 +45,14 @@ RUN set -e && \
     echo "Checksum verified: $ACTUAL" && \
     mkdir -p /tmp/opencode-extract && \
     tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-extract && \
-    OC_BIN=$(find /tmp/opencode-extract -type f -name opencode | head -n1) && \
-    test -n "$OC_BIN" && \
+    OC_BIN="/tmp/opencode-extract/opencode" && \
+    if [ ! -f "$OC_BIN" ]; then \
+        OC_BIN=$(find /tmp/opencode-extract -maxdepth 2 -type f -name opencode) && \
+        OC_COUNT=$(echo "$OC_BIN" | wc -l) && \
+        if [ "$OC_COUNT" -ne 1 ]; then \
+            echo "ERROR: Expected exactly one opencode binary, found $OC_COUNT" >&2; exit 1; \
+        fi; \
+    fi && \
     install -m 755 "$OC_BIN" /usr/local/bin/opencode && \
     rm -rf /tmp/opencode.tar.gz /tmp/opencode-extract && \
     /usr/local/bin/opencode --version`, nil
@@ -71,7 +82,7 @@ func (o *OpenCode) PrepareBuild(in agent.PrepareBuildInput) error {
 		}
 	}
 	if in.Logf != nil {
-		in.Logf("Building OpenCode image with version %s (bun install at build time)", version)
+		in.Logf("Building OpenCode image with version %s (GitHub release tarball, SHA-256 verified)", version)
 	}
 	df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\n", version)
 	install, err := o.GetDockerfileInstall(in.BuildDir)

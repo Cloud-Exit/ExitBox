@@ -9,6 +9,10 @@ import (
 	"github.com/cloud-exit/exitbox/internal/container"
 )
 
+// GetLatestVersion queries npm for the latest version.
+// The Dockerfile installs from GitHub releases using v${VERSION}.
+// Invariant: npm latest must match a tagged GitHub release vX.
+// If they diverge (publish lag, pipeline changes), builds will fail.
 func (o *OpenCode) GetLatestVersion() (string, error) {
 	pkg := o.NpmPackageName()
 	if pkg == "" {

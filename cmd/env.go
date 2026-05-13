@@ -59,9 +59,14 @@ func newEnvCreateCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			if err := validateProfileName(name); err != nil {
+				ui.Errorf("%v", err)
+				return
+			}
 			ws := resolveEnvWorkspace(workspace)
 			if env.Exists(ws, name) {
 				ui.Errorf("Env profile '%s' already exists in workspace '%s'", name, ws)
+				return
 			}
 			editEnvProfile(ws, name, true)
 		},
@@ -78,6 +83,10 @@ func newEnvEditCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			if err := validateProfileName(name); err != nil {
+				ui.Errorf("%v", err)
+				return
+			}
 			ws := resolveEnvWorkspace(workspace)
 			editEnvProfile(ws, name, false)
 		},
@@ -120,6 +129,10 @@ func newEnvShowCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			if err := validateProfileName(name); err != nil {
+				ui.Errorf("%v", err)
+				return
+			}
 			ws := resolveEnvWorkspace(workspace)
 			p, err := env.Load(ws, name)
 			if err != nil {
@@ -154,12 +167,22 @@ func newEnvDeleteCmd() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			name := args[0]
+			if err := validateProfileName(name); err != nil {
+				ui.Errorf("%v", err)
+				return
+			}
 			ws := resolveEnvWorkspace(workspace)
 			if !env.Exists(ws, name) {
 				ui.Errorf("Env profile '%s' not found in workspace '%s'", name, ws)
+				return
 			}
 			if err := env.Delete(ws, name); err != nil {
 				ui.Errorf("Failed to delete env profile: %v", err)
+				return
+			}
+			// If deleted profile is current default, clear default.
+			if cur, err := env.GetDefault(ws); err == nil && cur == name {
+				_ = env.ClearDefault(ws)
 			}
 			ui.Successf("Deleted env profile '%s' from workspace '%s'", name, ws)
 		},
@@ -203,8 +226,13 @@ Use --clear to remove the default.`,
 			}
 
 			name := args[0]
+			if err := validateProfileName(name); err != nil {
+				ui.Errorf("%v", err)
+				return
+			}
 			if err := env.SetDefault(ws, name); err != nil {
 				ui.Errorf("%v", err)
+				return
 			}
 			ui.Successf("Set default env profile to '%s' for workspace '%s'", name, ws)
 		},
@@ -216,6 +244,7 @@ Use --clear to remove the default.`,
 
 // editEnvProfile opens a tempfile with the profile contents in $EDITOR,
 // then parses and saves it back to KV. If isNew is true, writes a header.
+// Uses sh -c so multi-word EDITOR (e.g. "code --wait") works.
 func editEnvProfile(ws, name string, isNew bool) {
 	var initial string
 	if isNew {
@@ -226,13 +255,23 @@ func editEnvProfile(ws, name string, isNew bool) {
 		p, err := env.Load(ws, name)
 		if err != nil {
 			ui.Errorf("%v", err)
+			return
 		}
 		initial = env.FormatEnvFile(p.Vars)
 	}
 
-	tmp, err := os.CreateTemp("", fmt.Sprintf("exitbox-env-%s-*.env", name))
+	// Sanitize name into a safe temp pattern.
+	safeName := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+
+	tmp, err := os.CreateTemp("", fmt.Sprintf("exitbox-env-%s-*.env", safeName))
 	if err != nil {
 		ui.Errorf("Failed to create tempfile: %v", err)
+		return
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
@@ -240,30 +279,35 @@ func editEnvProfile(ws, name string, isNew bool) {
 	if _, err := tmp.WriteString(initial); err != nil {
 		_ = tmp.Close()
 		ui.Errorf("Failed to write tempfile: %v", err)
+		return
 	}
 	if err := tmp.Close(); err != nil {
 		ui.Errorf("Failed to close tempfile: %v", err)
+		return
 	}
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = "vi"
 	}
-	c := exec.Command(editor, tmpPath)
+	c := exec.Command("sh", "-c", fmt.Sprintf("%q \"$1\"", editor), "sh", tmpPath)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		ui.Errorf("Editor exited with error: %v", err)
+		return
 	}
 
 	content, err := os.ReadFile(tmpPath)
 	if err != nil {
 		ui.Errorf("Failed to read tempfile: %v", err)
+		return
 	}
 	vars, parseErr := env.ParseEnvFile(string(content))
 	if parseErr != nil {
 		ui.Errorf("Parse error: %v", parseErr)
+		return
 	}
 	if len(vars) == 0 {
 		ui.Warn("No variables defined; profile not saved.")

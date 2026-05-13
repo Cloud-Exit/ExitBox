@@ -179,9 +179,14 @@ func runAgent(agentName string, passthrough []string) {
 	// Load env profile vars and prepend to EnvVars so CLI -e flags override
 	// profile values. If no --profile given, check for a workspace default.
 	if flags.EnvProfile == "" {
-		active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		active, err := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		if err != nil {
+			ui.Warnf("Could not resolve workspace for default env profile: %v", err)
+		}
 		if active != nil {
-			if defName, err := env.GetDefault(active.Workspace.Name); err == nil && defName != "" {
+			if defName, err := env.GetDefault(active.Workspace.Name); err != nil {
+				ui.Warnf("Could not read default env profile: %v", err)
+			} else if defName != "" {
 				flags.EnvProfile = defName
 			}
 		}
@@ -189,14 +194,17 @@ func runAgent(agentName string, passthrough []string) {
 	if flags.EnvProfile != "" {
 		if err := validateProfileName(flags.EnvProfile); err != nil {
 			ui.Errorf("%v", err)
+			return
 		}
-		active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
-		if active == nil {
-			ui.Errorf("Cannot resolve workspace for env profile '%s'", flags.EnvProfile)
+		active, err := profile.ResolveActiveWorkspace(cfg, projectDir, flags.Workspace)
+		if err != nil {
+			ui.Errorf("Cannot resolve workspace for env profile '%s': %v", flags.EnvProfile, err)
+			return
 		}
 		envProfile, err := env.Load(active.Workspace.Name, flags.EnvProfile)
 		if err != nil {
 			ui.Errorf("%v", err)
+			return
 		}
 		var profileVars []string
 		for k, v := range envProfile.Vars {
