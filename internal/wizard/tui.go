@@ -27,14 +27,9 @@ import (
 	"github.com/cloud-exit/exitbox/internal/env"
 )
 
-// listEnvProfileNames returns the env profile names for the given workspace,
-// or nil on error (treated as "no profiles").
-func listEnvProfileNames(workspace string) []string {
-	names, err := env.List(workspace)
-	if err != nil {
-		return nil
-	}
-	return names
+// listEnvProfileNames returns the env profile names for the given workspace.
+func listEnvProfileNames(workspace string) ([]string, error) {
+	return env.List(workspace)
 }
 
 // Step identifies the current wizard step.
@@ -326,7 +321,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	startStep := stepTopMenu
 	var workspaces []config.Workspace
 	activeCursor := 0
-	if len(cfg.Workspaces.Items) > 1 {
+	if len(cfg.Workspaces.Items) > 0 {
 		workspaces = cfg.Workspaces.Items
 		for i, w := range workspaces {
 			if w.Name == activeWorkspaceNameOrDefault(activeWorkspaceName) {
@@ -914,7 +909,7 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		case "esc":
 			if !m.isFirstRun && m.topMenuChoice >= 0 {
-				if m.topMenuChoice == 0 && len(m.workspaces) > 1 {
+				if m.topMenuChoice == 0 && len(m.workspaces) > 0 {
 					m.step = stepWorkspaceSelect
 				} else {
 					m.step = stepTopMenu
@@ -2155,13 +2150,19 @@ func (m Model) viewSettings() string {
 
 // --- Top Menu Step (re-run only) ---
 
+const (
+	topMenuWorkspace = "Workspace management"
+	topMenuGeneral   = "General settings"
+	topMenuEnv       = "Env profiles"
+)
+
 var topMenuOptions = []struct {
 	Label       string
 	Description string
 }{
-	{"Workspace management", "Configure roles, languages, tools, packages, and workspace settings"},
-	{"General settings", "Configure keybindings and global preferences"},
-	{"Env profiles", "View env profiles for a workspace (create/edit via 'exitbox env' CLI)"},
+	{topMenuWorkspace, "Configure roles, languages, tools, packages, and workspace settings"},
+	{topMenuGeneral, "Configure keybindings and global preferences"},
+	{topMenuEnv, "View env profiles for a workspace (create/edit via 'exitbox env' CLI)"},
 }
 
 func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2177,19 +2178,19 @@ func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			m.topMenuChoice = m.topMenuCursor
-			switch m.topMenuChoice {
-			case 0:
+			switch topMenuOptions[m.topMenuChoice].Label {
+			case topMenuWorkspace:
 				// Workspace management flow
-				if len(m.workspaces) > 1 {
+				if len(m.workspaces) > 0 {
 					m.step = stepWorkspaceSelect
 				} else {
 					m.step = stepRole
 				}
-			case 1:
+			case topMenuGeneral:
 				// General settings flow — single screen: keybindings
 				m.step = stepKeybindings
 				m.kbCursor = 0
-			case 2:
+			case topMenuEnv:
 				// Env profiles view
 				m.step = stepEnvProfiles
 			}
@@ -2248,8 +2249,10 @@ func (m Model) viewEnvProfiles() string {
 		b.WriteString(dimStyle.Render("No active workspace — create one via 'Workspace management' first.\n"))
 	} else {
 		b.WriteString(fmt.Sprintf("Workspace: %s\n\n", selectedStyle.Render(ws)))
-		names := listEnvProfileNames(ws)
-		if len(names) == 0 {
+		names, err := listEnvProfileNames(ws)
+		if err != nil {
+			b.WriteString(warnStyle.Render(fmt.Sprintf("  Failed to list profiles: %v\n", err)))
+		} else if len(names) == 0 {
 			b.WriteString(dimStyle.Render("  (no profiles defined)\n"))
 		} else {
 			for _, n := range names {

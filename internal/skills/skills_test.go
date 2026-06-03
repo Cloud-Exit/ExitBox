@@ -17,16 +17,18 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestParseFrontmatter(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantName    string
-		wantDesc    string
+		input    string
+		wantName string
+		wantDesc string
 	}{
 		{
 			input:    "---\nname: my-skill\ndescription: Does stuff\n---\nContent here",
@@ -175,5 +177,44 @@ func TestFetchLocal_NoSkillMd(t *testing.T) {
 	_, err := Fetch(dir)
 	if err == nil {
 		t.Error("expected error for directory without SKILL.md")
+	}
+}
+
+func TestFetchGitHubBlobSkillMdFetchesContainingDirectory(t *testing.T) {
+	origHTTPGet := httpGet
+	t.Cleanup(func() { httpGet = origHTTPGet })
+
+	httpGet = func(url string) ([]byte, error) {
+		switch {
+		case strings.Contains(url, "/contents/tools/skills/svelte-core-bestpractices?ref=main"):
+			return []byte(`[
+				{"name":"SKILL.md","type":"file","download_url":"https://download.test/SKILL.md"},
+				{"name":"references","type":"dir","download_url":""}
+			]`), nil
+		case strings.Contains(url, "/contents/tools/skills/svelte-core-bestpractices/references?ref=main"):
+			return []byte(`[
+				{"name":"docs.md","type":"file","download_url":"https://download.test/references/docs.md"}
+			]`), nil
+		case url == "https://download.test/SKILL.md":
+			return []byte("---\nname: svelte-core-bestpractices\n---\nUse references/docs.md"), nil
+		case url == "https://download.test/references/docs.md":
+			return []byte("# Svelte reference"), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL: %s", url)
+		}
+	}
+
+	result, err := Fetch("https://github.com/sveltejs/ai-tools/blob/main/tools/skills/svelte-core-bestpractices/SKILL.md")
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+	if result.Name != "svelte-core-bestpractices" {
+		t.Fatalf("name = %q, want svelte-core-bestpractices", result.Name)
+	}
+	if _, ok := result.Files["SKILL.md"]; !ok {
+		t.Fatal("missing SKILL.md")
+	}
+	if _, ok := result.Files["references/docs.md"]; !ok {
+		t.Fatal("missing references/docs.md")
 	}
 }

@@ -31,6 +31,7 @@ import (
 var (
 	githubTreeRE = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/tree/([^/]+)/(.+)$`)
 	githubBlobRE = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$`)
+	githubRawRE  = regexp.MustCompile(`^https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$`)
 )
 
 // SourceType identifies the type of skill source.
@@ -88,7 +89,10 @@ func fetchGitHubTree(url string) (*FetchResult, error) {
 		return nil, fmt.Errorf("invalid GitHub tree URL: %s", url)
 	}
 	owner, repo, ref, dirPath := m[1], m[2], m[3], m[4]
+	return fetchGitHubDir(owner, repo, ref, dirPath, url)
+}
 
+func fetchGitHubDir(owner, repo, ref, dirPath, source string) (*FetchResult, error) {
 	// Recursively fetch all files including nested directories.
 	files := make(map[string][]byte)
 	if err := githubFetchDir(owner, repo, ref, dirPath, "", files); err != nil {
@@ -96,7 +100,7 @@ func fetchGitHubTree(url string) (*FetchResult, error) {
 	}
 
 	if _, ok := files["SKILL.md"]; !ok {
-		return nil, fmt.Errorf("no SKILL.md found in %s", url)
+		return nil, fmt.Errorf("no SKILL.md found in %s", source)
 	}
 
 	// Derive name from the last path component or frontmatter.
@@ -143,15 +147,22 @@ func githubFetchDir(owner, repo, ref, dirPath, prefix string, files map[string][
 	return nil
 }
 
-// fetchGitHubBlob handles GitHub blob URLs (single file view) like:
+// fetchGitHubBlob handles GitHub blob URLs like:
 // https://github.com/user/repo/blob/main/path/to/SKILL.md
-// Converts to raw.githubusercontent.com URL to get the actual content.
+// For SKILL.md, it imports the containing directory so references/assets are included.
 func fetchGitHubBlob(url string) (*FetchResult, error) {
 	m := githubBlobRE.FindStringSubmatch(url)
 	if m == nil {
 		return nil, fmt.Errorf("invalid GitHub blob URL: %s", url)
 	}
 	owner, repo, ref, filePath := m[1], m[2], m[3], m[4]
+
+	if strings.EqualFold(filepath.Base(filePath), "SKILL.md") {
+		dir := filepath.Dir(filePath)
+		if dir != "." && dir != "/" {
+			return fetchGitHubDir(owner, repo, ref, dir, url)
+		}
+	}
 
 	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, ref, filePath)
 	content, err := httpGet(rawURL)
@@ -184,6 +195,13 @@ func fetchGitHubBlob(url string) (*FetchResult, error) {
 
 // fetchRawURL handles direct URLs to a SKILL.md file.
 func fetchRawURL(url string) (*FetchResult, error) {
+	if m := githubRawRE.FindStringSubmatch(url); m != nil && strings.EqualFold(filepath.Base(m[4]), "SKILL.md") {
+		dir := filepath.Dir(m[4])
+		if dir != "." && dir != "/" {
+			return fetchGitHubDir(m[1], m[2], m[3], dir, url)
+		}
+	}
+
 	content, err := httpGet(url)
 	if err != nil {
 		return nil, fmt.Errorf("downloading %s: %w", url, err)
@@ -292,7 +310,9 @@ func githubListDir(apiURL string) ([]githubEntry, error) {
 	return entries, nil
 }
 
-func httpGet(url string) ([]byte, error) {
+var httpGet = defaultHTTPGet
+
+func defaultHTTPGet(url string) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {

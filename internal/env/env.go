@@ -86,6 +86,9 @@ func List(workspace string) ([]string, error) {
 
 	var names []string
 	err = store.Iterate([]byte(keyPrefix), func(key, _ []byte) error {
+		if string(key) == defaultKey {
+			return nil
+		}
 		names = append(names, strings.TrimPrefix(string(key), keyPrefix))
 		return nil
 	})

@@ -307,7 +307,7 @@ apply_active_workspace_links() {
         local profile_root="${workspace_root}/profiles/${EXITBOX_ENV_PROFILE}"
         if [[ ! -d "$profile_root" ]]; then
             mkdir -p "$profile_root"
-            # Seed from default agent config so first run has working defaults.
+            # Full-tree copy of the small agent config root so first run has working defaults.
             if [[ -d "$workspace_root" ]]; then
                 cp -a "${workspace_root}/." "${profile_root}/" 2>/dev/null || true
                 # Don't recursively nest profiles within profiles.
@@ -873,6 +873,18 @@ build_resume_args() {
     fi
 }
 
+clear_stale_resume_token() {
+    local session_name session_key session_dir
+    session_name="$(effective_session_name)"
+    session_key="$(session_key_for_name "$session_name")"
+    session_dir="$(session_dir_for_name "$session_name")"
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        exitbox-kv delete "$(kv_session_prefix)${session_key}:.resume-token" 2>/dev/null || true
+    fi
+    rm -f "${session_dir}/.resume-token"
+    rm -f "$(legacy_resume_file)"
+}
+
 run_agent_once() {
     if [[ $# -gt 0 ]]; then
         if should_exec_raw "$@"; then
@@ -963,6 +975,7 @@ run_agent_loop() {
     set +e
     if [[ $# -gt 0 ]]; then
         if should_exec_raw "$@"; then
+            # Auth flows run as plain agent subcommands and intentionally skip resume wrapping.
             run_raw_command "$@"
         else
             local cmd_args=("$@")
@@ -992,6 +1005,31 @@ run_agent_loop() {
         fi
     fi
     local code=$?
+
+    # Stale session recovery: if the agent exited because the stored session no
+    # longer exists on the backend, clear the token and start fresh automatically.
+    if [[ $code -ne 0 && "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
+        local pane_output
+        pane_output="$(tmux capture-pane -p -S -100 2>/dev/null || true)"
+        if echo "$pane_output" | grep -q "No conversation found with session ID"; then
+            clear_stale_resume_token
+            RESUME_ARGS=()
+            if [[ $# -gt 0 ]]; then
+                local retry_args=("$@")
+                if [[ "${retry_args[0]}" == "$AGENT" ]]; then
+                    retry_args=("${retry_args[@]:1}")
+                fi
+                if [[ ${#retry_args[@]} -gt 0 ]]; then
+                    "$AGENT" "${retry_args[@]}"
+                else
+                    "$AGENT"
+                fi
+            else
+                "$AGENT"
+            fi
+            code=$?
+        fi
+    fi
 
     capture_resume_token
 

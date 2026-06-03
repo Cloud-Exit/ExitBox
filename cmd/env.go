@@ -290,7 +290,8 @@ func editEnvProfile(ws, name string, isNew bool) {
 	if editor == "" {
 		editor = "vi"
 	}
-	c := exec.Command("sh", "-c", fmt.Sprintf("%q \"$1\"", editor), "sh", tmpPath)
+	c := exec.Command("sh", "-c", `exec $EDITOR "$1"`, "sh", tmpPath)
+	c.Env = append(os.Environ(), "EDITOR="+editor)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

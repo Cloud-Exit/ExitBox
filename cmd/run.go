@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -206,9 +207,14 @@ func runAgent(agentName string, passthrough []string) {
 			ui.Errorf("%v", err)
 			return
 		}
-		var profileVars []string
-		for k, v := range envProfile.Vars {
-			profileVars = append(profileVars, k+"="+v)
+		profileKeys := make([]string, 0, len(envProfile.Vars))
+		for k := range envProfile.Vars {
+			profileKeys = append(profileKeys, k)
+		}
+		sort.Strings(profileKeys)
+		profileVars := make([]string, 0, len(profileKeys))
+		for _, k := range profileKeys {
+			profileVars = append(profileVars, k+"="+envProfile.Vars[k])
 		}
 		flags.EnvVars = append(profileVars, flags.EnvVars...)
 		ui.Infof("Loaded env profile '%s' (%d vars) from workspace '%s'",

@@ -19,10 +19,19 @@ package env
 import (
 	"reflect"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/config"
 )
 
+func isolateDataDir(t *testing.T) {
+	t.Helper()
+	oldData := config.Data
+	config.Data = t.TempDir()
+	t.Cleanup(func() { config.Data = oldData })
+}
+
 func TestDefaultProfile(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateDataDir(t)
 	ws := "test-ws"
 
 	// No default set initially.
@@ -65,6 +74,30 @@ func TestDefaultProfile(t *testing.T) {
 	}
 	if name != "" {
 		t.Fatalf("expected empty after clear, got %q", name)
+	}
+}
+
+func TestListExcludesDefaultMarker(t *testing.T) {
+	isolateDataDir(t)
+	ws := "test-ws"
+
+	if err := Save(ws, &Profile{Name: "prod", Vars: map[string]string{"A": "1"}}); err != nil {
+		t.Fatalf("Save prod: %v", err)
+	}
+	if err := Save(ws, &Profile{Name: "dev", Vars: map[string]string{"B": "2"}}); err != nil {
+		t.Fatalf("Save dev: %v", err)
+	}
+	if err := SetDefault(ws, "prod"); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+
+	names, err := List(ws)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []string{"dev", "prod"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("List() = %v, want %v", names, want)
 	}
 }
 
@@ -137,8 +170,8 @@ func TestParseEnvFile(t *testing.T) {
 
 func TestFormatEnvFile(t *testing.T) {
 	vars := map[string]string{
-		"BAZ":              "qux",
-		"FOO":              "bar",
+		"BAZ":               "qux",
+		"FOO":               "bar",
 		"ANTHROPIC_API_KEY": "",
 	}
 	got := FormatEnvFile(vars)

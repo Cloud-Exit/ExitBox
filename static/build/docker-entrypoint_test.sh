@@ -98,6 +98,7 @@ CONFIGURE_CODEX_SESSION_STORAGE_FUNC="$(extract_func configure_codex_session_sto
 SHOULD_EXEC_RAW_FUNC="$(extract_func should_exec_raw)"
 RUN_RAW_COMMAND_FUNC="$(extract_func run_raw_command)"
 BUILD_AGENT_LOOP_COMMAND_FUNC="$(extract_func build_agent_loop_command)"
+CLEAR_STALE_FUNC="$(extract_func clear_stale_resume_token)"
 
 SESSION_HELPER_FUNCS="${DEFAULT_SESSION_NAME_FUNC}
 ${CURRENT_SESSION_NAME_FUNC}
@@ -1521,6 +1522,63 @@ test_rtk_skips_when_disabled
 test_rtk_skips_without_binary
 test_rtk_sandbox_instructions_absent_when_disabled
 test_rtk_sandbox_instructions_present_when_enabled
+
+# ============================================================================
+# Tests: clear_stale_resume_token
+# ============================================================================
+test_clear_stale_resume_token_removes_files() {
+    local tmpdir="$TEST_TMPDIR/clear_stale_files"
+    local session_name="mysession"
+    local token_file legacy_file
+    token_file="$(session_token_file_for_test "$tmpdir" "default" "claude" "$session_name")"
+    mkdir -p "$(dirname "$token_file")"
+    echo "staletoken" > "$token_file"
+    legacy_file="${tmpdir}/default/claude/.resume-token"
+    mkdir -p "$(dirname "$legacy_file")"
+    echo "staletoken" > "$legacy_file"
+
+    (
+        AGENT="claude"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_SESSION_NAME="$session_name"
+        EXITBOX_PROJECT_KEY=""
+        # shellcheck disable=SC2317
+        exitbox-kv() { return 0; }
+        export -f exitbox-kv
+        eval "$SESSION_HELPER_FUNCS"
+        eval "$CLEAR_STALE_FUNC"
+        clear_stale_resume_token
+    ) 2>/dev/null
+
+    assert_file_missing "clear_stale_resume_token (removes session token file)" "$token_file"
+    assert_file_missing "clear_stale_resume_token (removes legacy token file)" "$legacy_file"
+}
+
+test_clear_stale_resume_token_no_error_when_missing() {
+    local tmpdir="$TEST_TMPDIR/clear_stale_missing"
+    local session_name="nosuchsession"
+
+    local rc=0
+    (
+        AGENT="claude"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_SESSION_NAME="$session_name"
+        EXITBOX_PROJECT_KEY=""
+        # shellcheck disable=SC2317
+        exitbox-kv() { return 1; }
+        export -f exitbox-kv
+        eval "$SESSION_HELPER_FUNCS"
+        eval "$CLEAR_STALE_FUNC"
+        clear_stale_resume_token
+    ) 2>/dev/null || rc=$?
+
+    assert_eq "clear_stale_resume_token (no error when files absent)" "0" "$rc"
+}
+
+test_clear_stale_resume_token_removes_files
+test_clear_stale_resume_token_no_error_when_missing
 
 # ============================================================================
 # Results

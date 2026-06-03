@@ -183,7 +183,10 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Domain-allow handler only required when firewall is enabled.
 	ipcServer, ipcErr := newIPCServer(!opts.NoFirewall, rt, containerName)
 	if ipcErr != nil {
-		ui.Warnf("Failed to start IPC server: %v", ipcErr)
+		if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled {
+			return 1, fmt.Errorf("failed to start IPC server for vault-enabled workspace: %w", ipcErr)
+		}
+		ui.Warnf("Failed to start IPC server: %v (KV/vault/domain approval IPC disabled this run)", ipcErr)
 		ipcServer = nil
 	} else {
 		ipcServer.Start()

@@ -16,7 +16,12 @@
 
 package wizard
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cloud-exit/exitbox/internal/config"
+)
 
 func TestValidTmuxKey_ValidSingleChar(t *testing.T) {
 	valid := []string{"a", "z", "p", "0", "9", "/", "-", "\\"}
@@ -58,17 +63,17 @@ func TestValidTmuxKey_ValidSpecialKeys(t *testing.T) {
 
 func TestValidTmuxKey_Invalid(t *testing.T) {
 	invalid := []string{
-		"dfdsfs",    // random gibberish
-		"C-",        // modifier with no key
-		"M-",        // modifier with no key
-		"C-M-",      // multiple modifiers with no key
-		"F0",        // invalid function key
-		"F21",       // out of range
-		"ctrl+a",    // wrong notation (should be C-a)
-		"Alt-b",     // wrong notation
-		"Foo",       // not a valid special key
-		"abc",       // multi-char non-special
-		"",          // empty (handled before validation but test anyway)
+		"dfdsfs", // random gibberish
+		"C-",     // modifier with no key
+		"M-",     // modifier with no key
+		"C-M-",   // multiple modifiers with no key
+		"F0",     // invalid function key
+		"F21",    // out of range
+		"ctrl+a", // wrong notation (should be C-a)
+		"Alt-b",  // wrong notation
+		"Foo",    // not a valid special key
+		"abc",    // multi-char non-special
+		"",       // empty (handled before validation but test anyway)
 	}
 	for _, k := range invalid {
 		if k == "" {
@@ -77,5 +82,49 @@ func TestValidTmuxKey_Invalid(t *testing.T) {
 		if err := validTmuxKey(k); err == "" {
 			t.Errorf("validTmuxKey(%q) = valid, want error", k)
 		}
+	}
+}
+
+func TestSetupRerunSingleWorkspaceCanCreateNewWorkspace(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Workspaces.Active = "default"
+	cfg.Workspaces.Items = []config.Workspace{
+		{Name: "default", Development: []string{"go"}},
+	}
+	cfg.Settings.DefaultWorkspace = "default"
+
+	m := NewModelFromConfig(cfg)
+	if m.step != stepTopMenu {
+		t.Fatalf("step = %v, want %v", m.step, stepTopMenu)
+	}
+	if len(m.workspaces) != 1 {
+		t.Fatalf("len(workspaces) = %d, want 1", len(m.workspaces))
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.step != stepWorkspaceSelect {
+		t.Fatalf("step after workspace management = %v, want %v", m.step, stepWorkspaceSelect)
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	if m.cursor != 1 {
+		t.Fatalf("cursor after down = %d, want create-new index 1", m.cursor)
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.step != stepRole {
+		t.Fatalf("step after create-new = %v, want %v", m.step, stepRole)
+	}
+	if m.workspaceInput != "" {
+		t.Fatalf("workspaceInput = %q, want empty for new workspace", m.workspaceInput)
+	}
+	if m.state.WorkspaceName != "" {
+		t.Fatalf("state.WorkspaceName = %q, want empty for new workspace", m.state.WorkspaceName)
+	}
+	if m.editingExisting {
+		t.Fatal("editingExisting = true, want false for new workspace")
 	}
 }

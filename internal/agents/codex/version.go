@@ -28,10 +28,10 @@ import (
 const codexGitHubRepo = "openai/codex"
 
 func (c *Codex) GetLatestVersion() (string, error) {
-	out, err := exec.Command("curl", "-s",
+	out, err := exec.Command("curl", "-fsSL",
 		fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", codexGitHubRepo)).Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch Codex latest version: %w", err)
+		return "", fmt.Errorf("failed to fetch Codex latest version (pin --version or agents.codex.version to avoid this network lookup): %w", err)
 	}
 	var release struct {
 		TagName string `json:"tag_name"`
@@ -40,7 +40,7 @@ func (c *Codex) GetLatestVersion() (string, error) {
 		return "", err
 	}
 	if release.TagName == "" {
-		return "", fmt.Errorf("empty tag_name")
+		return "", fmt.Errorf("empty tag_name in Codex release response (pin --version or agents.codex.version to avoid this network lookup)")
 	}
 	return release.TagName, nil
 }

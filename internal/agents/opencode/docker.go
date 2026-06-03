@@ -16,6 +16,7 @@ func (o *OpenCode) GetDockerfileInstall(buildCtx string) (string, error) {
 # Note: base image must include curl, jq, sha256sum.
 # For CI rate limits, pass GITHUB_TOKEN as build-arg or env to reduce 403s.
 ARG OPENCODE_VERSION
+ARG GITHUB_TOKEN
 RUN set -e && \
     apk add --no-cache curl jq && \
     case "$(uname -m)" in \
@@ -25,9 +26,13 @@ RUN set -e && \
     esac && \
     ASSET="opencode-linux-${OC_ARCH}.tar.gz" && \
     echo "Installing OpenCode v${OPENCODE_VERSION} (${ASSET})..." && \
-    META=$(curl -fsSL \
-        -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
-        "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}") && \
+    if [ -n "${GITHUB_TOKEN:-}" ]; then \
+        META=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}"); \
+    else \
+        META=$(curl -fsSL \
+            "https://api.github.com/repos/anomalyco/opencode/releases/tags/v${OPENCODE_VERSION}"); \
+    fi && \
     DIGEST=$(printf '%s' "$META" | jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .digest') && \
     EXPECTED="${DIGEST#sha256:}" && \
     if ! echo "$EXPECTED" | grep -qE '^[a-f0-9]{64}$'; then \
@@ -47,11 +52,12 @@ RUN set -e && \
     tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-extract && \
     OC_BIN="/tmp/opencode-extract/opencode" && \
     if [ ! -f "$OC_BIN" ]; then \
-        OC_BIN=$(find /tmp/opencode-extract -maxdepth 2 -type f -name opencode) && \
-        OC_COUNT=$(echo "$OC_BIN" | wc -l) && \
+        OC_MATCHES=$(find /tmp/opencode-extract -maxdepth 2 -type f -name opencode -print) && \
+        OC_COUNT=$(printf '%s\n' "$OC_MATCHES" | sed '/^$/d' | wc -l) && \
         if [ "$OC_COUNT" -ne 1 ]; then \
             echo "ERROR: Expected exactly one opencode binary, found $OC_COUNT" >&2; exit 1; \
-        fi; \
+        fi && \
+        OC_BIN="$OC_MATCHES"; \
     fi && \
     install -m 755 "$OC_BIN" /usr/local/bin/opencode && \
     rm -rf /tmp/opencode.tar.gz /tmp/opencode-extract && \
