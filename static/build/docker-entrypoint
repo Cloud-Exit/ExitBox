@@ -365,6 +365,24 @@ apply_active_workspace_links() {
             link_path "$workspace_root/.local/state" "$HOME/.local/state"
             link_path "$workspace_root/.cache/opencode" "$HOME/.cache/opencode"
             ;;
+        qwen)
+            mkdir -p "$workspace_root/.qwen" "$workspace_root/.config/qwen"
+            link_path "$workspace_root/.qwen" "$HOME/.qwen"
+            mkdir -p "$HOME/.config"
+            link_path "$workspace_root/.config/qwen" "$HOME/.config/qwen"
+            ;;
+        copilot)
+            mkdir -p "$workspace_root/.copilot"
+            link_path "$workspace_root/.copilot" "$HOME/.copilot"
+            ;;
+        cursor)
+            mkdir -p "$workspace_root/.cursor"
+            link_path "$workspace_root/.cursor" "$HOME/.cursor"
+            ;;
+        kimi)
+            mkdir -p "$workspace_root/.kimi-code"
+            link_path "$workspace_root/.kimi-code" "$HOME/.kimi-code"
+            ;;
     esac
 
     # Share gh CLI auth across agents. Claude's workspace has the full

@@ -1581,6 +1581,62 @@ test_clear_stale_resume_token_removes_files
 test_clear_stale_resume_token_no_error_when_missing
 
 # ============================================================================
+# Test: agent_display_name covers the newer agents
+# ============================================================================
+test_agent_display_name_new_agents() {
+    local out
+    out="$(
+        eval "$DISPLAY_FUNC"
+        echo "copilot=$(agent_display_name copilot)"
+        echo "cursor=$(agent_display_name cursor)"
+        echo "kimi=$(agent_display_name kimi)"
+        echo "qwen=$(agent_display_name qwen)"
+    )" 2>/dev/null
+    assert_contains "agent_display_name copilot" "$out" "copilot=GitHub Copilot CLI"
+    assert_contains "agent_display_name cursor" "$out" "cursor=Cursor CLI"
+    assert_contains "agent_display_name kimi" "$out" "kimi=Kimi Code CLI"
+    assert_contains "agent_display_name qwen" "$out" "qwen=Qwen Code"
+}
+
+# ============================================================================
+# Test: apply_active_workspace_links symlinks newer agents' config dirs to the
+# persistent workspace root (so `exitbox config edit <agent>` edits the same
+# file the agent reads at runtime).
+# ============================================================================
+APPLY_LINKS_FUNC="$(extract_func apply_active_workspace_links)"
+
+test_workspace_links_new_agents() {
+    local agent dir
+    for pair in "copilot:.copilot" "cursor:.cursor" "kimi:.kimi-code" "qwen:.qwen"; do
+        agent="${pair%%:*}"
+        dir="${pair#*:}"
+        local base home target
+        base="$(mktemp -d "$TEST_TMPDIR/ws.XXXXXX")"
+        home="$(mktemp -d "$TEST_TMPDIR/home.XXXXXX")"
+        target="$(
+            export GLOBAL_WORKSPACE_ROOT="$base"
+            export HOME="$home"
+            export AGENT="$agent"
+            export EXITBOX_WORKSPACE_NAME="default"
+            export EXITBOX_MOUNTED_WORKSPACE="default"
+            unset EXITBOX_ENV_PROFILE
+            ensure_workspace_files() { :; }
+            eval "$LINK_PATH_FUNC"
+            eval "$APPLY_LINKS_FUNC"
+            apply_active_workspace_links
+            # Prove the runtime path resolves to the persistent workspace file.
+            echo "ok" > "$home/$dir/config-probe"
+            readlink -f "$home/$dir/config-probe"
+        )" 2>/dev/null
+        assert_eq "workspace link $agent -> persistent dir" \
+            "$base/default/$agent/$dir/config-probe" "$target"
+    done
+}
+
+test_agent_display_name_new_agents
+test_workspace_links_new_agents
+
+# ============================================================================
 # Results
 # ============================================================================
 
