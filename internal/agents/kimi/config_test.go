@@ -81,6 +81,7 @@ func TestSerializeConfig_Kimi(t *testing.T) {
 		`[models."kimi-for-coding"]`,
 		`provider = "local"`,
 		`model = "kimi-for-coding"`,
+		`max_context_size = 131072`,
 	} {
 		if !strings.Contains(toml, want) {
 			t.Errorf("serialized TOML missing %q\n---\n%s", want, toml)

@@ -55,10 +55,18 @@ func (k *Kimi) GenerateConfig(cfg config.ServerConfig) (map[string]interface{}, 
 			modelKey: map[string]interface{}{
 				"provider": providerKey,
 				"model":    modelKey,
+				// max_context_size is required by Kimi Code CLI. Use a sane default;
+				// users can raise/lower it in config.toml to match their server.
+				"max_context_size": kimiDefaultContextSize,
 			},
 		},
 	}, nil
 }
+
+// kimiDefaultContextSize is the default model context window written to config.toml.
+// Kimi Code CLI requires models.<alias>.max_context_size; 128K is a safe baseline for
+// most served models and is easily overridden by editing the generated config.
+const kimiDefaultContextSize = 131072
 
 // SerializeConfig renders the config map as TOML (Kimi Code CLI's native format).
 // It implements generate.ConfigSerializer so `exitbox generate kimi` writes a valid
@@ -92,10 +100,24 @@ func (k *Kimi) SerializeConfig(data map[string]interface{}) ([]byte, error) {
 			fmt.Fprintf(&b, "\n[models.%s]\n", tomlKey(key))
 			writeStringField(&b, "provider", m["provider"])
 			writeStringField(&b, "model", m["model"])
+			writeIntField(&b, "max_context_size", m["max_context_size"])
 		}
 	}
 
 	return []byte(b.String()), nil
+}
+
+// writeIntField emits an unquoted TOML integer field. It accepts the common numeric
+// types a config map may hold (int from generation, float64 from JSON round-trips).
+func writeIntField(b *strings.Builder, name string, val interface{}) {
+	switch v := val.(type) {
+	case int:
+		fmt.Fprintf(b, "%s = %d\n", name, v)
+	case int64:
+		fmt.Fprintf(b, "%s = %d\n", name, v)
+	case float64:
+		fmt.Fprintf(b, "%s = %d\n", name, int64(v))
+	}
 }
 
 func writeStringField(b *strings.Builder, name string, val interface{}) {
