@@ -27,6 +27,9 @@ func EnsureDirs() {
 		ProjectsDir(),
 		AgentDir("claude"),
 		AgentDir("codex"),
+		AgentDir("copilot"),
+		AgentDir("cursor"),
+		AgentDir("kimi"),
 		AgentDir("opencode"),
 		AgentDir("qwen"),
 	}

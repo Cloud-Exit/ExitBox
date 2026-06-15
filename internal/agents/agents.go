@@ -20,6 +20,9 @@ import (
 	"github.com/cloud-exit/exitbox/internal/agent"
 	"github.com/cloud-exit/exitbox/internal/agents/claude"
 	"github.com/cloud-exit/exitbox/internal/agents/codex"
+	"github.com/cloud-exit/exitbox/internal/agents/copilot"
+	"github.com/cloud-exit/exitbox/internal/agents/cursor"
+	"github.com/cloud-exit/exitbox/internal/agents/kimi"
 	"github.com/cloud-exit/exitbox/internal/agents/opencode"
 	"github.com/cloud-exit/exitbox/internal/agents/qwen"
 )
@@ -58,6 +61,9 @@ func Register(a agent.Agent) {
 func init() {
 	Register(&claude.Claude{})
 	Register(&codex.Codex{})
+	Register(&copilot.Copilot{})
+	Register(&cursor.Cursor{})
+	Register(&kimi.Kimi{})
 	Register(&opencode.OpenCode{})
 	Register(&qwen.Qwen{})
 }

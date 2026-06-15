@@ -24,6 +24,9 @@ agent_display_name() {
     case "$1" in
         claude)   echo "Claude Code" ;;
         codex)    echo "OpenAI Codex" ;;
+        copilot)  echo "GitHub Copilot CLI" ;;
+        cursor)   echo "Cursor CLI" ;;
+        kimi)     echo "Kimi Code CLI" ;;
         opencode) echo "OpenCode" ;;
         qwen)     echo "Qwen Code" ;;
         *)        echo "$1" ;;

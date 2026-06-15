@@ -17,7 +17,7 @@
 
 **Multi-Agent Container Sandbox** by [Cloud Exit](https://cloud-exit.com)
 
-Run AI coding assistants (Claude, Codex, OpenCode, Qwen) in isolated containers with defense-in-depth security.
+Run AI coding assistants (Claude, Codex, Copilot, Cursor, Kimi, OpenCode, Qwen) in isolated containers with defense-in-depth security.
 
 ## Getting Started
 
@@ -39,6 +39,9 @@ exitbox run claude
 
 # Or run other agents
 exitbox run codex
+exitbox run copilot
+exitbox run cursor
+exitbox run kimi
 exitbox run opencode
 exitbox run qwen
 ```
@@ -57,7 +60,7 @@ ExitBox automatically:
 - **Encrypted Vault** — AES-256 + Argon2id encrypted secret storage with per-access approval popups; agents can read and write secrets from inside the container
 - **Sandbox-Aware Agents** — automatic instruction injection tells agents about container restrictions, vault usage, and security rules
 - **Named Resumable Sessions** — save and resume agent conversations by name across container restarts
-- **Multi-Agent Support** — run Claude Code, OpenAI Codex, OpenCode, or Qwen Code in the same isolated environment
+- **Multi-Agent Support** — run Claude Code, OpenAI Codex, GitHub Copilot CLI, Cursor CLI, Kimi Code CLI, OpenCode, or Qwen Code in the same isolated environment
 - **Workspace Isolation** — named contexts (personal, work, client) with separate credentials, tools, and vault per workspace
 - **Codex Account Switching** — save and switch between multiple Codex logins inside a workspace with `exitbox codex accounts`
 - **IDE Integration** — Unix socket relay connects host editors (VS Code, Cursor, Windsurf) to agents inside the container for go-to-definition, diagnostics, and code actions
