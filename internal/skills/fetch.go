@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -104,7 +105,8 @@ func fetchGitHubDir(owner, repo, ref, dirPath, source string) (*FetchResult, err
 	}
 
 	// Derive name from the last path component or frontmatter.
-	name := filepath.Base(dirPath)
+	// dirPath is a URL path, so use path (always "/"), not filepath (OS-specific).
+	name := path.Base(dirPath)
 	if fmName, _ := parseFrontmatter(files["SKILL.md"]); fmName != "" {
 		name = fmName
 	}
@@ -157,8 +159,9 @@ func fetchGitHubBlob(url string) (*FetchResult, error) {
 	}
 	owner, repo, ref, filePath := m[1], m[2], m[3], m[4]
 
-	if strings.EqualFold(filepath.Base(filePath), "SKILL.md") {
-		dir := filepath.Dir(filePath)
+	// filePath comes from a URL, so use path (always "/"), not filepath (OS-specific).
+	if strings.EqualFold(path.Base(filePath), "SKILL.md") {
+		dir := path.Dir(filePath)
 		if dir != "." && dir != "/" {
 			return fetchGitHubDir(owner, repo, ref, dir, url)
 		}
@@ -177,16 +180,16 @@ func fetchGitHubBlob(url string) (*FetchResult, error) {
 	}
 	if name == "" {
 		// Use parent directory: "skills/frontend-design/SKILL.md" → "frontend-design"
-		dir := filepath.Dir(filePath)
+		dir := path.Dir(filePath)
 		if dir != "." && dir != "/" {
-			name = filepath.Base(dir)
+			name = path.Base(dir)
 		} else {
-			name = strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+			name = strings.TrimSuffix(path.Base(filePath), path.Ext(filePath))
 		}
 	}
 
 	// Use the original filename as the key (preserves SKILL.md vs custom names).
-	fileName := filepath.Base(filePath)
+	fileName := path.Base(filePath)
 	return &FetchResult{
 		Name:  name,
 		Files: map[string][]byte{fileName: content},
@@ -195,8 +198,8 @@ func fetchGitHubBlob(url string) (*FetchResult, error) {
 
 // fetchRawURL handles direct URLs to a SKILL.md file.
 func fetchRawURL(url string) (*FetchResult, error) {
-	if m := githubRawRE.FindStringSubmatch(url); m != nil && strings.EqualFold(filepath.Base(m[4]), "SKILL.md") {
-		dir := filepath.Dir(m[4])
+	if m := githubRawRE.FindStringSubmatch(url); m != nil && strings.EqualFold(path.Base(m[4]), "SKILL.md") {
+		dir := path.Dir(m[4])
 		if dir != "." && dir != "/" {
 			return fetchGitHubDir(m[1], m[2], m[3], dir, url)
 		}
