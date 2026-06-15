@@ -141,6 +141,12 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	}
 
 	args := buildArgs(cmd)
+	if force {
+		args = append(args, "--no-cache")
+	}
+	if os.Getenv("GITHUB_TOKEN") != "" {
+		args = append(args, "--build-arg", "GITHUB_TOKEN")
+	}
 	args = append(args,
 		"-t", imageName,
 		"-f", dockerfilePath,

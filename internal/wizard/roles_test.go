@@ -107,7 +107,7 @@ func TestAIDeveloperRole(t *testing.T) {
 
 	// Verify python comes before ml so the venv exists when ml's pip install runs.
 	pythonIdx, mlIdx := -1, -1
-	for i, p := range role.Profiles {
+	for i, p := range role.Roles {
 		if p == "python" {
 			pythonIdx = i
 		}
@@ -126,8 +126,8 @@ func TestAIDeveloperRole(t *testing.T) {
 	}
 }
 
-func TestComputeProfiles_AIDeveloper(t *testing.T) {
-	profiles := ComputeProfiles([]string{"AI Developer"}, nil)
+func TestComputeRoles_AIDeveloper(t *testing.T) {
+	profiles := ComputeRoles([]string{"AI Developer"}, nil)
 	wantContains := []string{"python", "ml", "build-tools"}
 	for _, want := range wantContains {
 		found := false
@@ -138,7 +138,7 @@ func TestComputeProfiles_AIDeveloper(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("ComputeProfiles(AI Developer) missing %q, got %v", want, profiles)
+			t.Errorf("ComputeRoles(AI Developer) missing %q, got %v", want, profiles)
 		}
 	}
 }

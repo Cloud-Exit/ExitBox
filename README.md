@@ -17,7 +17,7 @@
 
 **Multi-Agent Container Sandbox** by [Cloud Exit](https://cloud-exit.com)
 
-Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers with defense-in-depth security.
+Run AI coding assistants (Claude, Codex, OpenCode, Qwen) in isolated containers with defense-in-depth security.
 
 ## Getting Started
 
@@ -40,6 +40,7 @@ exitbox run claude
 # Or run other agents
 exitbox run codex
 exitbox run opencode
+exitbox run qwen
 ```
 
 ExitBox automatically:
@@ -56,7 +57,7 @@ ExitBox automatically:
 - **Encrypted Vault** — AES-256 + Argon2id encrypted secret storage with per-access approval popups; agents can read and write secrets from inside the container
 - **Sandbox-Aware Agents** — automatic instruction injection tells agents about container restrictions, vault usage, and security rules
 - **Named Resumable Sessions** — save and resume agent conversations by name across container restarts
-- **Multi-Agent Support** — run Claude Code, OpenAI Codex, or OpenCode in the same isolated environment
+- **Multi-Agent Support** — run Claude Code, OpenAI Codex, OpenCode, or Qwen Code in the same isolated environment
 - **Workspace Isolation** — named contexts (personal, work, client) with separate credentials, tools, and vault per workspace
 - **Codex Account Switching** — save and switch between multiple Codex logins inside a workspace with `exitbox codex accounts`
 - **IDE Integration** — Unix socket relay connects host editors (VS Code, Cursor, Windsurf) to agents inside the container for go-to-definition, diagnostics, and code actions
@@ -64,7 +65,7 @@ ExitBox automatically:
 - **GitHub CLI Authentication** — pre-flight vault import for `GITHUB_TOKEN` with automatic in-container export so `gh` and HTTPS git work transparently
 - **RTK Token Optimizer (Experimental)** — optional [rtk](https://github.com/rtk-ai/rtk) integration reduces CLI output token consumption by 60-90%
 - **External Tools** — configure third-party tools (GitHub CLI, etc.) via the setup wizard; packages are auto-installed at image build time
-- **Supply-Chain Hardened Installs** — Claude Code installed via direct binary download with SHA-256 checksum verification
+- **Supply-Chain Hardened Installs** — Claude Code and OpenCode installed via direct download with SHA-256 checksum verification
 - **Alpine Base Image** — minimal ~5 MB base with 3-layer image hierarchy and incremental rebuilds
 - **Setup Wizard** — interactive TUI that configures roles, languages, tools, agents, firewall, and vault in one pass
 - **Cross-Platform** — native binaries for Linux, macOS, and Windows
@@ -269,8 +270,9 @@ Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name
 | Claude   | `~/.claude/skills/<name>/SKILL.md`       |
 | Codex    | `~/.agents/skills/<name>/SKILL.md`       |
 | OpenCode | `~/.config/opencode/skills/<name>/SKILL.md` |
+| Qwen     | `~/.config/qwen/skills/<name>/SKILL.md`  |
 
-All three agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
+All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
 
 ### Named Resumable Sessions
 
@@ -303,6 +305,7 @@ The first access in a session prompts for the vault password. Subsequent reads o
 | `claude`    | Anthropic's Claude Code CLI  | None (installed in container) |
 | `codex`     | OpenAI's Codex CLI           | None (downloaded)|
 | `opencode`  | OpenCode AI assistant        | None (binary download)  |
+| `qwen`      | Qwen Code AI assistant       | None (npm install)      |
 
 All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `exitbox config import <agent>` (or `exitbox config import all`) to re-seed from host config. Use `--workspace` to target a specific workspace. Use `--config`/`-c` to import a specific config file. Use `exitbox config edit <agent>` to open the agent's primary config file in your editor:
 
@@ -312,7 +315,44 @@ exitbox config import opencode -c opencode.json     # Import OpenCode config fil
 exitbox config import codex -c config.toml -w work  # Import into specific workspace
 exitbox config edit claude                           # Edit Claude settings.json in $EDITOR
 exitbox config edit codex -w work                    # Edit Codex config.toml for 'work' workspace
+exitbox config edit claude --profile openrouter      # Edit profile-scoped settings.json (seeded from default)
 ```
+
+### Environment Variable Profiles
+
+Named bundles of environment variables stored per-workspace in the KV store. Apply a profile at run time to inject variables via container `-e` flags. Useful for switching between providers (e.g. OpenRouter, direct Anthropic) without editing config.
+
+```bash
+exitbox env create openrouter           # Opens $EDITOR; paste KEY=VALUE lines, save
+exitbox env edit openrouter             # Edit existing profile
+exitbox env list                        # List profiles in active workspace
+exitbox env show openrouter             # Show keys (values redacted)
+exitbox env show openrouter --unsafe    # Show raw values
+exitbox env delete openrouter
+exitbox env default openrouter      # Auto-load this profile on every run
+exitbox env default                 # Show current default
+exitbox env default --clear         # Remove the default
+```
+
+When a default profile is set, it is loaded automatically on every `exitbox run` without needing `--profile`. CLI `--profile` overrides the default.
+
+Example profile for routing Claude Code via OpenRouter:
+
+```
+OPENROUTER_API_KEY=sk-or-v1-...
+ANTHROPIC_BASE_URL=https://openrouter.ai/api
+ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY
+ANTHROPIC_API_KEY=
+```
+
+Apply at run time:
+
+```bash
+exitbox run claude --profile openrouter       # Loads env vars + uses profile-scoped agent config
+exitbox run claude -- --profile openrouter    # Same (after --)
+```
+
+Config files can be scoped per-profile — `exitbox config edit claude --profile openrouter` creates a copy of the default config under the profile, which takes effect only when `--profile openrouter` is used at run time. CLI `-e KEY=VAL` flags override profile values.
 
 ## Installation
 
@@ -441,6 +481,7 @@ exitbox setup             # Run the interactive setup wizard (recommended first 
 exitbox run claude [args]     # Run Claude Code
 exitbox run codex [args]      # Run Codex
 exitbox run opencode [args]   # Run OpenCode
+exitbox run qwen [args]       # Run Qwen Code
 ```
 
 ### Management
@@ -466,6 +507,13 @@ exitbox config edit <agent>        # Open agent config file in $EDITOR
 exitbox skills install <source>    # Install a skill from URL/path
 exitbox skills list                # List installed skills
 exitbox skills remove <name>       # Remove an installed skill
+exitbox env create <profile>       # Create a new env profile
+exitbox env edit <profile>         # Edit env profile in $EDITOR
+exitbox env list                   # List env profiles
+exitbox env show <profile>         # Show env profile (values redacted)
+exitbox env delete <profile>       # Delete env profile
+exitbox env default [profile]      # Get or set the default env profile
+exitbox env default --clear        # Remove the default env profile
 ```
 
 ### Config Generation
@@ -563,7 +611,7 @@ Agents are automatically informed about vault commands and these rules via sandb
 #### How Workspaces Work
 
 - **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
-- **Development stacks**: Each workspace can have its own set of development profiles (languages/tools). The setup wizard or `exitbox workspaces add` lets you pick the stack for each workspace.
+- **Development stacks**: Each workspace can have its own set of dev roles (languages/tools). The setup wizard or `exitbox workspaces add` lets you pick the stack for each workspace.
 - **Per-project auto-detection**: Workspaces can be scoped to a directory. When you run an agent from that directory, ExitBox automatically uses the matching workspace.
 - **Default workspace**: Set via `exitbox setup` or `exitbox workspaces default`. Used when no directory-scoped workspace matches.
 - **Credential import**: When creating a workspace, you can import credentials from the host or copy them from an existing workspace. You can also import later with `exitbox config import <agent> --workspace <name>`.
@@ -675,15 +723,16 @@ exitbox run --full-git-support claude    # Mount host .gitconfig and SSH agent
 exitbox run --ollama claude              # Use host Ollama for local models
 exitbox run --memory 16g --cpus 8 claude # Custom resource limits
 exitbox run --version 1.0.123 claude   # Pin specific agent version
+exitbox run --profile openrouter claude # Apply env profile (vars + profile-scoped config)
 ```
 
-All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--resume [SESSION|TOKEN]`, `--no-resume`, `--name`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`, `--full-git-support`, `--ollama`, `--memory`, `--cpus`, `--version`.
+All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--resume [SESSION|TOKEN]`, `--no-resume`, `--name`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`, `--profile`, `--full-git-support`, `--ollama`, `--memory`, `--cpus`, `--version`.
 
-## Available Profiles
+## Available Roles
 
-Profiles are pre-configured development environments. The setup wizard suggests profiles based on your developer role, or you can add them manually.
+Roles (formerly "profiles") are pre-configured development environments (toolchains, language runtimes, CLI stacks). The setup wizard suggests roles based on the developer role preset you pick (Frontend, Backend, AI Developer, etc.), or you can add them manually.
 
-| Profile       | Description                              |
+| Role          | Description                              |
 |:--------------|:-----------------------------------------|
 | `base`        | Base development tools                   |
 | `build-tools` | Build toolchain helpers                  |
@@ -841,6 +890,8 @@ All managed paths follow the pattern `~/.config/exitbox/profiles/global/<workspa
 | OpenCode | `.local/share/opencode/`                     | `/home/user/.local/share/opencode` |
 | OpenCode | `.local/state/`                              | `/home/user/.local/state`         |
 | OpenCode | `.cache/opencode/`                           | `/home/user/.cache/opencode`      |
+| Qwen     | `.qwen/`                                     | `/home/user/.qwen`                |
+| Qwen     | `.config/qwen/`                              | `/home/user/.config/qwen`         |
 
 Your project directory is mounted at `/workspace`.
 
@@ -879,7 +930,12 @@ Each layer uses label-based caching (`exitbox.version`, `exitbox.agent.version`,
 
 ### Supply-Chain Hardened Agent Installs
 
-Claude Code is installed via **direct binary download with SHA-256 checksum verification** against Anthropic's signed manifest — no `curl | bash`. The download URL is auto-discovered from the official installer if the hardcoded endpoint ever changes. The build aborts on any checksum mismatch.
+Agent binaries are installed via **direct download with SHA-256 checksum verification**:
+
+- **Claude Code**: binary download verified against Anthropic's signed manifest. Download URL auto-discovered from the official installer if the hardcoded endpoint changes.
+- **OpenCode**: GitHub release tarball verified against the `digest` field from the GitHub Releases API.
+
+No `curl | bash` for any agent. Builds abort on any checksum mismatch.
 
 ## Network Firewall
 

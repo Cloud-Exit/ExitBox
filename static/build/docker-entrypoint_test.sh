@@ -92,8 +92,13 @@ SESSION_DIR_FOR_NAME_FUNC="$(extract_func session_dir_for_name)"
 ENSURE_NAMED_SESSION_DIR_FUNC="$(extract_func ensure_named_session_dir)"
 LEGACY_RESUME_FILE_FUNC="$(extract_func legacy_resume_file)"
 CODEX_SESSION_STORAGE_NAME_FUNC="$(extract_func codex_session_storage_name)"
+HAS_AUTH_ACTION_FUNC="$(extract_func has_auth_action)"
 CODEX_USES_DIRECT_HOME_FUNC="$(extract_func codex_uses_direct_home)"
 CONFIGURE_CODEX_SESSION_STORAGE_FUNC="$(extract_func configure_codex_session_storage)"
+SHOULD_EXEC_RAW_FUNC="$(extract_func should_exec_raw)"
+RUN_RAW_COMMAND_FUNC="$(extract_func run_raw_command)"
+BUILD_AGENT_LOOP_COMMAND_FUNC="$(extract_func build_agent_loop_command)"
+CLEAR_STALE_FUNC="$(extract_func clear_stale_resume_token)"
 
 SESSION_HELPER_FUNCS="${DEFAULT_SESSION_NAME_FUNC}
 ${CURRENT_SESSION_NAME_FUNC}
@@ -107,6 +112,7 @@ ${SESSION_KEY_FOR_NAME_FUNC}
 ${SESSION_DIR_FOR_NAME_FUNC}
 ${ENSURE_NAMED_SESSION_DIR_FUNC}
 ${LEGACY_RESUME_FILE_FUNC}
+${HAS_AUTH_ACTION_FUNC}
 ${CODEX_USES_DIRECT_HOME_FUNC}"
 
 CODEX_SESSION_HELPERS="${LINK_PATH_FUNC}
@@ -647,6 +653,75 @@ test_build_resume_args_skips_codex_login() {
 }
 
 # ============================================================================
+# Test: should_exec_raw only triggers for auth/login/logout flows
+# ============================================================================
+test_should_exec_raw_only_for_auth_flows() {
+    local result
+    result="$(
+        eval "$HAS_AUTH_ACTION_FUNC"
+        eval "$SHOULD_EXEC_RAW_FUNC"
+        if should_exec_raw --name box --dangerously-skip-permissions; then
+            echo "raw"
+        else
+            echo "wrapped"
+        fi
+    )" 2>/dev/null
+
+    assert_eq "should_exec_raw (normal flags stay wrapped)" "wrapped" "$result"
+}
+
+# ============================================================================
+# Test: should_exec_raw detects auth keywords across args (case-insensitive)
+# ============================================================================
+test_should_exec_raw_detects_auth_keywords() {
+    local result
+    result="$(
+        eval "$HAS_AUTH_ACTION_FUNC"
+        eval "$SHOULD_EXEC_RAW_FUNC"
+        if should_exec_raw codex LoGiN; then
+            echo "raw"
+        else
+            echo "wrapped"
+        fi
+    )" 2>/dev/null
+
+    assert_eq "should_exec_raw (login keyword across args)" "raw" "$result"
+}
+
+# ============================================================================
+# Test: run_raw_command still prefixes AGENT for auth/login flows
+# ============================================================================
+test_run_raw_command_prefixes_agent() {
+    local result
+    result="$(
+        AGENT="codex"
+        codex() {
+            echo "codex:$*"
+        }
+        eval "$RUN_RAW_COMMAND_FUNC"
+        run_raw_command login
+    )" 2>/dev/null
+
+    assert_eq "run_raw_command (login executes via agent binary)" "codex:login" "$result"
+}
+
+# ============================================================================
+# Test: build_agent_loop_command preserves passthrough args
+# ============================================================================
+test_build_agent_loop_command_passthrough() {
+    local result
+    result="$(
+        eval "$BUILD_AGENT_LOOP_COMMAND_FUNC"
+        build_agent_loop_command --dangerously-skip-permissions --name box
+    )" 2>/dev/null
+
+    assert_contains "build_agent_loop_command includes agent loop marker" "$result" "__agent-loop"
+    assert_contains "build_agent_loop_command includes dangerous flag" "$result" "--dangerously-skip-permissions"
+    assert_contains "build_agent_loop_command includes name flag" "$result" "--name"
+    assert_contains "build_agent_loop_command includes name value" "$result" "box"
+}
+
+# ============================================================================
 # Test: write_tmux_conf includes scrolling settings
 # ============================================================================
 test_write_tmux_conf_scroll_settings() {
@@ -764,6 +839,10 @@ test_configure_codex_session_storage_isolates_named_sessions
 test_configure_codex_session_storage_uses_active_session
 test_configure_codex_session_storage_bypasses_login_flow
 test_build_resume_args_skips_codex_login
+test_should_exec_raw_only_for_auth_flows
+test_should_exec_raw_detects_auth_keywords
+test_run_raw_command_prefixes_agent
+test_build_agent_loop_command_passthrough
 test_write_tmux_conf_scroll_settings
 test_parse_keybindings_default
 test_parse_keybindings_custom
@@ -1443,6 +1522,63 @@ test_rtk_skips_when_disabled
 test_rtk_skips_without_binary
 test_rtk_sandbox_instructions_absent_when_disabled
 test_rtk_sandbox_instructions_present_when_enabled
+
+# ============================================================================
+# Tests: clear_stale_resume_token
+# ============================================================================
+test_clear_stale_resume_token_removes_files() {
+    local tmpdir="$TEST_TMPDIR/clear_stale_files"
+    local session_name="mysession"
+    local token_file legacy_file
+    token_file="$(session_token_file_for_test "$tmpdir" "default" "claude" "$session_name")"
+    mkdir -p "$(dirname "$token_file")"
+    echo "staletoken" > "$token_file"
+    legacy_file="${tmpdir}/default/claude/.resume-token"
+    mkdir -p "$(dirname "$legacy_file")"
+    echo "staletoken" > "$legacy_file"
+
+    (
+        AGENT="claude"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_SESSION_NAME="$session_name"
+        EXITBOX_PROJECT_KEY=""
+        # shellcheck disable=SC2317
+        exitbox-kv() { return 0; }
+        export -f exitbox-kv
+        eval "$SESSION_HELPER_FUNCS"
+        eval "$CLEAR_STALE_FUNC"
+        clear_stale_resume_token
+    ) 2>/dev/null
+
+    assert_file_missing "clear_stale_resume_token (removes session token file)" "$token_file"
+    assert_file_missing "clear_stale_resume_token (removes legacy token file)" "$legacy_file"
+}
+
+test_clear_stale_resume_token_no_error_when_missing() {
+    local tmpdir="$TEST_TMPDIR/clear_stale_missing"
+    local session_name="nosuchsession"
+
+    local rc=0
+    (
+        AGENT="claude"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_SESSION_NAME="$session_name"
+        EXITBOX_PROJECT_KEY=""
+        # shellcheck disable=SC2317
+        exitbox-kv() { return 1; }
+        export -f exitbox-kv
+        eval "$SESSION_HELPER_FUNCS"
+        eval "$CLEAR_STALE_FUNC"
+        clear_stale_resume_token
+    ) 2>/dev/null || rc=$?
+
+    assert_eq "clear_stale_resume_token (no error when files absent)" "0" "$rc"
+}
+
+test_clear_stale_resume_token_removes_files
+test_clear_stale_resume_token_no_error_when_missing
 
 # ============================================================================
 # Results

@@ -55,6 +55,19 @@ func (o *OpenCode) BinaryName() string {
 	}
 }
 
+// NpmPackageName returns the platform-specific npm package that contains the
+// actual OpenCode binary for this architecture.
+func (o *OpenCode) NpmPackageName() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "opencode-linux-x64"
+	case "arm64":
+		return "opencode-linux-arm64"
+	default:
+		return ""
+	}
+}
+
 func (o *OpenCode) HostConfigPaths() []string {
 	home := os.Getenv("HOME")
 	return []string{

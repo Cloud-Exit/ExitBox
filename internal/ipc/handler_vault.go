@@ -53,6 +53,10 @@ type VaultState struct {
 	mu       sync.Mutex
 	store    map[string]string // nil = not yet unlocked
 	password string            // cached after first unlock for write operations
+	// approvedReads tracks read approvals for the current IPC server lifetime.
+	// Keyed by workspace + NUL + vault key so one approved secret does not
+	// implicitly approve a different workspace or key.
+	approvedReads map[string]struct{}
 
 	// redactMu guards retrievedSecrets independently from mu.
 	// This prevents deadlock: GetRetrievedSecrets is called on every stdout
@@ -67,11 +71,32 @@ func (vs *VaultState) Cleanup() {
 	vs.mu.Lock()
 	vs.store = nil
 	vs.password = ""
+	vs.approvedReads = nil
 	vs.mu.Unlock()
 
 	vs.redactMu.Lock()
 	vs.retrievedSecrets = nil
 	vs.redactMu.Unlock()
+}
+
+func vaultReadApprovalKey(workspace, key string) string {
+	return workspace + "\x00" + key
+}
+
+func (vs *VaultState) isReadApproved(workspace, key string) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	_, ok := vs.approvedReads[vaultReadApprovalKey(workspace, key)]
+	return ok
+}
+
+func (vs *VaultState) markReadApproved(workspace, key string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if vs.approvedReads == nil {
+		vs.approvedReads = make(map[string]struct{})
+	}
+	vs.approvedReads[vaultReadApprovalKey(workspace, key)] = struct{}{}
 }
 
 // GetRetrievedSecrets returns a copy of the retrieved secrets map for redaction.
@@ -120,13 +145,14 @@ func NewVaultGetHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
 			return VaultGetResponse{Error: "empty key"}, nil
 		}
 
-		// Prompt user for approval.
-		approved, err := promptApprove(key)
-		if err != nil {
-			return VaultGetResponse{Error: fmt.Sprintf("approval prompt failed: %v", err)}, nil
-		}
-		if !approved {
-			return VaultGetResponse{Approved: false}, nil
+		if !state.isReadApproved(cfg.WorkspaceName, key) {
+			approved, err := promptApprove(key)
+			if err != nil {
+				return VaultGetResponse{Error: fmt.Sprintf("approval prompt failed: %v", err)}, nil
+			}
+			if !approved {
+				return VaultGetResponse{Approved: false}, nil
+			}
 		}
 
 		// Ensure vault is unlocked.
@@ -139,6 +165,8 @@ func NewVaultGetHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
 		if !ok {
 			return VaultGetResponse{Error: fmt.Sprintf("key %q not found in vault", key)}, nil
 		}
+
+		state.markReadApproved(cfg.WorkspaceName, key)
 
 		// Cache the secret value for output redaction.
 		state.redactMu.Lock()

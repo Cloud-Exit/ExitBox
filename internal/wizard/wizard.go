@@ -114,7 +114,7 @@ func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*Wo
 	return &WorkspaceCreationResult{
 		Workspace: &config.Workspace{
 			Name:        name,
-			Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
+			Development: ComputeRoles(wm.Result().Roles, wm.Result().Languages),
 			Packages:    wm.Result().CustomPackages,
 			Vault:       config.VaultConfig{Enabled: wm.Result().VaultEnabled, ReadOnly: wm.Result().VaultReadOnly},
 		},
@@ -140,7 +140,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 		// stack and apply language selection changes on top.
 		development = applyLanguageDelta(state.OriginalDevelopment, state.Languages)
 	} else {
-		development = ComputeProfiles(state.Roles, state.Languages)
+		development = ComputeRoles(state.Roles, state.Languages)
 	}
 
 	cfg.Roles = state.Roles

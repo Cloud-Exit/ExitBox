@@ -124,3 +124,40 @@ func TestIsReservedEnvVar_NotReserved(t *testing.T) {
 		}
 	}
 }
+
+// TestNewIPCServer_AlwaysCreated ensures the IPC server is created
+// regardless of firewall mode (so vault/kv still work with --no-firewall).
+func TestNewIPCServer_AlwaysCreated(t *testing.T) {
+	// Firewall enabled
+	_, err := newIPCServer(true, nil, "test")
+	if err != nil {
+		t.Fatalf("newIPCServer(firewall=true) failed: %v", err)
+	}
+
+	// Firewall disabled — must still succeed
+	_, err = newIPCServer(false, nil, "test")
+	if err != nil {
+		t.Fatalf("newIPCServer(firewall=false) failed: %v", err)
+	}
+}
+
+// TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall ensures the
+// allow_domain handler is only registered when firewall is enabled.
+func TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall(t *testing.T) {
+	withFirewall, err := newIPCServer(true, nil, "test")
+	if err != nil {
+		t.Fatalf("newIPCServer(firewall=true) failed: %v", err)
+	}
+
+	withoutFirewall, err := newIPCServer(false, nil, "test")
+	if err != nil {
+		t.Fatalf("newIPCServer(firewall=false) failed: %v", err)
+	}
+
+	if !withFirewall.HasHandler("allow_domain") {
+		t.Error("allow_domain handler missing with firewall enabled")
+	}
+	if withoutFirewall.HasHandler("allow_domain") {
+		t.Error("allow_domain handler present with firewall disabled; should be absent")
+	}
+}

@@ -301,6 +301,22 @@ apply_active_workspace_links() {
 
     workspace_root="${GLOBAL_WORKSPACE_ROOT}/${name}/${AGENT}"
 
+    # If an env profile is selected, scope agent config to its subdirectory.
+    # Seeded on first edit via 'exitbox config edit <agent> --profile <name>'.
+    if [[ -n "${EXITBOX_ENV_PROFILE:-}" ]]; then
+        local profile_root="${workspace_root}/profiles/${EXITBOX_ENV_PROFILE}"
+        if [[ ! -d "$profile_root" ]]; then
+            mkdir -p "$profile_root"
+            # Full-tree copy of the small agent config root so first run has working defaults.
+            if [[ -d "$workspace_root" ]]; then
+                cp -a "${workspace_root}/." "${profile_root}/" 2>/dev/null || true
+                # Don't recursively nest profiles within profiles.
+                rm -rf "${profile_root}/profiles" 2>/dev/null || true
+            fi
+        fi
+        workspace_root="$profile_root"
+    fi
+
     # Credential isolation: only the workspace that was mounted at container
     # start has real data. If the user switched to a different workspace via
     # Ctrl+P, its directory is empty (not bind-mounted from host).
@@ -372,14 +388,22 @@ codex_session_storage_name() {
     echo "$name"
 }
 
+has_auth_action() {
+    local arg lower
+    for arg in "$@"; do
+        lower="${arg,,}"
+        case "$lower" in
+            *login*|*logout*|*auth*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 codex_uses_direct_home() {
     [[ "$AGENT" != "codex" ]] && return 1
-    case "${1:-}" in
-        login|logout|auth)
-            return 0
-            ;;
-    esac
-    return 1
+    has_auth_action "$@"
 }
 
 configure_codex_session_storage() {
@@ -849,20 +873,33 @@ build_resume_args() {
     fi
 }
 
+clear_stale_resume_token() {
+    local session_name session_key session_dir
+    session_name="$(effective_session_name)"
+    session_key="$(session_key_for_name "$session_name")"
+    session_dir="$(session_dir_for_name "$session_name")"
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        exitbox-kv delete "$(kv_session_prefix)${session_key}:.resume-token" 2>/dev/null || true
+    fi
+    rm -f "${session_dir}/.resume-token"
+    rm -f "$(legacy_resume_file)"
+}
+
 run_agent_once() {
     if [[ $# -gt 0 ]]; then
-        case "$1" in
-            claude|codex|opencode)
-                exec "$@"
-                ;;
-            *)
-                if [[ -n "$AGENT" ]]; then
-                    exec "$AGENT" "$@"
-                else
-                    exec "$@"
-                fi
-                ;;
-        esac
+        if should_exec_raw "$@"; then
+            exec_raw_command "$@"
+        fi
+        if [[ -n "$AGENT" ]]; then
+            if [[ "${1:-}" == "$AGENT" ]]; then
+                shift
+            fi
+            if [[ $# -gt 0 ]]; then
+                exec "$AGENT" "$@"
+            fi
+            exec "$AGENT"
+        fi
+        exec "$@"
     else
         if [[ -n "$AGENT" ]]; then
             exec "$AGENT"
@@ -870,6 +907,34 @@ run_agent_once() {
             exec bash
         fi
     fi
+}
+
+run_raw_command() {
+    if [[ -n "$AGENT" ]]; then
+        if [[ "${1:-}" == "$AGENT" ]]; then
+            shift
+        fi
+        if [[ $# -gt 0 ]]; then
+            "$AGENT" "$@"
+        else
+            "$AGENT"
+        fi
+        return
+    fi
+    "$@"
+}
+
+exec_raw_command() {
+    if [[ -n "$AGENT" ]]; then
+        if [[ "${1:-}" == "$AGENT" ]]; then
+            shift
+        fi
+        if [[ $# -gt 0 ]]; then
+            exec "$AGENT" "$@"
+        fi
+        exec "$AGENT"
+    fi
+    exec "$@"
 }
 
 run_agent_loop() {
@@ -909,22 +974,29 @@ run_agent_loop() {
 
     set +e
     if [[ $# -gt 0 ]]; then
-        case "$1" in
-            claude|codex|opencode)
+        if should_exec_raw "$@"; then
+            # Auth flows run as plain agent subcommands and intentionally skip resume wrapping.
+            run_raw_command "$@"
+        else
+            local cmd_args=("$@")
+            if [[ "${cmd_args[0]}" == "$AGENT" ]]; then
+                cmd_args=("${cmd_args[@]:1}")
+            fi
+
+            if [[ ${#cmd_args[@]} -gt 0 ]]; then
                 if [[ "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
-                    "$@" "${RESUME_ARGS[@]}"
+                    "$AGENT" "${cmd_args[@]}" "${RESUME_ARGS[@]}"
                 else
-                    "$@"
+                    "$AGENT" "${cmd_args[@]}"
                 fi
-                ;;
-            *)
+            else
                 if [[ "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
-                    "$AGENT" "$@" "${RESUME_ARGS[@]}"
+                    "$AGENT" "${RESUME_ARGS[@]}"
                 else
-                    "$AGENT" "$@"
+                    "$AGENT"
                 fi
-                ;;
-        esac
+            fi
+        fi
     else
         if [[ ${#RESUME_ARGS[@]} -gt 0 ]]; then
             "$AGENT" "${RESUME_ARGS[@]}"
@@ -934,9 +1006,61 @@ run_agent_loop() {
     fi
     local code=$?
 
+    # Stale session recovery: if the agent exited because the stored session no
+    # longer exists on the backend, clear the token and start fresh automatically.
+    if [[ $code -ne 0 && "$user_has_resume" == "false" && ${#RESUME_ARGS[@]} -gt 0 ]]; then
+        local pane_output
+        pane_output="$(tmux capture-pane -p -S -100 2>/dev/null || true)"
+        if echo "$pane_output" | grep -q "No conversation found with session ID"; then
+            clear_stale_resume_token
+            RESUME_ARGS=()
+            if [[ $# -gt 0 ]]; then
+                local retry_args=("$@")
+                if [[ "${retry_args[0]}" == "$AGENT" ]]; then
+                    retry_args=("${retry_args[@]:1}")
+                fi
+                if [[ ${#retry_args[@]} -gt 0 ]]; then
+                    "$AGENT" "${retry_args[@]}"
+                else
+                    "$AGENT"
+                fi
+            else
+                "$AGENT"
+            fi
+            code=$?
+        fi
+    fi
+
     capture_resume_token
 
     exit "$code"
+}
+
+should_exec_raw() {
+    if [[ "${EXITBOX_RAW_COMMAND:-}" == "true" ]]; then
+        return 0
+    fi
+
+    has_auth_action "$@"
+}
+
+should_start_tmux() {
+    [[ -n "$AGENT" ]] || return 1
+    [[ -z "${TMUX:-}" ]] || return 1
+    [[ -t 0 && -t 1 ]] || return 1
+    command -v tmux >/dev/null 2>&1 || return 1
+
+    if [[ $# -gt 0 ]] && should_exec_raw "$@"; then
+        return 1
+    fi
+    return 0
+}
+
+build_agent_loop_command() {
+    local loop_args=("/usr/local/bin/docker-entrypoint" "__agent-loop" "$@")
+    local cmd
+    printf -v cmd '%q ' "${loop_args[@]}"
+    echo "${cmd% }"
 }
 
 setup_git_credential_helper() {
@@ -1577,14 +1701,15 @@ if [[ "${1:-}" == "__agent-loop" ]]; then
     exit $?
 fi
 
-if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
+if should_start_tmux "$@"; then
     # Fall back to a widely-supported TERM if the host terminal's terminfo
     # is not available inside the container (e.g. xterm-kitty, alacritty).
     if ! infocmp "$TERM" >/dev/null 2>&1; then
         export TERM="xterm-256color"
     fi
     TMUX_CONF="$(write_tmux_conf)"
-    tmux -f "$TMUX_CONF" new-session -A -s "exitbox-${AGENT}" "/usr/local/bin/docker-entrypoint __agent-loop"
+    TMUX_LOOP_CMD="$(build_agent_loop_command "$@")"
+    tmux -f "$TMUX_CONF" new-session -A -s "exitbox-${AGENT}" "$TMUX_LOOP_CMD"
     TMUX_EXIT=$?
 
     # Show resume status after tmux exits (visible on the host terminal).

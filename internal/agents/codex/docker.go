@@ -62,7 +62,11 @@ func (c *Codex) GetFullDockerfile(version string) (string, error) {
 func (c *Codex) PrepareBuild(in agent.PrepareBuildInput) error {
 	version := in.Version
 	if version == "" {
-		version = "latest"
+		var err error
+		version, err = c.GetLatestVersion()
+		if err != nil {
+			return fmt.Errorf("failed to get latest Codex version: %w", err)
+		}
 	}
 	binaryName := c.BinaryName()
 	if binaryName == "" {

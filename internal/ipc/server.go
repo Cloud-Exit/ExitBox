@@ -82,6 +82,14 @@ func (s *Server) Handle(msgType string, h HandlerFunc) {
 	s.handlers[msgType] = h
 }
 
+// HasHandler reports whether a handler is registered for the given msgType.
+func (s *Server) HasHandler(msgType string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.handlers[msgType]
+	return ok
+}
+
 // Start begins accepting connections in a background goroutine.
 func (s *Server) Start() {
 	s.wg.Add(1)

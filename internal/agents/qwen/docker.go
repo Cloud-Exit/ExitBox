@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
+	"github.com/cloud-exit/exitbox/internal/agents/jstools"
 )
 
 const qwenNPMPackage = "@qwen-code/qwen-code"
@@ -28,8 +29,7 @@ const qwenNPMPackage = "@qwen-code/qwen-code"
 func (q *Qwen) GetDockerfileInstall(buildCtx string) (string, error) {
 	return `# Install Node.js and Qwen Code via npm (requires Node 20+)
 ARG QWEN_VERSION
-RUN apk add --no-cache nodejs npm && \
-    npm install -g ` + qwenNPMPackage + `@${QWEN_VERSION} && \
+` + jstools.InstallDependencies([]string{"nodejs", "npm"}, []string{qwenNPMPackage + "@${QWEN_VERSION}"}) + ` && \
     qwen --version
 LABEL exitbox.agent.version="${QWEN_VERSION}"`, nil
 }

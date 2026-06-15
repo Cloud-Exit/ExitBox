@@ -181,6 +181,134 @@ func TestVaultGetCachedUnlock(t *testing.T) {
 	}
 }
 
+func TestVaultGetCachesApprovalForSameKey(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	var approveCalls int32
+	store := map[string]string{"API_KEY": "secret123"}
+
+	srv.Handle("vault_get", NewVaultGetHandler(VaultHandlerConfig{
+		PromptApproveFunc: func(key string) (bool, error) {
+			atomic.AddInt32(&approveCalls, 1)
+			return true, nil
+		},
+		PromptPasswordFunc: func() (string, error) {
+			return "testpass", nil
+		},
+		OpenFunc: func(workspace, password string) (map[string]string, error) {
+			return store, nil
+		},
+		WorkspaceName: "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultGet(t, srv, "API_KEY")
+	if !resp.Approved {
+		t.Error("expected approved=true for first request")
+	}
+
+	resp = sendVaultGet(t, srv, "API_KEY")
+	if !resp.Approved {
+		t.Error("expected approved=true for second request")
+	}
+
+	if n := atomic.LoadInt32(&approveCalls); n != 1 {
+		t.Errorf("PromptApproveFunc called %d times, expected 1", n)
+	}
+}
+
+func TestVaultGetDoesNotReuseApprovalForDifferentKey(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	var approveCalls int32
+	store := map[string]string{"KEY1": "v1", "KEY2": "v2"}
+
+	srv.Handle("vault_get", NewVaultGetHandler(VaultHandlerConfig{
+		PromptApproveFunc: func(key string) (bool, error) {
+			atomic.AddInt32(&approveCalls, 1)
+			return true, nil
+		},
+		PromptPasswordFunc: func() (string, error) {
+			return "testpass", nil
+		},
+		OpenFunc: func(workspace, password string) (map[string]string, error) {
+			return store, nil
+		},
+		WorkspaceName: "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultGet(t, srv, "KEY1")
+	if !resp.Approved {
+		t.Error("expected approved=true for first key")
+	}
+
+	resp = sendVaultGet(t, srv, "KEY2")
+	if !resp.Approved {
+		t.Error("expected approved=true for second key")
+	}
+
+	if n := atomic.LoadInt32(&approveCalls); n != 2 {
+		t.Errorf("PromptApproveFunc called %d times, expected 2", n)
+	}
+}
+
+func TestVaultGetDeniedDoesNotCacheApproval(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	var approveCalls int32
+	store := map[string]string{"API_KEY": "secret123"}
+
+	srv.Handle("vault_get", NewVaultGetHandler(VaultHandlerConfig{
+		PromptApproveFunc: func(key string) (bool, error) {
+			return atomic.AddInt32(&approveCalls, 1) > 1, nil
+		},
+		PromptPasswordFunc: func() (string, error) {
+			return "testpass", nil
+		},
+		OpenFunc: func(workspace, password string) (map[string]string, error) {
+			return store, nil
+		},
+		WorkspaceName: "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultGet(t, srv, "API_KEY")
+	if resp.Approved {
+		t.Error("expected approved=false for denied request")
+	}
+
+	resp = sendVaultGet(t, srv, "API_KEY")
+	if !resp.Approved {
+		t.Error("expected approved=true after second approval")
+	}
+
+	if n := atomic.LoadInt32(&approveCalls); n != 2 {
+		t.Errorf("PromptApproveFunc called %d times, expected 2", n)
+	}
+}
+
 func TestVaultGetKeyNotFound(t *testing.T) {
 	srv, err := NewServer()
 	if err != nil {

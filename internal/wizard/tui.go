@@ -24,7 +24,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/cloud-exit/exitbox/internal/apk"
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/env"
 )
+
+// listEnvProfileNames returns the env profile names for the given workspace.
+func listEnvProfileNames(workspace string) ([]string, error) {
+	return env.List(workspace)
+}
 
 // Step identifies the current wizard step.
 type Step int
@@ -44,6 +50,7 @@ const (
 	stepDomains
 	stepCopyCredentials
 	stepVault
+	stepEnvProfiles
 	stepReview
 	stepDone
 )
@@ -314,7 +321,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	startStep := stepTopMenu
 	var workspaces []config.Workspace
 	activeCursor := 0
-	if len(cfg.Workspaces.Items) > 1 {
+	if len(cfg.Workspaces.Items) > 0 {
 		workspaces = cfg.Workspaces.Items
 		for i, w := range workspaces {
 			if w.Name == activeWorkspaceNameOrDefault(activeWorkspaceName) {
@@ -494,6 +501,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCopyCredentials(msg)
 	case stepVault:
 		return m.updateVault(msg)
+	case stepEnvProfiles:
+		return m.updateEnvProfiles(msg)
 	case stepDomains:
 		return m.updateDomains(msg)
 	case stepReview:
@@ -532,6 +541,8 @@ func (m Model) View() string {
 		content = m.viewCopyCredentials()
 	case stepVault:
 		content = m.viewVault()
+	case stepEnvProfiles:
+		content = m.viewEnvProfiles()
 	case stepDomains:
 		content = m.viewDomains()
 	case stepReview:
@@ -708,8 +719,8 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Re-check roles: only check roles whose profiles all exist
 				// in this workspace's development stack.
 				for _, role := range Roles {
-					match := len(role.Profiles) > 0
-					for _, p := range role.Profiles {
+					match := len(role.Roles) > 0
+					for _, p := range role.Roles {
 						if !devSet[p] {
 							match = false
 							break
@@ -898,7 +909,7 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		case "esc":
 			if !m.isFirstRun && m.topMenuChoice >= 0 {
-				if m.topMenuChoice == 0 && len(m.workspaces) > 1 {
+				if m.topMenuChoice == 0 && len(m.workspaces) > 0 {
 					m.step = stepWorkspaceSelect
 				} else {
 					m.step = stepTopMenu
@@ -2139,12 +2150,19 @@ func (m Model) viewSettings() string {
 
 // --- Top Menu Step (re-run only) ---
 
+const (
+	topMenuWorkspace = "Workspace management"
+	topMenuGeneral   = "General settings"
+	topMenuEnv       = "Env profiles"
+)
+
 var topMenuOptions = []struct {
 	Label       string
 	Description string
 }{
-	{"Workspace management", "Configure roles, languages, tools, packages, and workspace settings"},
-	{"General settings", "Configure keybindings and global preferences"},
+	{topMenuWorkspace, "Configure roles, languages, tools, packages, and workspace settings"},
+	{topMenuGeneral, "Configure keybindings and global preferences"},
+	{topMenuEnv, "View env profiles for a workspace (create/edit via 'exitbox env' CLI)"},
 }
 
 func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2160,17 +2178,21 @@ func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			m.topMenuChoice = m.topMenuCursor
-			if m.topMenuChoice == 0 {
+			switch topMenuOptions[m.topMenuChoice].Label {
+			case topMenuWorkspace:
 				// Workspace management flow
-				if len(m.workspaces) > 1 {
+				if len(m.workspaces) > 0 {
 					m.step = stepWorkspaceSelect
 				} else {
 					m.step = stepRole
 				}
-			} else {
+			case topMenuGeneral:
 				// General settings flow — single screen: keybindings
 				m.step = stepKeybindings
 				m.kbCursor = 0
+			case topMenuEnv:
+				// Env profiles view
+				m.step = stepEnvProfiles
 			}
 			m.cursor = 0
 		case "esc", "q":
@@ -2203,6 +2225,69 @@ func (m Model) viewTopMenu() string {
 
 	b.WriteString(helpStyle.Render("Up/Down to move, Enter to select, q to quit"))
 	return b.String()
+}
+
+// --- Env Profiles Step (informational) ---
+
+func (m Model) updateEnvProfiles(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc", "q", "enter":
+			m.step = stepTopMenu
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewEnvProfiles() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Environment Variable Profiles"))
+	b.WriteString("\n\n")
+
+	ws := m.activeWorkspaceName()
+	if ws == "" {
+		b.WriteString(dimStyle.Render("No active workspace — create one via 'Workspace management' first.\n"))
+	} else {
+		b.WriteString(fmt.Sprintf("Workspace: %s\n\n", selectedStyle.Render(ws)))
+		names, err := listEnvProfileNames(ws)
+		if err != nil {
+			b.WriteString(warnStyle.Render(fmt.Sprintf("  Failed to list profiles: %v\n", err)))
+		} else if len(names) == 0 {
+			b.WriteString(dimStyle.Render("  (no profiles defined)\n"))
+		} else {
+			for _, n := range names {
+				b.WriteString(fmt.Sprintf("  %s %s\n", successStyle.Render("•"), n))
+			}
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Manage via CLI:\n"))
+	b.WriteString("  exitbox env create <profile>    # new profile, opens $EDITOR\n")
+	b.WriteString("  exitbox env edit <profile>      # edit existing\n")
+	b.WriteString("  exitbox env list                # list profiles\n")
+	b.WriteString("  exitbox env show <profile>      # show (redacted)\n")
+	b.WriteString("  exitbox env delete <profile>    # remove\n\n")
+	b.WriteString(dimStyle.Render("Apply at run time:\n"))
+	b.WriteString("  exitbox run <agent> --profile <name>\n\n")
+	b.WriteString(dimStyle.Render("Profile-scoped agent config:\n"))
+	b.WriteString("  exitbox config edit <agent> --profile <name>\n\n")
+	b.WriteString(helpStyle.Render("Esc/Enter to return"))
+	return b.String()
+}
+
+// activeWorkspaceName returns the active workspace name or empty string.
+func (m Model) activeWorkspaceName() string {
+	if m.state.WorkspaceName != "" {
+		return m.state.WorkspaceName
+	}
+	if m.defaultWorkspace != "" {
+		return m.defaultWorkspace
+	}
+	if len(m.workspaces) > 0 {
+		return m.workspaces[0].Name
+	}
+	return ""
 }
 
 // --- Keybindings Step ---
@@ -2579,7 +2664,7 @@ func (m Model) viewReview() string {
 	if m.state.OriginalDevelopment != nil {
 		profiles = applyLanguageDelta(m.state.OriginalDevelopment, m.state.Languages)
 	} else {
-		profiles = ComputeProfiles(m.state.Roles, m.state.Languages)
+		profiles = ComputeRoles(m.state.Roles, m.state.Languages)
 	}
 	if len(profiles) > 0 {
 		b.WriteString(fmt.Sprintf("\n  Development stack: %s\n", selectedStyle.Render(strings.Join(profiles, ", "))))
@@ -2685,7 +2770,7 @@ func (m Model) viewWorkspaceOnlyReview() string {
 		b.WriteString(fmt.Sprintf("  Languages:    %s\n", dimStyle.Render("none")))
 	}
 
-	dev := ComputeProfiles(m.state.Roles, m.state.Languages)
+	dev := ComputeRoles(m.state.Roles, m.state.Languages)
 	if len(dev) > 0 {
 		b.WriteString(fmt.Sprintf("  Development:  %s\n", selectedStyle.Render(strings.Join(dev, ", "))))
 	} else {
