@@ -107,6 +107,30 @@ func MergeJSON(existing, generated map[string]interface{}) map[string]interface{
 	return result
 }
 
+// ConfigSerializer is implemented by agents whose on-disk config format is not
+// JSON (e.g. TOML). When an agent implements it, WriteAgentConfig renders the
+// config via SerializeConfig instead of the default JSON merge-and-write.
+type ConfigSerializer interface {
+	SerializeConfig(data map[string]interface{}) ([]byte, error)
+}
+
+// WriteAgentConfig writes an agent's generated config to path. If the agent
+// implements ConfigSerializer, its serialized output is written verbatim;
+// otherwise the data is deep-merged into any existing JSON via WriteConfig.
+func WriteAgentConfig(agt interface{}, path string, data map[string]interface{}) error {
+	if s, ok := agt.(ConfigSerializer); ok {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return fmt.Errorf("creating directory: %w", err)
+		}
+		out, err := s.SerializeConfig(data)
+		if err != nil {
+			return fmt.Errorf("serializing config: %w", err)
+		}
+		return os.WriteFile(path, out, 0644)
+	}
+	return WriteConfig(path, data)
+}
+
 // WriteConfig reads an existing config file (if present), deep-merges the
 // generated data into it, and writes the result back with 2-space indentation.
 func WriteConfig(path string, data map[string]interface{}) error {

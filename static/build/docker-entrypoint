@@ -24,7 +24,11 @@ agent_display_name() {
     case "$1" in
         claude)   echo "Claude Code" ;;
         codex)    echo "OpenAI Codex" ;;
+        copilot)  echo "GitHub Copilot CLI" ;;
+        cursor)   echo "Cursor CLI" ;;
+        kimi)     echo "Kimi Code CLI" ;;
         opencode) echo "OpenCode" ;;
+        pi)       echo "Pi Coding Agent" ;;
         qwen)     echo "Qwen Code" ;;
         *)        echo "$1" ;;
     esac
@@ -70,6 +74,10 @@ write_tmux_conf() {
     cat > "$conf" <<TMUXEOF
 # ExitBox tmux configuration
 set -g default-terminal "xterm-256color"
+# Forward modified keys (e.g. Shift+Enter / Alt+Enter) to agent TUIs that request
+# them. Without extended-keys, those agents warn and the modified Enter is lost.
+set -g extended-keys on
+set -as terminal-features "xterm*:extkeys"
 set -g status-position top
 set -g status-style "bg=colour236,fg=colour255"
 set -g status-left " ExitBox  ${display} "
@@ -361,6 +369,28 @@ apply_active_workspace_links() {
             link_path "$workspace_root/.local/share/opencode" "$HOME/.local/share/opencode"
             link_path "$workspace_root/.local/state" "$HOME/.local/state"
             link_path "$workspace_root/.cache/opencode" "$HOME/.cache/opencode"
+            ;;
+        qwen)
+            mkdir -p "$workspace_root/.qwen" "$workspace_root/.config/qwen"
+            link_path "$workspace_root/.qwen" "$HOME/.qwen"
+            mkdir -p "$HOME/.config"
+            link_path "$workspace_root/.config/qwen" "$HOME/.config/qwen"
+            ;;
+        copilot)
+            mkdir -p "$workspace_root/.copilot"
+            link_path "$workspace_root/.copilot" "$HOME/.copilot"
+            ;;
+        cursor)
+            mkdir -p "$workspace_root/.cursor"
+            link_path "$workspace_root/.cursor" "$HOME/.cursor"
+            ;;
+        kimi)
+            mkdir -p "$workspace_root/.kimi-code"
+            link_path "$workspace_root/.kimi-code" "$HOME/.kimi-code"
+            ;;
+        pi)
+            mkdir -p "$workspace_root/.pi"
+            link_path "$workspace_root/.pi" "$HOME/.pi"
             ;;
     esac
 

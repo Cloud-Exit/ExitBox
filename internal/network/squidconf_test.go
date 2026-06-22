@@ -95,6 +95,40 @@ func TestGenerateSquidConfig_SubdomainDedup(t *testing.T) {
 	}
 }
 
+func TestGenerateSquidConfig_IPUsesDstACL(t *testing.T) {
+	// A raw IP endpoint (e.g. a LAN model server) must be emitted as a dst ACL;
+	// squid ignores IP literals in dstdomain, so the destination would be denied.
+	conf := GenerateSquidConfig("10.89.0.0/24", []string{"example.com"}, []string{"10.10.10.185:8088"})
+
+	if !strings.Contains(conf, "acl allowed_ips dst 10.10.10.185") {
+		t.Error("config should emit a dst ACL for an IP endpoint")
+	}
+	if strings.Contains(conf, "dstdomain 10.10.10.185") {
+		t.Error("config must not place a raw IP in a dstdomain ACL")
+	}
+	if !strings.Contains(conf, "http_access allow agent_sources allowed_ips") {
+		t.Error("config should allow agent_sources with allowed_ips")
+	}
+	// Domains still use dstdomain.
+	if !strings.Contains(conf, "acl allowed_domains dstdomain .example.com") {
+		t.Error("domains should still use dstdomain")
+	}
+}
+
+func TestGenerateSquidConfig_IPOnlyAllowlist(t *testing.T) {
+	conf := GenerateSquidConfig("10.89.0.0/24", []string{"10.10.10.185"}, nil)
+
+	if !strings.Contains(conf, "acl allowed_ips dst 10.10.10.185") {
+		t.Error("config should emit a dst ACL for the IP")
+	}
+	if !strings.Contains(conf, "http_access allow agent_sources allowed_ips") {
+		t.Error("config should allow agent_sources with allowed_ips")
+	}
+	if strings.Contains(conf, "__agentbox_block_all__") {
+		t.Error("an IP-only allowlist is not empty and must not block all")
+	}
+}
+
 func TestGenerateSquidConfig_EmptyAllowlist(t *testing.T) {
 	conf := GenerateSquidConfig("10.89.0.0/24", nil, nil)
 

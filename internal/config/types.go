@@ -53,7 +53,11 @@ type Workspace struct {
 type AgentConfig struct {
 	Claude   AgentEntry `yaml:"claude"`
 	Codex    AgentEntry `yaml:"codex"`
+	Copilot  AgentEntry `yaml:"copilot"`
+	Cursor   AgentEntry `yaml:"cursor"`
+	Kimi     AgentEntry `yaml:"kimi"`
 	OpenCode AgentEntry `yaml:"opencode"`
+	Pi       AgentEntry `yaml:"pi"`
 	Qwen     AgentEntry `yaml:"qwen"`
 }
 
@@ -140,8 +144,16 @@ func (c *Config) IsAgentEnabled(name string) bool {
 		return c.Agents.Claude.Enabled
 	case "codex":
 		return c.Agents.Codex.Enabled
+	case "copilot":
+		return c.Agents.Copilot.Enabled
+	case "cursor":
+		return c.Agents.Cursor.Enabled
+	case "kimi":
+		return c.Agents.Kimi.Enabled
 	case "opencode":
 		return c.Agents.OpenCode.Enabled
+	case "pi":
+		return c.Agents.Pi.Enabled
 	case "qwen":
 		return c.Agents.Qwen.Enabled
 	}
@@ -155,8 +167,16 @@ func (c *Config) GetAgentVersion(name string) string {
 		return c.Agents.Claude.Version
 	case "codex":
 		return c.Agents.Codex.Version
+	case "copilot":
+		return c.Agents.Copilot.Version
+	case "cursor":
+		return c.Agents.Cursor.Version
+	case "kimi":
+		return c.Agents.Kimi.Version
 	case "opencode":
 		return c.Agents.OpenCode.Version
+	case "pi":
+		return c.Agents.Pi.Version
 	case "qwen":
 		return c.Agents.Qwen.Version
 	}
@@ -170,8 +190,16 @@ func (c *Config) SetAgentEnabled(name string, enabled bool) {
 		c.Agents.Claude.Enabled = enabled
 	case "codex":
 		c.Agents.Codex.Enabled = enabled
+	case "copilot":
+		c.Agents.Copilot.Enabled = enabled
+	case "cursor":
+		c.Agents.Cursor.Enabled = enabled
+	case "kimi":
+		c.Agents.Kimi.Enabled = enabled
 	case "opencode":
 		c.Agents.OpenCode.Enabled = enabled
+	case "pi":
+		c.Agents.Pi.Enabled = enabled
 	case "qwen":
 		c.Agents.Qwen.Enabled = enabled
 	}

@@ -66,6 +66,9 @@ func TestIsAgentEnabled(t *testing.T) {
 		Agents: AgentConfig{
 			Claude:   AgentEntry{Enabled: true},
 			Codex:    AgentEntry{Enabled: false},
+			Copilot:  AgentEntry{Enabled: true},
+			Cursor:   AgentEntry{Enabled: false},
+			Kimi:     AgentEntry{Enabled: true},
 			OpenCode: AgentEntry{Enabled: true},
 		},
 	}
@@ -76,6 +79,9 @@ func TestIsAgentEnabled(t *testing.T) {
 	}{
 		{"claude", true},
 		{"codex", false},
+		{"copilot", true},
+		{"cursor", false},
+		{"kimi", true},
 		{"opencode", true},
 		{"unknown", false},
 		{"", false},
@@ -104,6 +110,21 @@ func TestSetAgentEnabled(t *testing.T) {
 	cfg.SetAgentEnabled("opencode", true)
 	if !cfg.Agents.OpenCode.Enabled {
 		t.Error("SetAgentEnabled(opencode, true) did not enable opencode")
+	}
+
+	cfg.SetAgentEnabled("copilot", true)
+	if !cfg.Agents.Copilot.Enabled {
+		t.Error("SetAgentEnabled(copilot, true) did not enable copilot")
+	}
+
+	cfg.SetAgentEnabled("cursor", true)
+	if !cfg.Agents.Cursor.Enabled {
+		t.Error("SetAgentEnabled(cursor, true) did not enable cursor")
+	}
+
+	cfg.SetAgentEnabled("kimi", true)
+	if !cfg.Agents.Kimi.Enabled {
+		t.Error("SetAgentEnabled(kimi, true) did not enable kimi")
 	}
 
 	cfg.SetAgentEnabled("claude", false)

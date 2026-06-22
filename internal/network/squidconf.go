@@ -18,6 +18,7 @@ package network
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/ui"
@@ -94,21 +95,43 @@ acl localhost src 127.0.0.1/32
 	// both appear (the subdomain is redundant).
 	entries = removeRedundantSubdomains(entries)
 
+	// Split into hostnames (dstdomain) and IP literals (dst). Squid ignores IP
+	// addresses in a dstdomain ACL, so an endpoint addressed by IP (e.g. a LAN
+	// model server at 10.10.10.185:8088) is only reachable when emitted as a dst
+	// ACL. The agent network is egress-isolated, so such traffic must traverse
+	// squid and would otherwise be denied.
+	var domainEntries, ipEntries []string
 	for _, e := range entries {
-		fmt.Fprintf(&b, "acl allowed_domains dstdomain %s\n", e)
+		if net.ParseIP(e) != nil {
+			ipEntries = append(ipEntries, e)
+		} else {
+			domainEntries = append(domainEntries, e)
+		}
 	}
 
-	if len(entries) == 0 {
+	for _, e := range domainEntries {
+		fmt.Fprintf(&b, "acl allowed_domains dstdomain %s\n", e)
+	}
+	for _, e := range ipEntries {
+		fmt.Fprintf(&b, "acl allowed_ips dst %s\n", e)
+	}
+
+	hasDomains := len(domainEntries) > 0
+	if !hasDomains && len(ipEntries) == 0 {
 		ui.Warn("Allowlist is empty or invalid. Blocking all outbound destinations.")
 		b.WriteString("acl allowed_domains dstdomain .__agentbox_block_all__.invalid\n")
+		hasDomains = true
+	}
+
+	b.WriteString("\n# Enforce Access Control\n# Only allow access from localhost and our network\nhttp_access allow localhost\n")
+	if hasDomains {
+		b.WriteString("http_access allow agent_sources allowed_domains\n")
+	}
+	if len(ipEntries) > 0 {
+		b.WriteString("http_access allow agent_sources allowed_ips\n")
 	}
 
 	b.WriteString(`
-# Enforce Access Control
-# Only allow access from localhost and our network
-http_access allow localhost
-http_access allow agent_sources allowed_domains
-
 # Deny everything else
 http_access deny all
 

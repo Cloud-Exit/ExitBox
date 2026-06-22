@@ -45,13 +45,26 @@ import (
 var runCmd = &cobra.Command{
 	Use:   "run <agent> [args...]",
 	Short: "Run an agent in a container",
-	Long: `Run an AI coding assistant in an isolated container.
+	Long:  runCmdLong(),
+}
 
-Available agents:
-  claude      Claude Code (Anthropic)
-  codex       OpenAI Codex CLI
-  opencode    OpenCode (open-source)
+// runCmdLong builds the `run` long help, listing the available agents from the
+// registry so the list stays in sync as agents are added or removed.
+func runCmdLong() string {
+	var b strings.Builder
+	b.WriteString("Run an AI coding assistant in an isolated container.\n\nAvailable agents:\n")
 
+	list := agents.All()
+	sort.Slice(list, func(i, j int) bool { return list[i].Name() < list[j].Name() })
+	for _, a := range list {
+		fmt.Fprintf(&b, "  %-11s %s\n", a.Name(), a.DisplayName())
+	}
+
+	b.WriteString(runCmdLongRest)
+	return b.String()
+}
+
+const runCmdLongRest = `
 Workspaces:
   Workspaces are named contexts (e.g. personal/work) with development stacks
   and separate agent config storage.
@@ -91,8 +104,7 @@ Examples:
   exitbox run claude --resume "feature-x"   Resume session "feature-x" by name
   exitbox run claude -f -e GITHUB_TOKEN=$GITHUB_TOKEN
   exitbox run claude --workspace work
-  exitbox run opencode --ollama --memory 16g --cpus 8`,
-}
+  exitbox run opencode --ollama --memory 16g --cpus 8`
 
 func newAgentRunCmd(agt agent.Agent) *cobra.Command {
 	if agt == nil {

@@ -25,6 +25,18 @@ openai.com
 chatgpt.com
 oaiusercontent.com
 
+# GitHub Copilot CLI
+githubcopilot.com
+
+# Cursor CLI
+cursor.com
+cursor.sh
+
+# Kimi Code CLI (Moonshot AI)
+kimi.com
+moonshot.ai
+moonshot.cn
+
 # Google (Vertex AI, Gemini, AI Studio)
 googleapis.com
 google.com

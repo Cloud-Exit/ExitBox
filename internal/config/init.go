@@ -27,7 +27,11 @@ func EnsureDirs() {
 		ProjectsDir(),
 		AgentDir("claude"),
 		AgentDir("codex"),
+		AgentDir("copilot"),
+		AgentDir("cursor"),
+		AgentDir("kimi"),
 		AgentDir("opencode"),
+		AgentDir("pi"),
 		AgentDir("qwen"),
 	}
 	for _, d := range dirs {
