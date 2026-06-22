@@ -742,6 +742,8 @@ test_write_tmux_conf_scroll_settings() {
 
     assert_contains "write_tmux_conf enables mouse scrolling" "$output" 'set -g mouse on'
     assert_contains "write_tmux_conf sets large history" "$output" 'set -g history-limit 100000'
+    assert_contains "write_tmux_conf enables extended-keys" "$output" 'set -g extended-keys on'
+    assert_contains "write_tmux_conf advertises extkeys terminal feature" "$output" 'extkeys'
     assert_contains "write_tmux_conf shows workspace shortcut" "$output" 'C-M-p: workspaces'
     assert_contains "write_tmux_conf shows session shortcut" "$output" 'C-M-s: sessions'
 }
