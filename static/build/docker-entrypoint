@@ -1081,6 +1081,10 @@ should_exec_raw() {
 
 should_start_tmux() {
     [[ -n "$AGENT" ]] || return 1
+    # Opt-out: run the agent directly (no tmux wrapper) so TUIs that speak the
+    # Kitty keyboard protocol (e.g. Pi) own the terminal and modified keys like
+    # Shift+Enter work natively, with no tmux key re-encoding in the way.
+    [[ -z "${EXITBOX_NO_TMUX:-}" ]] || return 1
     [[ -z "${TMUX:-}" ]] || return 1
     [[ -t 0 && -t 1 ]] || return 1
     command -v tmux >/dev/null 2>&1 || return 1

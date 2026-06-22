@@ -55,6 +55,7 @@ type Options struct {
 	WorkspaceOverride string
 	EnvProfile        string
 	NoFirewall        bool
+	NoTmux            bool
 	ReadOnly          bool
 	NoEnv             bool
 	Resume            bool
@@ -397,6 +398,11 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	)
 	if opts.ResumeToken != "" {
 		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
+	}
+	if opts.NoTmux {
+		// Run the agent directly, without the tmux wrapper, so Kitty-protocol
+		// TUIs (e.g. Pi) own the terminal and modified keys work natively.
+		args = append(args, "-e", "EXITBOX_NO_TMUX=1")
 	}
 	if opts.EnvProfile != "" {
 		args = append(args, "-e", "EXITBOX_ENV_PROFILE="+opts.EnvProfile)
