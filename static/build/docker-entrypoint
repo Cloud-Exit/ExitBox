@@ -65,15 +65,25 @@ update_tmux_status() {
 
 write_tmux_conf() {
     local conf="/tmp/exitbox-tmux.conf"
-    local display ws_name ver session_name
+    local display ws_name ver session_name default_term
     display="$(agent_display_name "$AGENT")"
     ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     ver="${EXITBOX_VERSION:-dev}"
     session_name="${EXITBOX_SESSION_NAME:-default}"
 
+    # Present tmux-256color to inner apps: unlike xterm-256color, its terminfo
+    # declares the extended-key capabilities tmux needs to forward modified keys
+    # (Shift+Enter, etc.) to Kitty-protocol TUIs like Pi. Fall back to
+    # xterm-256color if that terminfo entry isn't installed.
+    if infocmp tmux-256color >/dev/null 2>&1; then
+        default_term="tmux-256color"
+    else
+        default_term="xterm-256color"
+    fi
+
     cat > "$conf" <<TMUXEOF
 # ExitBox tmux configuration
-set -g default-terminal "xterm-256color"
+set -g default-terminal "${default_term}"
 # Forward modified keys (e.g. Shift+Enter / Alt+Enter) to agent TUIs that request
 # them (Kitty keyboard protocol). The "*" pattern advertises extkeys for every
 # outer terminal that supports it, not just xterm-named ones, so Shift+Enter
