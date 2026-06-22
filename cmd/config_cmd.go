@@ -24,6 +24,7 @@ import (
 
 	"github.com/cloud-exit/exitbox/internal/agents"
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/env"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/spf13/cobra"
@@ -173,6 +174,17 @@ Examples:
 			cfg := config.LoadOrDefault()
 			workspaceName := resolveConfigWorkspace(cfg, workspace)
 
+			// With no explicit --profile, target the workspace's default env
+			// profile so `config edit` edits the same config that `exitbox run`
+			// loads (run auto-applies the default profile). Falls back to the
+			// base config only when no default profile is set.
+			if envProfile == "" {
+				if defName := defaultEnvProfile(workspaceName); defName != "" {
+					envProfile = defName
+					ui.Infof("Editing default env profile '%s' (use --profile to override)", defName)
+				}
+			}
+
 			if envProfile != "" {
 				if err := validateProfileName(envProfile); err != nil {
 					ui.Errorf("%v", err)
@@ -256,6 +268,18 @@ func resolveConfigWorkspace(cfg *config.Config, override string) string {
 		return cfg.Workspaces.Items[0].Name
 	}
 	return "default"
+}
+
+// defaultEnvProfile returns the workspace's default env profile name, or "" if
+// none is set. Mirrors what `exitbox run` resolves so config edits target the
+// same profile-scoped config the agent loads at runtime.
+func defaultEnvProfile(workspaceName string) string {
+	defName, err := env.GetDefault(workspaceName)
+	if err != nil {
+		ui.Warnf("Could not read default env profile: %v", err)
+		return ""
+	}
+	return defName
 }
 
 func init() {
