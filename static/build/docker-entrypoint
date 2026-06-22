@@ -78,7 +78,10 @@ set -g default-terminal "xterm-256color"
 # them (Kitty keyboard protocol). The "*" pattern advertises extkeys for every
 # outer terminal that supports it, not just xterm-named ones, so Shift+Enter
 # reaches agents like Pi regardless of TERM. (Ctrl+J is the universal fallback.)
+# extended-keys-format must be csi-u (fixterms): tmux's default "xterm" encoding
+# is undecodable by Pi and other Kitty-protocol agents, so modified Enter is lost.
 set -g extended-keys on
+set -g extended-keys-format csi-u
 set -as terminal-features "*:extkeys"
 set -g status-position top
 set -g status-style "bg=colour236,fg=colour255"

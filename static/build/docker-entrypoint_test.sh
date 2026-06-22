@@ -744,6 +744,7 @@ test_write_tmux_conf_scroll_settings() {
     assert_contains "write_tmux_conf sets large history" "$output" 'set -g history-limit 100000'
     assert_contains "write_tmux_conf enables extended-keys" "$output" 'set -g extended-keys on'
     assert_contains "write_tmux_conf advertises extkeys for all terminals" "$output" 'terminal-features "*:extkeys"'
+    assert_contains "write_tmux_conf uses csi-u extended-keys format" "$output" 'set -g extended-keys-format csi-u'
     assert_contains "write_tmux_conf shows workspace shortcut" "$output" 'C-M-p: workspaces'
     assert_contains "write_tmux_conf shows session shortcut" "$output" 'C-M-s: sessions'
 }
