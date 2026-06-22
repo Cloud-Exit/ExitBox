@@ -60,6 +60,7 @@ func DefaultConfig() *Config {
 			Cursor:   AgentEntry{Enabled: false},
 			Kimi:     AgentEntry{Enabled: false},
 			OpenCode: AgentEntry{Enabled: false},
+			Pi:       AgentEntry{Enabled: false},
 			Qwen:     AgentEntry{Enabled: false},
 		},
 		Settings: SettingsConfig{
@@ -93,6 +94,7 @@ func DefaultAllowlist() *Allowlist {
 			"kimi.com",
 			"moonshot.ai",
 			"moonshot.cn",
+			"pi.dev",
 			"googleapis.com",
 			"google.com",
 			"azure.com",

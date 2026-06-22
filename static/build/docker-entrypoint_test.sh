@@ -1590,11 +1590,13 @@ test_agent_display_name_new_agents() {
         echo "copilot=$(agent_display_name copilot)"
         echo "cursor=$(agent_display_name cursor)"
         echo "kimi=$(agent_display_name kimi)"
+        echo "pi=$(agent_display_name pi)"
         echo "qwen=$(agent_display_name qwen)"
     )" 2>/dev/null
     assert_contains "agent_display_name copilot" "$out" "copilot=GitHub Copilot CLI"
     assert_contains "agent_display_name cursor" "$out" "cursor=Cursor CLI"
     assert_contains "agent_display_name kimi" "$out" "kimi=Kimi Code CLI"
+    assert_contains "agent_display_name pi" "$out" "pi=Pi Coding Agent"
     assert_contains "agent_display_name qwen" "$out" "qwen=Qwen Code"
 }
 
@@ -1607,7 +1609,7 @@ APPLY_LINKS_FUNC="$(extract_func apply_active_workspace_links)"
 
 test_workspace_links_new_agents() {
     local agent dir
-    for pair in "copilot:.copilot" "cursor:.cursor" "kimi:.kimi-code" "qwen:.qwen"; do
+    for pair in "copilot:.copilot" "cursor:.cursor" "kimi:.kimi-code" "pi:.pi" "qwen:.qwen"; do
         agent="${pair%%:*}"
         dir="${pair#*:}"
         local base home target

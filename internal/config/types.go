@@ -57,6 +57,7 @@ type AgentConfig struct {
 	Cursor   AgentEntry `yaml:"cursor"`
 	Kimi     AgentEntry `yaml:"kimi"`
 	OpenCode AgentEntry `yaml:"opencode"`
+	Pi       AgentEntry `yaml:"pi"`
 	Qwen     AgentEntry `yaml:"qwen"`
 }
 
@@ -151,6 +152,8 @@ func (c *Config) IsAgentEnabled(name string) bool {
 		return c.Agents.Kimi.Enabled
 	case "opencode":
 		return c.Agents.OpenCode.Enabled
+	case "pi":
+		return c.Agents.Pi.Enabled
 	case "qwen":
 		return c.Agents.Qwen.Enabled
 	}
@@ -172,6 +175,8 @@ func (c *Config) GetAgentVersion(name string) string {
 		return c.Agents.Kimi.Version
 	case "opencode":
 		return c.Agents.OpenCode.Version
+	case "pi":
+		return c.Agents.Pi.Version
 	case "qwen":
 		return c.Agents.Qwen.Version
 	}
@@ -193,6 +198,8 @@ func (c *Config) SetAgentEnabled(name string, enabled bool) {
 		c.Agents.Kimi.Enabled = enabled
 	case "opencode":
 		c.Agents.OpenCode.Enabled = enabled
+	case "pi":
+		c.Agents.Pi.Enabled = enabled
 	case "qwen":
 		c.Agents.Qwen.Enabled = enabled
 	}

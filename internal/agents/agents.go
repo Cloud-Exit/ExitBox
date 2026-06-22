@@ -24,6 +24,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/agents/cursor"
 	"github.com/cloud-exit/exitbox/internal/agents/kimi"
 	"github.com/cloud-exit/exitbox/internal/agents/opencode"
+	"github.com/cloud-exit/exitbox/internal/agents/pi"
 	"github.com/cloud-exit/exitbox/internal/agents/qwen"
 )
 
@@ -65,5 +66,6 @@ func init() {
 	Register(&cursor.Cursor{})
 	Register(&kimi.Kimi{})
 	Register(&opencode.OpenCode{})
+	Register(&pi.Pi{})
 	Register(&qwen.Qwen{})
 }

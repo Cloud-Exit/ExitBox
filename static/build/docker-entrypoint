@@ -28,6 +28,7 @@ agent_display_name() {
         cursor)   echo "Cursor CLI" ;;
         kimi)     echo "Kimi Code CLI" ;;
         opencode) echo "OpenCode" ;;
+        pi)       echo "Pi Coding Agent" ;;
         qwen)     echo "Qwen Code" ;;
         *)        echo "$1" ;;
     esac
@@ -382,6 +383,10 @@ apply_active_workspace_links() {
         kimi)
             mkdir -p "$workspace_root/.kimi-code"
             link_path "$workspace_root/.kimi-code" "$HOME/.kimi-code"
+            ;;
+        pi)
+            mkdir -p "$workspace_root/.pi"
+            link_path "$workspace_root/.pi" "$HOME/.pi"
             ;;
     esac
 
