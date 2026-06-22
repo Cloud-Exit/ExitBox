@@ -22,6 +22,8 @@ func TestParseRunFlags_BooleanFlags(t *testing.T) {
 	}{
 		{"short no-firewall", []string{"-f"}, func(f parsedFlags) bool { return f.NoFirewall }},
 		{"long no-firewall", []string{"--no-firewall"}, func(f parsedFlags) bool { return f.NoFirewall }},
+		{"no-tmux", []string{"--no-tmux"}, func(f parsedFlags) bool { return f.NoTmux }},
+		{"no-tmux default off", []string{}, func(f parsedFlags) bool { return !f.NoTmux }},
 		{"short read-only", []string{"-r"}, func(f parsedFlags) bool { return f.ReadOnly }},
 		{"long read-only", []string{"--read-only"}, func(f parsedFlags) bool { return f.ReadOnly }},
 		{"short no-env", []string{"-n"}, func(f parsedFlags) bool { return f.NoEnv }},

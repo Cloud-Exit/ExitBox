@@ -78,6 +78,9 @@ Sessions:
 
 Flags (passed after the agent name):
   -f, --no-firewall       Disable network firewall
+      --no-tmux           Run the agent without the tmux wrapper (better for
+                          Kitty-protocol TUIs like Pi; loses tmux status bar,
+                          workspace switcher, and tmux-based session resume)
   -r, --read-only         Mount workspace as read-only
   -n, --no-env            Don't pass host environment variables
       --name SESSION      Name this session (resumes if it already exists)
@@ -300,6 +303,7 @@ func runAgent(agentName string, passthrough []string) {
 			WorkspaceOverride: flags.Workspace,
 			EnvProfile:        flags.EnvProfile,
 			NoFirewall:        flags.NoFirewall,
+			NoTmux:            flags.NoTmux,
 			ReadOnly:          flags.ReadOnly,
 			NoEnv:             flags.NoEnv,
 			Resume:            flags.Resume,
@@ -395,6 +399,7 @@ func runAgent(agentName string, passthrough []string) {
 
 type parsedFlags struct {
 	NoFirewall     bool
+	NoTmux         bool
 	ReadOnly       bool
 	NoEnv          bool
 	Resume         bool
@@ -432,6 +437,8 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 		switch arg {
 		case "-f", "--no-firewall":
 			f.NoFirewall = true
+		case "--no-tmux":
+			f.NoTmux = true
 		case "-r", "--read-only":
 			f.ReadOnly = true
 		case "-n", "--no-env":
