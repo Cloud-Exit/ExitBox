@@ -520,6 +520,14 @@ link_skills() {
             [[ -d "$real_dir" ]] && _link_skills_into "$real_dir/skills"
             _link_skills_into "$HOME/.agents/skills"
             ;;
+        pi)
+            # Pi discovers skills (dirs with SKILL.md) in ~/.pi/agent/skills and
+            # ~/.agents/skills. ~/.pi is symlinked to the persistent workspace dir.
+            local real_dir
+            real_dir="$(readlink -f "$HOME/.pi")"
+            [[ -d "$real_dir" ]] && _link_skills_into "$real_dir/agent/skills"
+            _link_skills_into "$HOME/.agents/skills"
+            ;;
     esac
 }
 

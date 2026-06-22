@@ -1673,6 +1673,30 @@ test_agent_display_name_new_agents
 test_workspace_links_new_agents
 
 # ============================================================================
+# Test: link_skills wires ExitBox-managed skills into Pi's skills dir
+# ============================================================================
+test_link_skills_pi() {
+    local base home result
+    base="$(mktemp -d "$TEST_TMPDIR/skillws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/skillhome.XXXXXX")"
+    mkdir -p "$base/default/skills/my-skill"
+    printf -- '---\nname: my-skill\n---\n' > "$base/default/skills/my-skill/SKILL.md"
+    mkdir -p "$home/.pi/agent"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="pi"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        link_skills
+        [[ -L "$home/.pi/agent/skills/my-skill" ]] && echo "LINKED"
+    )" 2>/dev/null
+    assert_contains "link_skills links ExitBox skills into Pi ~/.pi/agent/skills" "$result" "LINKED"
+}
+
+test_link_skills_pi
+
+# ============================================================================
 # Results
 # ============================================================================
 
