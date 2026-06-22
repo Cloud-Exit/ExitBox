@@ -750,6 +750,36 @@ test_write_tmux_conf_scroll_settings() {
 }
 
 # ============================================================================
+# Test: write_tmux_conf default-terminal prefers tmux-256color (extended keys)
+# ============================================================================
+test_write_tmux_conf_default_terminal() {
+    # When tmux-256color terminfo is available, it must be the default-terminal
+    # (its terminfo declares the extended-key capabilities Pi needs).
+    local with_tmux
+    with_tmux="$(
+        AGENT="pi"; EXITBOX_WORKSPACE_NAME="default"; EXITBOX_VERSION="test"
+        unset EXITBOX_KEYBINDINGS
+        eval "$PARSE_KB_FUNC"; parse_keybindings
+        eval "$DISPLAY_FUNC"; eval "$TMUX_CONF_FUNC"
+        infocmp() { return 0; }
+        cat "$(write_tmux_conf)"
+    )" 2>/dev/null
+    assert_contains "default-terminal prefers tmux-256color" "$with_tmux" 'set -g default-terminal "tmux-256color"'
+
+    # When it is NOT available, fall back to xterm-256color (no breakage).
+    local without_tmux
+    without_tmux="$(
+        AGENT="pi"; EXITBOX_WORKSPACE_NAME="default"; EXITBOX_VERSION="test"
+        unset EXITBOX_KEYBINDINGS
+        eval "$PARSE_KB_FUNC"; parse_keybindings
+        eval "$DISPLAY_FUNC"; eval "$TMUX_CONF_FUNC"
+        infocmp() { return 1; }
+        cat "$(write_tmux_conf)"
+    )" 2>/dev/null
+    assert_contains "default-terminal falls back to xterm-256color" "$without_tmux" 'set -g default-terminal "xterm-256color"'
+}
+
+# ============================================================================
 # Test: parse_keybindings defaults (no env var)
 # ============================================================================
 test_parse_keybindings_default() {
@@ -847,6 +877,7 @@ test_should_exec_raw_detects_auth_keywords
 test_run_raw_command_prefixes_agent
 test_build_agent_loop_command_passthrough
 test_write_tmux_conf_scroll_settings
+test_write_tmux_conf_default_terminal
 test_parse_keybindings_default
 test_parse_keybindings_custom
 test_parse_keybindings_partial
