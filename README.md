@@ -68,6 +68,7 @@ ExitBox automatically:
 - **Full Git Support** — optional mode that mounts host `.gitconfig` and SSH agent for seamless git operations inside the container
 - **GitHub CLI Authentication** — pre-flight vault import for `GITHUB_TOKEN` with automatic in-container export so `gh` and HTTPS git work transparently
 - **RTK Token Optimizer (Experimental)** — optional [rtk](https://github.com/rtk-ai/rtk) integration reduces CLI output token consumption by 60-90%
+- **Graphify Knowledge Graph (Experimental)** — optional [graphify](https://github.com/safishamsi/graphify) integration; when enabled, the `/graphify` skill is auto-installed into compatible agents and removed when disabled
 - **External Tools** — configure third-party tools (GitHub CLI, etc.) via the setup wizard; packages are auto-installed at image build time
 - **Supply-Chain Hardened Installs** — Claude Code and OpenCode installed via direct download with SHA-256 checksum verification
 - **Alpine Base Image** — minimal ~5 MB base with 3-layer image hierarchy and incremental rebuilds
@@ -240,6 +241,20 @@ exitbox agents config claude   # Open agent config in $EDITOR
 ```
 
 > **Note:** RTK is experimental. If you encounter issues, disable it via `exitbox setup` and rebuild with `exitbox run <agent> --update`.
+
+### Graphify Knowledge Graph (Experimental)
+
+[graphify](https://github.com/safishamsi/graphify) maps a project (code, docs, PDFs, images) into a queryable knowledge graph you invoke with `/graphify` inside an agent. When enabled, the `graphify` CLI is installed at image build time and the `/graphify` skill is registered into each compatible agent at container start; when disabled, the skill is removed.
+
+```bash
+# Enable via the setup wizard:
+exitbox setup
+# → Settings → Graphify → Enable
+```
+
+Compatible agents: **Claude, Codex, OpenCode, Copilot, Pi**. (Cursor's graphify install is project-scoped and Kimi Code's skill path differs from graphify's `kimi` target, so they are not auto-wired; Qwen has no graphify platform.)
+
+> **Note:** Graphify is experimental and gated at image build time like RTK — toggling it requires a rebuild (`exitbox run <agent> --update`).
 
 ### Agent Skills
 
