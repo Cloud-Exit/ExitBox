@@ -81,6 +81,7 @@ type State struct {
 	ExternalTools       []string          // selected external tools (e.g. "GitHub CLI")
 	FullGitSupport      bool              // full git support (SSH agent + .gitconfig)
 	RTK                 bool              // experimental: token-optimized CLI wrappers
+	Graphify            bool              // graphify knowledge-graph /graphify skill
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -214,6 +215,7 @@ func NewModel() Model {
 	checked["setting:pass_env"] = true
 	checked["setting:read_only"] = false
 	checked["setting:rtk"] = false
+	checked["setting:graphify"] = false
 	kb := config.DefaultKeybindings()
 	return Model{
 		step:             stepWelcome,
@@ -315,6 +317,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	checked["setting:read_only"] = cfg.Settings.DefaultFlags.ReadOnly
 	checked["setting:full_git"] = cfg.Settings.DefaultFlags.FullGitSupport
 	checked["setting:rtk"] = cfg.Settings.RTK
+	checked["setting:graphify"] = cfg.Settings.Graphify
 
 	// On re-run, always start at the top menu so the user can choose
 	// between workspace management and general settings.
@@ -2052,6 +2055,7 @@ var settingsOptions = []struct {
 	{"setting:read_only", "Read-only workspace", "Mount workspace as read-only (agents cannot modify files)"},
 	{"setting:full_git", "Full Git support", "Mount SSH agent + .gitconfig into container (exposes git identity)"},
 	{"setting:rtk", "RTK token optimizer", "Experimental: use rtk to reduce CLI output tokens by 60-90%"},
+	{"setting:graphify", "Graphify knowledge graph", "Install the /graphify skill (maps your project into a queryable graph) in compatible agents"},
 }
 
 func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2078,6 +2082,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.MakeDefault = m.checked["setting:make_default"]
 			m.state.FullGitSupport = m.checked["setting:full_git"]
 			m.state.RTK = m.checked["setting:rtk"]
+			m.state.Graphify = m.checked["setting:graphify"]
 			m.visitedSteps[stepSettings] = true
 			if !m.isFirstRun && m.topMenuChoice == 0 {
 				// Workspace management: Settings → Domains or Vault

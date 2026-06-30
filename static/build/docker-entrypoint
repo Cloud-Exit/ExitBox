@@ -998,6 +998,7 @@ run_agent_loop() {
         inject_sandbox_instructions
         inject_codex_approval_rules
         link_skills
+        setup_graphify
     fi
 
     build_resume_args "$@"
@@ -1214,6 +1215,56 @@ setup_rtk() {
     # For Claude: install PreToolUse hook to auto-rewrite commands to rtk equivalents.
     if [[ "${AGENT:-}" == "claude" ]]; then
         rtk init -g --hook-only --auto-patch 2>/dev/null || true
+    fi
+}
+
+# graphify_platform_for_agent maps an ExitBox agent to its graphify "--platform"
+# token, or "" when graphify can't target that agent. Only agents whose graphify
+# skill destination matches ExitBox's config layout are included: kimi (graphify
+# writes ~/.kimi, ExitBox uses ~/.kimi-code), cursor (project-scoped .cursor rules)
+# and qwen (no graphify platform) are intentionally excluded.
+graphify_platform_for_agent() {
+    case "$1" in
+        claude)   echo "claude" ;;
+        codex)    echo "codex" ;;
+        opencode) echo "opencode" ;;
+        copilot)  echo "copilot" ;;
+        pi)       echo "pi" ;;
+        *)        echo "" ;;
+    esac
+}
+
+# graphify_skill_dir_for_agent returns the directory graphify installs its skill
+# into for the agent, so it can be removed when graphify is disabled (the CLI is
+# gone after a rebuild, so removal must be file-based). Paths mirror graphify's
+# own _PLATFORM_CONFIG destinations.
+graphify_skill_dir_for_agent() {
+    case "$1" in
+        claude)   echo "$HOME/.claude/skills/graphify" ;;
+        codex)    echo "$HOME/.codex/skills/graphify" ;;
+        opencode) echo "$HOME/.config/opencode/skills/graphify" ;;
+        copilot)  echo "$HOME/.copilot/skills/graphify" ;;
+        pi)       echo "$HOME/.pi/agent/skills/graphify" ;;
+        *)        echo "" ;;
+    esac
+}
+
+setup_graphify() {
+    # Register (enabled) or remove (disabled) the graphify "/graphify" skill for
+    # the current agent. Runs after apply_active_workspace_links so the agent's
+    # config dir is symlinked to the persistent workspace location.
+    local platform skill_dir
+    platform="$(graphify_platform_for_agent "$AGENT")"
+    [[ -n "$platform" ]] || return 0
+    skill_dir="$(graphify_skill_dir_for_agent "$AGENT")"
+
+    if [[ "${EXITBOX_GRAPHIFY:-}" == "true" ]]; then
+        command -v graphify >/dev/null 2>&1 || return 0
+        graphify install --platform "$platform" >/dev/null 2>&1 || true
+    else
+        # Disabled: remove a previously installed graphify skill (file-based so it
+        # works even when the CLI is no longer present after a rebuild).
+        [[ -n "$skill_dir" ]] && rm -rf "$skill_dir" 2>/dev/null
     fi
 }
 
@@ -1797,6 +1848,7 @@ if [[ -n "$AGENT" ]]; then
     inject_sandbox_instructions
     inject_codex_approval_rules
     link_skills
+    setup_graphify
 fi
 
 # Debug: show what's available

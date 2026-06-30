@@ -288,6 +288,7 @@ func buildBaseFull(ctx context.Context, rt container.Runtime, cmd, imageName str
 	args = append(args,
 		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
 		"--build-arg", fmt.Sprintf("INSTALL_RTK=%v", cfg.Settings.RTK),
+		"--build-arg", fmt.Sprintf("INSTALL_GRAPHIFY=%v", cfg.Settings.Graphify),
 		"-t", publishedName,
 		"-f", dockerfilePath,
 		buildCtx,
