@@ -89,17 +89,6 @@ RUN if [ "$INSTALL_RTK" = "true" ]; then \
         apk del musl-dev gcc; \
     fi
 
-# Install graphify — knowledge-graph "/graphify" skill for coding agents
-# (conditional). The CLI (pip package "graphifyy", command "graphify") is installed
-# globally so the non-root runtime user can run it; per-agent skill registration
-# happens at container start (see setup_graphify in docker-entrypoint).
-ARG INSTALL_GRAPHIFY=false
-RUN if [ "$INSTALL_GRAPHIFY" = "true" ]; then \
-        apk add --no-cache py3-pip && \
-        pip install --no-cache-dir --break-system-packages graphifyy && \
-        graphify --version; \
-    fi
-
 # Stub xdg-open: no browser in container, just print the URL so OAuth
 # flows (OpenCode, Codex) show the link instead of failing with ENOENT.
 RUN printf '#!/bin/sh\necho "Open this URL in your browser:"\necho "$1"\n' \

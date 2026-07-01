@@ -322,7 +322,6 @@ func runAgent(agentName string, passthrough []string) {
 			Keybindings:       cfg.Settings.Keybindings.EnvValue(),
 			FullGitSupport:    cfg.Settings.DefaultFlags.FullGitSupport,
 			RTK:               cfg.Settings.RTK,
-			Graphify:          cfg.Settings.Graphify,
 		}
 
 		exitCode, err := run.AgentContainer(rt, opts)
