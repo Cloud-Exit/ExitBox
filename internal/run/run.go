@@ -74,7 +74,6 @@ type Options struct {
 	Keybindings       string
 	FullGitSupport    bool
 	RTK               bool
-	Graphify          bool
 }
 
 // AgentContainer runs an agent container interactively.
@@ -414,9 +413,6 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	if opts.RTK {
 		args = append(args, "-e", "EXITBOX_RTK=true")
 	}
-	if opts.Graphify {
-		args = append(args, "-e", "EXITBOX_GRAPHIFY=true")
-	}
 	if opts.Ollama {
 		args = append(args, ollamaEnvVars(opts.Agent)...)
 	}
@@ -541,7 +537,6 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_VAULT_ENABLED":   true,
 		"EXITBOX_VAULT_READONLY":  true,
 		"EXITBOX_RTK":             true,
-		"EXITBOX_GRAPHIFY":        true,
 		"EXITBOX_IDE_PORT":        true,
 		"CLAUDE_CODE_SSE_PORT":    true,
 		"ENABLE_IDE_INTEGRATION":  true,

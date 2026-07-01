@@ -194,6 +194,12 @@ var AllExternalTools = []ExternalTool{
 			{HostPath: ".config/gh", Description: "GitHub CLI auth"},
 		},
 	},
+	{
+		Name:        "Graphify",
+		Description: "graphify — /graphify skill maps your project into a queryable knowledge graph (auto-installed into compatible agents)",
+		Packages:    []string{"py3-pip"},
+		InstallStep: "RUN pip install --no-cache-dir --break-system-packages graphifyy && graphify --version\n",
+	},
 }
 
 // AllAgents defines the selectable agents, built from the agent registry.

@@ -1705,40 +1705,42 @@ test_setup_graphify() {
     sdf="$(extract_func graphify_skill_dir_for_agent)"
     sgf="$(extract_func setup_graphify)"
 
-    # Enabled + compatible agent → runs `graphify install --platform <X>`.
-    # setup_graphify redirects the command's stdout to /dev/null, so the stub
-    # records its args to a file instead.
+    # graphify CLI present (External Tool selected) + compatible agent → runs
+    # `graphify install --platform <X>`. setup_graphify redirects the command's
+    # stdout to /dev/null, so the stub records its args to a file instead.
     local marker="$TEST_TMPDIR/gfy_args"
     rm -f "$marker"
     (
         export HOME; HOME="$(mktemp -d "$TEST_TMPDIR/gfy1.XXXXXX")"
-        export AGENT="pi" EXITBOX_GRAPHIFY="true" GFY_MARKER="$marker"
+        export AGENT="pi" GFY_MARKER="$marker"
         eval "$gpf"; eval "$sdf"; eval "$sgf"
         graphify() { echo "$*" > "$GFY_MARKER"; }
         setup_graphify
     ) 2>/dev/null
     local enabled=""
     [[ -f "$marker" ]] && enabled="$(cat "$marker")"
-    assert_contains "setup_graphify installs for compatible agent" "$enabled" "install --platform pi"
+    assert_contains "setup_graphify installs when graphify CLI present" "$enabled" "install --platform pi"
 
-    # Disabled → removes a previously installed skill dir.
+    # graphify CLI absent (not selected) → removes a previously installed skill dir.
     local home2 removed
     home2="$(mktemp -d "$TEST_TMPDIR/gfy2.XXXXXX")"
     mkdir -p "$home2/.pi/agent/skills/graphify"
     removed="$(
         export HOME="$home2"
-        export AGENT="pi" EXITBOX_GRAPHIFY="false"
+        export AGENT="pi"
         eval "$gpf"; eval "$sdf"; eval "$sgf"
+        # No graphify stub and graphify is not installed in the test env, so
+        # `command -v graphify` is false → the removal branch runs.
         setup_graphify
         [[ -d "$home2/.pi/agent/skills/graphify" ]] && echo PRESENT || echo GONE
     )" 2>/dev/null
-    assert_eq "setup_graphify removes skill when disabled" "GONE" "$removed"
+    assert_eq "setup_graphify removes skill when CLI absent" "GONE" "$removed"
 
-    # Incompatible agent (qwen) → no graphify invocation even when enabled.
+    # Incompatible agent (qwen) → no graphify invocation even when CLI present.
     local skipped
     skipped="$(
         export HOME; HOME="$(mktemp -d "$TEST_TMPDIR/gfy3.XXXXXX")"
-        export AGENT="qwen" EXITBOX_GRAPHIFY="true"
+        export AGENT="qwen"
         eval "$gpf"; eval "$sdf"; eval "$sgf"
         graphify() { echo "CALLED"; }
         setup_graphify

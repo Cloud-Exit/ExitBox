@@ -67,7 +67,6 @@ func DefaultConfig() *Config {
 			AutoUpdate:       false,
 			StatusBar:        true,
 			RTK:              false,
-			Graphify:         false,
 			DefaultWorkspace: "default",
 			DefaultFlags: DefaultFlags{
 				AutoResume: false,

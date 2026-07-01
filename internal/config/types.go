@@ -84,7 +84,6 @@ type SettingsConfig struct {
 	AutoUpdate       bool              `yaml:"auto_update"`
 	StatusBar        bool              `yaml:"status_bar"`
 	RTK              bool              `yaml:"rtk"`
-	Graphify         bool              `yaml:"graphify"`
 	DefaultWorkspace string            `yaml:"default_workspace,omitempty"`
 	DefaultFlags     DefaultFlags      `yaml:"default_flags"`
 	Keybindings      KeybindingsConfig `yaml:"keybindings,omitempty"`
