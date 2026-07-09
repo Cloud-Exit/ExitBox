@@ -30,20 +30,33 @@ func (c *Codex) GetDockerfileInstall(buildCtx string) (string, error) {
 	if binaryName == "" {
 		return "", fmt.Errorf("unsupported architecture for Codex")
 	}
+	hostBinaryName := c.CodeModeHostBinaryName()
+	if hostBinaryName == "" {
+		return "", fmt.Errorf("unsupported architecture for Codex")
+	}
 	binaryInside := strings.TrimSuffix(binaryName, ".tar.gz")
+	hostBinaryInside := strings.TrimSuffix(hostBinaryName, ".tar.gz")
 
-	return fmt.Sprintf(`# Install Codex runtime dependencies and binary with SHA-256 verification
+	return fmt.Sprintf(`# Install Codex runtime dependencies and binaries with SHA-256 verification.
+# codex-code-mode-host is a sibling binary recent Codex versions spawn for code
+# review / "code mode"; it ships as a separate release asset and must sit next to
+# the codex binary or the feature fails with "codex-code-mode-host is missing".
 RUN apk add --no-cache bubblewrap
 ARG CODEX_VERSION
 ARG CODEX_CHECKSUM
+ARG CODEX_CODE_MODE_HOST_CHECKSUM
 COPY %s /tmp/codex.tar.gz
+COPY %s /tmp/codex-code-mode-host.tar.gz
 RUN echo "${CODEX_CHECKSUM}  /tmp/codex.tar.gz" | sha256sum -c - && \
+    echo "${CODEX_CODE_MODE_HOST_CHECKSUM}  /tmp/codex-code-mode-host.tar.gz" | sha256sum -c - && \
     mkdir -p $HOME/.local/bin && \
     tar -xzf /tmp/codex.tar.gz -C /tmp && \
+    tar -xzf /tmp/codex-code-mode-host.tar.gz -C /tmp && \
     mv /tmp/%s $HOME/.local/bin/codex && \
-    chmod +x $HOME/.local/bin/codex && \
-    rm -f /tmp/codex.tar.gz && \
-    $HOME/.local/bin/codex --version`, binaryName, binaryInside), nil
+    mv /tmp/%s $HOME/.local/bin/codex-code-mode-host && \
+    chmod +x $HOME/.local/bin/codex $HOME/.local/bin/codex-code-mode-host && \
+    rm -f /tmp/codex.tar.gz /tmp/codex-code-mode-host.tar.gz && \
+    $HOME/.local/bin/codex --version`, binaryName, hostBinaryName, binaryInside, hostBinaryInside), nil
 }
 
 func (c *Codex) GetFullDockerfile(version string) (string, error) {
@@ -72,6 +85,10 @@ func (c *Codex) PrepareBuild(in agent.PrepareBuildInput) error {
 	if binaryName == "" {
 		return fmt.Errorf("unsupported architecture for Codex")
 	}
+	hostBinaryName := c.CodeModeHostBinaryName()
+	if hostBinaryName == "" {
+		return fmt.Errorf("unsupported architecture for Codex")
+	}
 	if in.Download == nil || in.FileSHA256 == nil {
 		return fmt.Errorf("PrepareBuildInput.Download and FileSHA256 are required for Codex")
 	}
@@ -87,7 +104,22 @@ func (c *Codex) PrepareBuild(in agent.PrepareBuildInput) error {
 	if in.Logf != nil {
 		in.Logf("Codex SHA-256: %s", checksum)
 	}
-	df := fmt.Sprintf("FROM exitbox-base\n\nARG CODEX_VERSION=%s\nARG CODEX_CHECKSUM=%s\n", version, checksum)
+
+	// codex-code-mode-host is a separate release asset installed alongside codex.
+	hostURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", codexGitHubRepo, version, hostBinaryName)
+	if in.Logf != nil {
+		in.Logf("Downloading codex-code-mode-host %s...", version)
+	}
+	hostDlPath := filepath.Join(in.BuildDir, hostBinaryName)
+	if err := in.Download(in.Ctx, hostURL, hostDlPath); err != nil {
+		return fmt.Errorf("failed to download codex-code-mode-host: %w", err)
+	}
+	hostChecksum := in.FileSHA256(hostDlPath)
+	if in.Logf != nil {
+		in.Logf("codex-code-mode-host SHA-256: %s", hostChecksum)
+	}
+
+	df := fmt.Sprintf("FROM exitbox-base\n\nARG CODEX_VERSION=%s\nARG CODEX_CHECKSUM=%s\nARG CODEX_CODE_MODE_HOST_CHECKSUM=%s\n", version, checksum, hostChecksum)
 	install, err := c.GetDockerfileInstall(in.BuildDir)
 	if err != nil {
 		return fmt.Errorf("failed to get Codex install instructions: %w", err)

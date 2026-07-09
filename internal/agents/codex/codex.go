@@ -55,6 +55,20 @@ func (c *Codex) BinaryName() string {
 	}
 }
 
+// CodeModeHostBinaryName returns the release tarball for codex-code-mode-host, the
+// sibling binary recent Codex versions spawn for code review / "code mode". It ships
+// as a separate release asset and must be installed alongside the codex binary.
+func (c *Codex) CodeModeHostBinaryName() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz"
+	case "arm64":
+		return "codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz"
+	default:
+		return ""
+	}
+}
+
 func (c *Codex) HostConfigPaths() []string {
 	home := os.Getenv("HOME")
 	return []string{
