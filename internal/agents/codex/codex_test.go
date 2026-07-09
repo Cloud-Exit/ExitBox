@@ -47,6 +47,19 @@ func TestCodexAgent(t *testing.T) {
 		}
 	}
 
+	// CodeModeHostBinaryName
+	hbn := c.CodeModeHostBinaryName()
+	switch runtime.GOARCH {
+	case "amd64":
+		if hbn != "codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz" {
+			t.Errorf("CodeModeHostBinaryName() = %q on amd64", hbn)
+		}
+	case "arm64":
+		if hbn != "codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz" {
+			t.Errorf("CodeModeHostBinaryName() = %q on arm64", hbn)
+		}
+	}
+
 	// HostConfigPaths
 	paths := c.HostConfigPaths()
 	if len(paths) != 2 {
@@ -72,6 +85,12 @@ func TestCodexAgent(t *testing.T) {
 	}
 	if !strings.Contains(df, "apk add --no-cache bubblewrap") {
 		t.Error("GetDockerfileInstall() should install bubblewrap")
+	}
+	if !strings.Contains(df, "$HOME/.local/bin/codex-code-mode-host") {
+		t.Error("GetDockerfileInstall() should install codex-code-mode-host alongside codex")
+	}
+	if !strings.Contains(df, "CODEX_CODE_MODE_HOST_CHECKSUM") {
+		t.Error("GetDockerfileInstall() should verify the codex-code-mode-host checksum")
 	}
 
 	// GetFullDockerfile
