@@ -22,7 +22,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
@@ -34,6 +36,48 @@ const (
 	EgressNetwork   = "exitbox-egress"
 	SquidContainer  = "exitbox-squid"
 )
+
+const (
+	squidLockTimeout    = 60 * time.Second
+	squidLockStaleAfter = 2 * time.Minute
+)
+
+func withSquidLock(fn func() error) error {
+	unlock, err := acquireSquidLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn()
+}
+
+func acquireSquidLock() (func(), error) {
+	lockDir := filepath.Join(config.Cache, "squid.lock")
+	deadline := time.Now().Add(squidLockTimeout)
+
+	for {
+		if err := os.MkdirAll(filepath.Dir(lockDir), 0755); err != nil {
+			return nil, fmt.Errorf("creating squid lock parent: %w", err)
+		}
+		err := os.Mkdir(lockDir, 0755)
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(lockDir, "owner"), []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+			return func() { _ = os.RemoveAll(lockDir) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("acquiring squid lock: %w", err)
+		}
+
+		if info, statErr := os.Stat(lockDir); statErr == nil && time.Since(info.ModTime()) > squidLockStaleAfter {
+			_ = os.RemoveAll(lockDir)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for Squid proxy lock")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
 // reconfigureSquid sends a HUP to the running squid process. If that fails
 // (stale PID, process crashed), it restarts squid inside the container.
@@ -115,42 +159,77 @@ func sessionDir() string {
 
 // RegisterSessionURLs writes a session file for a container's extra URLs.
 func RegisterSessionURLs(containerName string, urls []string) error {
+	return RegisterSessionAccess(containerName, urls, nil)
+}
+
+// RegisterSessionAccess writes a session file for a container's firewall extras.
+func RegisterSessionAccess(containerName string, urls []string, hostPorts []int) error {
 	dir := sessionDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	content := strings.Join(urls, "\n") + "\n"
-	return os.WriteFile(filepath.Join(dir, containerName+".urls"), []byte(content), 0644)
+	var b strings.Builder
+	for _, url := range urls {
+		if strings.TrimSpace(url) == "" {
+			continue
+		}
+		b.WriteString(url)
+		b.WriteByte('\n')
+	}
+	for _, port := range NormalizeHostPorts(hostPorts) {
+		fmt.Fprintf(&b, "host-port:%d\n", port)
+	}
+	return os.WriteFile(filepath.Join(dir, containerName+".urls"), []byte(b.String()), 0644)
+}
+
+func sessionFileCount() int {
+	entries, err := os.ReadDir(sessionDir())
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".urls") {
+			count++
+		}
+	}
+	return count
 }
 
 // RemoveSessionURLs removes a container's session file and regenerates squid config.
 func RemoveSessionURLs(rt container.Runtime, containerName string) {
-	dir := sessionDir()
-	_ = os.Remove(filepath.Join(dir, containerName+".urls"))
+	if err := withSquidLock(func() error {
+		dir := sessionDir()
+		_ = os.Remove(filepath.Join(dir, containerName+".urls"))
 
-	// Collect remaining URLs from all sessions and regenerate config
-	remaining := collectAllSessionURLs()
-	changed, writeErr := writeSquidConfig(rt, remaining)
-	if writeErr != nil {
-		ui.Warnf("Failed to regenerate squid config: %v", writeErr)
-		return
-	}
-
-	// Reconfigure squid if running and config changed
-	if !changed {
-		return
-	}
-	cmd := container.Cmd(rt)
-	names, err := rt.PS("", "{{.Names}}")
-	if err != nil {
-		ui.Warnf("Failed to list containers: %v", err)
-		return
-	}
-	for _, n := range names {
-		if n == SquidContainer {
-			reconfigureSquid(cmd)
-			break
+		// Collect remaining URLs from all sessions and regenerate config
+		remaining := collectAllSessionURLs()
+		remainingHostPorts := collectAllSessionHostPorts()
+		changed, writeErr := writeSquidConfig(rt, remaining, remainingHostPorts)
+		if writeErr != nil {
+			ui.Warnf("Failed to regenerate squid config: %v", writeErr)
+			return nil
 		}
+
+		// Reconfigure squid if running and config changed
+		if !changed {
+			return nil
+		}
+		cmd := container.Cmd(rt)
+		names, err := rt.PS("", "{{.Names}}")
+		if err != nil {
+			ui.Warnf("Failed to list containers: %v", err)
+			return nil
+		}
+		for _, n := range names {
+			if n == SquidContainer {
+				reconfigureSquid(cmd)
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		ui.Warnf("Failed to update Squid session state: %v", err)
 	}
 }
 
@@ -173,7 +252,10 @@ func collectAllSessionURLs() []string {
 		}
 		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 			line = strings.TrimSpace(line)
-			if line != "" && !seen[line] {
+			if line == "" || strings.HasPrefix(line, "host-port:") {
+				continue
+			}
+			if !seen[line] {
 				seen[line] = true
 				urls = append(urls, line)
 			}
@@ -182,19 +264,58 @@ func collectAllSessionURLs() []string {
 	return urls
 }
 
+// collectAllSessionHostPorts reads all session files and returns deduplicated host ports.
+func collectAllSessionHostPorts() []int {
+	dir := sessionDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var ports []int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".urls") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "host-port:") {
+				continue
+			}
+			p, err := strconv.Atoi(strings.TrimPrefix(line, "host-port:"))
+			if err == nil {
+				ports = append(ports, p)
+			}
+		}
+	}
+	return NormalizeHostPorts(ports)
+}
+
 // StartSquidProxy starts the Squid proxy container.
-func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []string) error {
+func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []string, hostPorts []int) error {
+	err := withSquidLock(func() error {
+		return startSquidProxyLocked(rt, containerName, extraURLs, hostPorts)
+	})
+	if err != nil {
+		_ = os.Remove(filepath.Join(sessionDir(), containerName+".urls"))
+	}
+	return err
+}
+
+func startSquidProxyLocked(rt container.Runtime, containerName string, extraURLs []string, hostPorts []int) error {
 	cmd := container.Cmd(rt)
 
 	// Register session URLs
-	if len(extraURLs) > 0 {
-		if err := RegisterSessionURLs(containerName, extraURLs); err != nil {
-			ui.Warnf("Failed to register session URLs: %v", err)
-		}
+	if err := RegisterSessionAccess(containerName, extraURLs, hostPorts); err != nil {
+		ui.Warnf("Failed to register session firewall access: %v", err)
 	}
 
 	// Collect all session URLs for config generation
 	allExtraURLs := collectAllSessionURLs()
+	allHostPorts := collectAllSessionHostPorts()
 
 	// Check if already running
 	names, err := rt.PS("", "{{.Names}}")
@@ -204,7 +325,7 @@ func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []str
 	for _, n := range names {
 		if n == SquidContainer {
 			// Regenerate config and reload only if it changed.
-			changed, writeErr := writeSquidConfig(rt, allExtraURLs)
+			changed, writeErr := writeSquidConfig(rt, allExtraURLs, allHostPorts)
 			if writeErr != nil {
 				return writeErr
 			}
@@ -222,7 +343,7 @@ func StartSquidProxy(rt container.Runtime, containerName string, extraURLs []str
 	EnsureNetworks(rt)
 
 	// Generate config
-	if _, err := writeSquidConfig(rt, allExtraURLs); err != nil {
+	if _, err := writeSquidConfig(rt, allExtraURLs, allHostPorts); err != nil {
 		return err
 	}
 
@@ -285,40 +406,51 @@ func GetProxyEnvVars(rt container.Runtime) []string {
 
 // CleanupSquidIfUnused stops squid if no agent containers are running.
 func CleanupSquidIfUnused(rt container.Runtime) {
-	cmd := container.Cmd(rt)
-	names, err := rt.PS("", "{{.Names}}")
-	if err != nil {
-		ui.Warnf("Failed to list containers: %v", err)
-		return
-	}
-	running := 0
-	squidRunning := false
-	for _, n := range names {
-		if n == SquidContainer {
-			squidRunning = true
-			continue
+	if err := withSquidLock(func() error {
+		cmd := container.Cmd(rt)
+		names, err := rt.PS("", "{{.Names}}")
+		if err != nil {
+			ui.Warnf("Failed to list containers: %v", err)
+			return nil
 		}
-		if strings.HasPrefix(n, "exitbox-") {
-			running++
+		running := 0
+		squidRunning := false
+		for _, n := range names {
+			if n == SquidContainer {
+				squidRunning = true
+				continue
+			}
+			if strings.HasPrefix(n, "exitbox-") {
+				running++
+			}
 		}
-	}
-	if running == 0 && squidRunning {
-		ui.Info("Stopping Squid proxy (no running agents)...")
-		// Stop first (handles restart policy), then remove.
-		_ = exec.Command(cmd, "stop", SquidContainer).Run()
-		if rmErr := exec.Command(cmd, "rm", "-f", SquidContainer).Run(); rmErr != nil {
-			ui.Warnf("Failed to remove Squid proxy: %v", rmErr)
+		if running == 0 && sessionFileCount() == 0 && squidRunning {
+			ui.Info("Stopping Squid proxy (no running agents)...")
+			// Stop first (handles restart policy), then remove.
+			_ = exec.Command(cmd, "stop", SquidContainer).Run()
+			if rmErr := exec.Command(cmd, "rm", "-f", SquidContainer).Run(); rmErr != nil {
+				ui.Warnf("Failed to remove Squid proxy: %v", rmErr)
+			}
 		}
-	}
-	if running == 0 {
-		// Clean stale session files
-		_ = os.RemoveAll(sessionDir())
+		if running == 0 && sessionFileCount() == 0 {
+			// Clean stale session files
+			_ = os.RemoveAll(sessionDir())
+		}
+		return nil
+	}); err != nil {
+		ui.Warnf("Failed to clean up Squid proxy: %v", err)
 	}
 }
 
 // AddSessionURLAndReload adds a domain to a container's session URLs and
 // hot-reloads Squid so the change takes effect immediately.
 func AddSessionURLAndReload(rt container.Runtime, containerName string, domain string) error {
+	return withSquidLock(func() error {
+		return addSessionURLAndReloadLocked(rt, containerName, domain)
+	})
+}
+
+func addSessionURLAndReloadLocked(rt container.Runtime, containerName string, domain string) error {
 	cmd := container.Cmd(rt)
 	dir := sessionDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -328,12 +460,20 @@ func AddSessionURLAndReload(rt container.Runtime, containerName string, domain s
 	// Read existing session URLs for this container.
 	urlFile := filepath.Join(dir, containerName+".urls")
 	var urls []string
+	var hostPorts []int
 	if data, err := os.ReadFile(urlFile); err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 			line = strings.TrimSpace(line)
-			if line != "" {
-				urls = append(urls, line)
+			if line == "" {
+				continue
 			}
+			if strings.HasPrefix(line, "host-port:") {
+				if p, err := strconv.Atoi(strings.TrimPrefix(line, "host-port:")); err == nil {
+					hostPorts = append(hostPorts, p)
+				}
+				continue
+			}
+			urls = append(urls, line)
 		}
 	}
 
@@ -346,12 +486,13 @@ func AddSessionURLAndReload(rt container.Runtime, containerName string, domain s
 	urls = append(urls, domain)
 
 	// Write back and regenerate config.
-	if err := RegisterSessionURLs(containerName, urls); err != nil {
+	if err := RegisterSessionAccess(containerName, urls, hostPorts); err != nil {
 		return err
 	}
 
 	allURLs := collectAllSessionURLs()
-	changed, writeErr := writeSquidConfig(rt, allURLs)
+	allHostPorts := collectAllSessionHostPorts()
+	changed, writeErr := writeSquidConfig(rt, allURLs, allHostPorts)
 	if writeErr != nil {
 		return writeErr
 	}
@@ -377,7 +518,7 @@ func AddSessionURLAndReload(rt container.Runtime, containerName string, domain s
 
 // writeSquidConfig generates and writes the squid config. Returns (changed, error)
 // where changed indicates whether the config file content actually changed.
-func writeSquidConfig(rt container.Runtime, extraURLs []string) (bool, error) {
+func writeSquidConfig(rt container.Runtime, extraURLs []string, sessionHostPorts []int) (bool, error) {
 	subnet, err := GetNetworkSubnet(rt, InternalNetwork)
 	if err != nil {
 		return false, fmt.Errorf("could not detect internal network subnet: %w", err)
@@ -385,8 +526,9 @@ func writeSquidConfig(rt container.Runtime, extraURLs []string) (bool, error) {
 
 	al := config.LoadAllowlistOrDefault()
 	domains := al.AllDomains()
+	hostPorts := NormalizeHostPorts(append(append([]int{}, al.HostPorts...), sessionHostPorts...))
 
-	content := GenerateSquidConfig(subnet, domains, extraURLs)
+	content := GenerateSquidConfigWithHostPorts(subnet, domains, extraURLs, hostPorts)
 	configFile := filepath.Join(config.Cache, "squid.conf")
 	if err := os.MkdirAll(filepath.Dir(configFile), 0755); err != nil {
 		return false, fmt.Errorf("failed to create config directory: %w", err)

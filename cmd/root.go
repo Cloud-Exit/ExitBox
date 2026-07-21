@@ -80,6 +80,7 @@ func init() {
 	rootCmd.PersistentFlags().StringSliceP("include-dir", "i", nil, "Mount host dir inside /workspace")
 	rootCmd.PersistentFlags().StringSliceP("tools", "t", nil, "Add Alpine packages to the image")
 	rootCmd.PersistentFlags().StringSliceP("allow-urls", "a", nil, "Allow extra domains for this session")
+	rootCmd.PersistentFlags().IntSlice("host-port", nil, "Allow localhost:PORT in the agent to reach the host")
 
 	rootCmd.AddCommand(versionCmd)
 

@@ -158,6 +158,22 @@ func TestGenerateSquidConfig_AllowAccess(t *testing.T) {
 	}
 }
 
+func TestGenerateSquidConfig_HostPorts(t *testing.T) {
+	conf := GenerateSquidConfigWithHostPorts("10.89.0.0/24", []string{"example.com"}, nil, []int{5173, 3000, 3000, 0})
+
+	for _, required := range []string{
+		"acl SSL_ports port 3000 5173",
+		"acl Safe_ports port 3000 5173",
+		"acl host_loopback dstdomain host.docker.internal",
+		"acl host_loopback_ports port 3000 5173",
+		"http_access allow agent_sources host_loopback host_loopback_ports",
+	} {
+		if !strings.Contains(conf, required) {
+			t.Errorf("config missing host-port directive: %q", required)
+		}
+	}
+}
+
 func TestGetSquidDNSServers_Default(t *testing.T) {
 	os.Unsetenv("EXITBOX_SQUID_DNS")
 	servers := getSquidDNSServers()

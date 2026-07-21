@@ -36,7 +36,7 @@ func AllRoles() []Role {
 		{"javascript", "Compatibility alias for node profile", "nodejs npm"},
 		{"python", "Python 3 with pip and venv", ""},
 		{"rust", "Rust toolchain (rust + cargo via apk)", "rust cargo"},
-		{"go", "Go runtime (latest stable for host arch, checksum verified)", ""},
+		{"go", "Go toolchain (go + gofmt via apk)", "go"},
 		{"java", "OpenJDK with Maven and Gradle", "openjdk17-jdk maven gradle"},
 		{"dotnet", ".NET 8 SDK (dotnet CLI)", "dotnet8-sdk"},
 		{"ruby", "Ruby runtime with bundler", "ruby ruby-dev readline-dev yaml-dev sqlite-dev sqlite libxml2-dev libxslt-dev curl-dev"},

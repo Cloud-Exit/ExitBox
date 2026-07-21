@@ -64,6 +64,7 @@ type Options struct {
 	EnvVars           []string
 	IncludeDirs       []string
 	AllowURLs         []string
+	HostPorts         []int
 	Passthrough       []string
 	Verbose           bool
 	StatusBar         bool
@@ -147,6 +148,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Ollama mode: route traffic through the firewall to host Ollama.
 	if opts.Ollama {
 		opts.AllowURLs = append(opts.AllowURLs, "host.docker.internal")
+		opts.HostPorts = append(opts.HostPorts, 11434)
 		ui.Infof("Ollama mode: routing traffic through firewall to host")
 	}
 
@@ -156,13 +158,22 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		// all container ports directly (e.g. OAuth callbacks).
 		args = append(args, "--network", "host")
 	} else {
+		allowlist := config.LoadAllowlistOrDefault()
+		hostPorts := network.NormalizeHostPorts(append(append([]int{}, allowlist.HostPorts...), opts.HostPorts...))
 		network.EnsureNetworks(rt)
 		args = append(args, "--network", network.InternalNetwork)
-		if err := network.StartSquidProxy(rt, containerName, opts.AllowURLs); err != nil {
+		if err := network.StartSquidProxy(rt, containerName, opts.AllowURLs, opts.HostPorts); err != nil {
 			return 1, fmt.Errorf("failed to start firewall (Squid proxy): %w", err)
 		}
+		defer func() {
+			network.RemoveSessionURLs(rt, containerName)
+			network.CleanupSquidIfUnused(rt)
+		}()
 		proxyArgs := network.GetProxyEnvVars(rt)
 		args = append(args, proxyArgs...)
+		if envValue := network.HostPortsEnvValue(hostPorts); envValue != "" {
+			args = append(args, "-e", "EXITBOX_HOST_PORTS="+envValue)
+		}
 
 		// Publish OAuth callback ports so browser redirects to localhost
 		// reach the agent inside the container. A socat relay in
@@ -237,14 +248,6 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 			args = append(args, "-v", gitconfig+":/home/user/.gitconfig:ro")
 		}
 	}
-
-	// Ensure squid cleanup runs on ALL return paths (including early errors).
-	defer func() {
-		if len(opts.AllowURLs) > 0 {
-			network.RemoveSessionURLs(rt, containerName)
-		}
-		network.CleanupSquidIfUnused(rt)
-	}()
 
 	// Resource limits
 	memory := "8g"
@@ -534,6 +537,7 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_RESUME_TOKEN":    true,
 		"EXITBOX_SESSION_NAME":    true,
 		"EXITBOX_KEYBINDINGS":     true,
+		"EXITBOX_HOST_PORTS":      true,
 		"EXITBOX_VAULT_ENABLED":   true,
 		"EXITBOX_VAULT_READONLY":  true,
 		"EXITBOX_RTK":             true,
