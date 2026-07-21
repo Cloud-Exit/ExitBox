@@ -68,6 +68,32 @@ func TestParseRunFlags_Tools(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_HostPort(t *testing.T) {
+	f := parseRunFlags([]string{"--host-port", "3000", "--host-port", "5173,8080"}, config.DefaultFlags{})
+	want := []int{3000, 5173, 8080}
+	if len(f.HostPorts) != len(want) {
+		t.Fatalf("expected %d host ports, got %d: %v", len(want), len(f.HostPorts), f.HostPorts)
+	}
+	for i := range want {
+		if f.HostPorts[i] != want[i] {
+			t.Fatalf("HostPorts[%d] = %d, want %d", i, f.HostPorts[i], want[i])
+		}
+	}
+	if len(f.HostPortErrors) != 0 {
+		t.Fatalf("unexpected host port errors: %v", f.HostPortErrors)
+	}
+}
+
+func TestParseRunFlags_HostPortInvalid(t *testing.T) {
+	f := parseRunFlags([]string{"--host-port", "0,abc,70000"}, config.DefaultFlags{})
+	if len(f.HostPorts) != 0 {
+		t.Fatalf("expected no valid host ports, got %v", f.HostPorts)
+	}
+	if len(f.HostPortErrors) != 3 {
+		t.Fatalf("expected 3 host port errors, got %v", f.HostPortErrors)
+	}
+}
+
 func TestParseRunFlags_DoubleDash(t *testing.T) {
 	f := parseRunFlags([]string{"-f", "--", "-r", "extra"}, config.DefaultFlags{})
 	if !f.NoFirewall {

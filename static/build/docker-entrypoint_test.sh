@@ -57,7 +57,7 @@ trap 'rm -rf "$TEST_TMPDIR"' EXIT
 unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
 unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET EXITBOX_KEYBINDINGS
 unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN EXITBOX_VAULT_ENABLED
-unset EXITBOX_VAULT_READONLY EXITBOX_RTK
+unset EXITBOX_VAULT_READONLY EXITBOX_RTK EXITBOX_HOST_PORTS
 
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
@@ -1473,6 +1473,73 @@ test_ssh_proxy_tunnel_parses_proxy_without_port
 test_ssh_proxy_tunnel_correct_permissions
 test_ssh_proxy_tunnel_writes_known_hosts
 test_ssh_proxy_tunnel_strict_host_key_checking
+
+# ============================================================================
+# Host port relay tests
+# ============================================================================
+echo ""
+echo "Testing host port relays..."
+
+START_HOST_PORT_RELAYS_FUNC="$(extract_func start_host_port_relays)"
+CLEANUP_HOST_PORT_RELAYS_FUNC="$(extract_func cleanup_host_port_relays)"
+
+test_host_port_relays_skip_without_ports() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        unset EXITBOX_HOST_PORTS
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$START_HOST_PORT_RELAYS_FUNC"
+        start_host_port_relays
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "host port relay skips without ports" "ok" "$result"
+    rm -rf "$tmpdir"
+}
+
+test_host_port_relays_start_configured_ports() {
+    local tmpdir bindir
+    tmpdir="$(mktemp -d)"
+    bindir="$tmpdir/bin"
+    mkdir -p "$bindir"
+    cat > "$bindir/socat" <<'FAKESOCAT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SOCAT_LOG"
+sleep 30
+FAKESOCAT
+    chmod +x "$bindir/socat"
+
+    (
+        export PATH="$bindir:$PATH"
+        export SOCAT_LOG="$tmpdir/socat.log"
+        export EXITBOX_HOST_PORTS="3000,5173 bad 0"
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$START_HOST_PORT_RELAYS_FUNC"
+        eval "$CLEANUP_HOST_PORT_RELAYS_FUNC"
+        start_host_port_relays
+        sleep 0.2
+        cleanup_host_port_relays
+    ) 2>/dev/null
+
+    local content
+    content="$(cat "$tmpdir/socat.log" 2>/dev/null)"
+    assert_contains "host port relay listens on 3000" "$content" "TCP-LISTEN:3000,bind=127.0.0.1"
+    assert_contains "host port relay proxies 3000 to host" "$content" "PROXY:172.18.0.2:host.docker.internal:3000,proxyport=3128"
+    assert_contains "host port relay listens on 5173" "$content" "TCP-LISTEN:5173,bind=127.0.0.1"
+    assert_contains "host port relay proxies 5173 to host" "$content" "PROXY:172.18.0.2:host.docker.internal:5173,proxyport=3128"
+    if [[ "$content" == *"bad"* || "$content" == *"TCP-LISTEN:0"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: host port relay should ignore invalid ports")
+    else
+        ((PASS++))
+    fi
+    rm -rf "$tmpdir"
+}
+
+test_host_port_relays_skip_without_ports
+test_host_port_relays_start_configured_ports
 
 # ============================================================================
 # RTK setup tests

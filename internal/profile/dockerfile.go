@@ -65,22 +65,7 @@ RUN python3 -m venv /home/user/.venv && \
 ENV PATH="/home/user/.venv/bin:$PATH"
 `
 	case "go":
-		return `RUN set -e && \
-    case "$(uname -m)" in \
-        x86_64|amd64) GO_ARCH="amd64" ;; \
-        aarch64|arm64) GO_ARCH="arm64" ;; \
-        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
-    esac && \
-    GO_VERSION="$(wget -qO- https://go.dev/VERSION?m=text | head -n1)" && \
-    GO_TARBALL="${GO_VERSION}.linux-${GO_ARCH}.tar.gz" && \
-    GO_SHA256="$(wget -qO- https://go.dev/dl/?mode=json | jq -r --arg f "$GO_TARBALL" '.[0].files[] | select(.filename == $f) | .sha256')" && \
-    test -n "$GO_SHA256" && \
-    wget -q -O /tmp/go.tar.gz "https://go.dev/dl/${GO_TARBALL}" && \
-    echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - && \
-    tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm -f /tmp/go.tar.gz && \
-    ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
-    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+		return `# Go profile - compiler and gofmt are installed via apk package "go".
 RUN set -e && \
     case "$(uname -m)" in \
         x86_64|amd64) LINT_ARCH="amd64" ;; \

@@ -95,6 +95,8 @@ Flags (passed after the agent name):
   -t, --tools PKG         Add Alpine packages to the image
   -i, --include-dir DIR   Mount host dir inside /workspace
   -a, --allow-urls DOM    Allow extra domains for this session
+      --host-port PORT    Allow localhost:PORT in the agent to reach the host
+                          Persist ports with: exitbox firewall ports add PORT
       --ollama            Use host Ollama for local models
       --memory SIZE       Container memory limit (default: 8g)
       --cpus COUNT        Container CPU limit (default: 4)
@@ -164,6 +166,9 @@ func runAgent(agentName string, passthrough []string) {
 
 	flags := parseRunFlags(passthrough, cfg.Settings.DefaultFlags)
 	flags = applySessionResumeDefaults(flags)
+	if len(flags.HostPortErrors) > 0 {
+		ui.Errorf("Invalid --host-port value(s): %s", strings.Join(flags.HostPortErrors, ", "))
+	}
 
 	if flags.Verbose {
 		ui.Verbose = true
@@ -312,6 +317,7 @@ func runAgent(agentName string, passthrough []string) {
 			EnvVars:           flags.EnvVars,
 			IncludeDirs:       flags.IncludeDirs,
 			AllowURLs:         flags.AllowURLs,
+			HostPorts:         flags.HostPorts,
 			Passthrough:       flags.Remaining,
 			Verbose:           flags.Verbose,
 			StatusBar:         cfg.Settings.StatusBar,
@@ -418,6 +424,8 @@ type parsedFlags struct {
 	EnvVars        []string
 	IncludeDirs    []string
 	AllowURLs      []string
+	HostPorts      []int
+	HostPortErrors []string
 	Tools          []string
 	Remaining      []string
 }
@@ -498,6 +506,13 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 				i++
 				f.AllowURLs = append(f.AllowURLs, passthrough[i])
 			}
+		case "--host-port":
+			if i+1 < len(passthrough) {
+				i++
+				ports, errs := parseHostPortList(passthrough[i])
+				f.HostPorts = append(f.HostPorts, ports...)
+				f.HostPortErrors = append(f.HostPortErrors, errs...)
+			}
 		case "--ollama":
 			f.Ollama = true
 		case "--memory":
@@ -519,6 +534,30 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 	}
 
 	return f
+}
+
+func parseHostPortList(raw string) ([]int, []string) {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' '
+	})
+	var ports []int
+	var errs []string
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		port, err := strconv.Atoi(field)
+		if err != nil || port < 1 || port > 65535 {
+			errs = append(errs, field)
+			continue
+		}
+		ports = append(ports, port)
+	}
+	if len(fields) == 0 && strings.TrimSpace(raw) != "" {
+		errs = append(errs, raw)
+	}
+	return ports, errs
 }
 
 func applySessionResumeDefaults(f parsedFlags) parsedFlags {

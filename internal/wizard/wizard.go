@@ -149,11 +149,11 @@ func applyResult(state State, existingCfg *config.Config) error {
 	cfg.Settings.StatusBar = state.StatusBar
 	cfg.Settings.RTK = state.RTK
 	cfg.Settings.DefaultFlags = config.DefaultFlags{
-		NoFirewall:      !state.EnableFirewall,
-		AutoResume:      state.AutoResume,
-		NoEnv:           !state.PassEnv,
-		ReadOnly:        state.ReadOnly,
-		FullGitSupport:  state.FullGitSupport,
+		NoFirewall:     !state.EnableFirewall,
+		AutoResume:     state.AutoResume,
+		NoEnv:          !state.PassEnv,
+		ReadOnly:       state.ReadOnly,
+		FullGitSupport: state.FullGitSupport,
 	}
 
 	// Persist keybindings — only store non-default values (omitempty in YAML).
@@ -210,7 +210,9 @@ func applyResult(state State, existingCfg *config.Config) error {
 
 	var al *config.Allowlist
 	if len(state.DomainCategories) > 0 {
+		existingAllowlist := config.LoadAllowlistOrDefault()
 		al = categoriesToAllowlist(state.DomainCategories)
+		al.HostPorts = existingAllowlist.HostPorts
 	} else {
 		al = config.LoadAllowlistOrDefault()
 	}
@@ -274,7 +276,6 @@ func applyLanguageDelta(original []string, selectedLanguages []string) []string 
 
 	return result
 }
-
 
 func upsertWorkspace(list []config.Workspace, item config.Workspace) []config.Workspace {
 	for i := range list {

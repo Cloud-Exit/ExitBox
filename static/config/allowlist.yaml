@@ -51,4 +51,6 @@ common_services:
   - sentry.io
   - statsig.com
 
+host_ports: []
+
 custom: []

@@ -113,6 +113,7 @@ type Allowlist struct {
 	Development    []string `yaml:"development"`
 	CloudServices  []string `yaml:"cloud_services"`
 	CommonServices []string `yaml:"common_services"`
+	HostPorts      []int    `yaml:"host_ports,omitempty"`
 	Custom         []string `yaml:"custom,omitempty"`
 }
 

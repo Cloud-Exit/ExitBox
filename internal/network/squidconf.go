@@ -19,6 +19,7 @@ package network
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/ui"
@@ -26,7 +27,14 @@ import (
 
 // GenerateSquidConfig generates the squid.conf content.
 func GenerateSquidConfig(subnet string, domains []string, extraURLs []string) string {
+	return GenerateSquidConfigWithHostPorts(subnet, domains, extraURLs, nil)
+}
+
+// GenerateSquidConfigWithHostPorts generates the squid.conf content, including
+// host loopback ports that agent containers may access via localhost relays.
+func GenerateSquidConfigWithHostPorts(subnet string, domains []string, extraURLs []string, hostPorts []int) string {
 	var b strings.Builder
+	hostPorts = NormalizeHostPorts(hostPorts)
 
 	b.WriteString(`# Squid Configuration for Agentbox
 http_port 3128
@@ -34,6 +42,11 @@ shutdown_lifetime 1 seconds
 
 # Access Control Lists
 acl SSL_ports port 443
+`)
+	if len(hostPorts) > 0 {
+		fmt.Fprintf(&b, "acl SSL_ports port %s\t# configured host loopback ports\n", joinPorts(hostPorts))
+	}
+	b.WriteString(`
 acl Safe_ports port 80		# http
 acl Safe_ports port 21		# ftp
 acl Safe_ports port 443		# https
@@ -44,6 +57,11 @@ acl Safe_ports port 280		# http-mgmt
 acl Safe_ports port 488		# gss-http
 acl Safe_ports port 591		# filemaker
 acl Safe_ports port 777		# multiling http
+`)
+	if len(hostPorts) > 0 {
+		fmt.Fprintf(&b, "acl Safe_ports port %s\t# configured host loopback ports\n", joinPorts(hostPorts))
+	}
+	b.WriteString(`
 acl CONNECT method CONNECT
 
 # Deny requests to certain unsafe ports
@@ -115,6 +133,10 @@ acl localhost src 127.0.0.1/32
 	for _, e := range ipEntries {
 		fmt.Fprintf(&b, "acl allowed_ips dst %s\n", e)
 	}
+	if len(hostPorts) > 0 {
+		b.WriteString("acl host_loopback dstdomain host.docker.internal\n")
+		fmt.Fprintf(&b, "acl host_loopback_ports port %s\n", joinPorts(hostPorts))
+	}
 
 	hasDomains := len(domainEntries) > 0
 	if !hasDomains && len(ipEntries) == 0 {
@@ -129,6 +151,9 @@ acl localhost src 127.0.0.1/32
 	}
 	if len(ipEntries) > 0 {
 		b.WriteString("http_access allow agent_sources allowed_ips\n")
+	}
+	if len(hostPorts) > 0 {
+		b.WriteString("http_access allow agent_sources host_loopback host_loopback_ports\n")
 	}
 
 	b.WriteString(`
@@ -146,6 +171,37 @@ negative_dns_ttl 30 seconds
 `)
 
 	return b.String()
+}
+
+// NormalizeHostPorts returns valid TCP ports sorted and deduplicated.
+func NormalizeHostPorts(ports []int) []int {
+	seen := make(map[int]struct{}, len(ports))
+	var out []int
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func joinPorts(ports []int) string {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, fmt.Sprintf("%d", p))
+	}
+	return strings.Join(parts, " ")
+}
+
+// HostPortsEnvValue serializes valid host ports for the container entrypoint.
+func HostPortsEnvValue(ports []int) string {
+	return strings.ReplaceAll(joinPorts(NormalizeHostPorts(ports)), " ", ",")
 }
 
 // removeRedundantSubdomains filters out entries that are subdomains of another
