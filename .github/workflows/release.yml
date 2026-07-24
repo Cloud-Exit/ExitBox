@@ -111,9 +111,24 @@ jobs:
       - name: Generate checksums
         run: sha256sum exitbox-* > checksums.txt
 
+      - name: Resolve release tag
+        id: reltag
+        # On a tag push, GITHUB_REF_NAME is the tag. On a workflow_dispatch,
+        # GITHUB_REF is refs/heads/<branch>, so the release action would have
+        # no tag to attach to — use the supplied version input instead.
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            TAG="${{ inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.reltag.outputs.tag }}
+          name: ${{ steps.reltag.outputs.tag }}
           files: |
             exitbox-linux-amd64
             exitbox-linux-arm64
