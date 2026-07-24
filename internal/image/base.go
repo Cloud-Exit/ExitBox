@@ -20,9 +20,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -396,26 +399,90 @@ func pullImage(rt container.Runtime, ref, label string) error {
 	return nil
 }
 
+// cacheExportErrRe matches the "Cache export is not supported for the docker
+// driver" error emitted by buildx when --cache-to is passed to a driver that
+// cannot export cache.
+var cacheExportErrRe = regexp.MustCompile(`(?i)cache export is not supported`)
+
 // buildImage runs a container build, using a spinner in quiet mode or
 // full output in verbose mode. On failure in quiet mode, the captured
 // build output is printed to stderr.
+//
+// If the build fails specifically because the active buildx driver cannot
+// export cache (--cache-to on the default docker driver), the cache-export
+// flags are stripped and the build is retried once. This turns a hard
+// "Cache export is not supported" failure into a successful no-export build
+// rather than aborting the entire image pipeline.
 func buildImage(rt container.Runtime, args []string, label string) error {
 	if ui.Verbose {
 		start := time.Now()
 		err := container.BuildInteractive(rt, args)
 		ui.Infof("Build took %s", formatDuration(time.Since(start)))
+		if err == nil {
+			return nil
+		}
+		if isCacheExportError(err, "") {
+			ui.Warnf("Active buildx driver cannot export cache; retrying without --cache-to...")
+			return container.BuildInteractive(rt, stripCacheExportArgs(args))
+		}
 		return err
 	}
+
 	spin := ui.NewSpinner(label)
 	spin.Start()
 	output, err := container.BuildQuiet(rt, args)
 	elapsed := spin.Stop()
 	if err != nil {
+		if isCacheExportError(err, output) {
+			spin = ui.NewSpinner(label + " (no cache export)")
+			spin.Start()
+			output2, err2 := container.BuildQuiet(rt, stripCacheExportArgs(args))
+			elapsed = spin.Stop()
+			if err2 != nil {
+				fmt.Fprint(os.Stderr, output2)
+				return err2
+			}
+			ui.Warnf("Build succeeded after disabling cache export")
+			ui.Infof("Build took %s", formatDuration(elapsed))
+			return nil
+		}
 		fmt.Fprint(os.Stderr, output)
 		return err
 	}
 	ui.Infof("Build took %s", formatDuration(elapsed))
 	return nil
+}
+
+// isCacheExportError reports whether err/output indicate the build failed
+// because --cache-to was rejected by the active driver.
+func isCacheExportError(err error, output string) bool {
+	if err == nil {
+		return false
+	}
+	if cacheExportErrRe.MatchString(err.Error()) {
+		return true
+	}
+	return cacheExportErrRe.MatchString(output)
+}
+
+// stripCacheExportArgs returns args with any --cache-to flag pair removed so a
+// build can proceed against a driver that cannot export cache (the default
+// docker driver). --cache-from is left in place since cache import is always
+// supported.
+func stripCacheExportArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--cache-to" {
+			i++ // skip the value
+			continue
+		}
+		// Also tolerate the "--cache-to=..." single-token form.
+		if strings.HasPrefix(args[i], "--cache-to=") {
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
 
 // formatDuration formats a duration as a human-friendly string (e.g., "12s", "1m 23s").
@@ -429,21 +496,143 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+// cacheExportDrivers are the buildx drivers that support exporting build
+// cache (the "--cache-to" flag). The default "docker" driver does NOT —
+// attempting to export cache fails with "Cache export is not supported for
+// the docker driver" and aborts the whole build.
+//
+// These non-default drivers also do NOT load the built image into the local
+// image store by default (the build result stays inside the buildx cache), so
+// any FROM <local-image> in a follow-up build would fail to resolve. When one
+// of these drivers is active we therefore also pass --load so the result is
+// pulled back into the local docker/podman store, matching the default
+// driver's behavior.
+var cacheExportDrivers = map[string]bool{
+	"docker-container": true,
+	"kubernetes":       true,
+	"remote":            true,
+	"cloud":             true,
+}
+
+var (
+	builderDriverOnce  sync.Once
+	builderDriverValue string
+
+	// detectBuilderDriver shells out to discover the active buildx driver.
+	// It is a variable so tests can inject a stub without spawning docker.
+	detectBuilderDriver = defaultDetectBuilderDriver
+)
+
+// defaultDetectBuilderDriver inspects the active buildx builder for the given
+// runtime command and returns its driver (e.g. "docker", "docker-container",
+// "remote"). Returns the empty string if it cannot be determined.
+func defaultDetectBuilderDriver(cmd string) string {
+	out, err := exec.Command(cmd, "buildx", "inspect").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	// `docker buildx inspect` prints a line like:
+	//   Driver:  docker
+	// or:
+	//   Driver/type: docker-container
+	m := regexp.MustCompile(`(?m)Driver(?:/type)?:\s*(\S+)`).FindStringSubmatch(string(out))
+	if len(m) >= 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+// activeBuilderDriver returns the buildx driver of the currently active
+// builder for the given runtime command ("docker" or "podman"). It caches
+// the result for the process lifetime. Returns the empty string if it cannot
+// be determined (the caller then treats cache export as unsupported, which is
+// the safe default for the plain docker daemon).
+//
+// exitbox never creates or switches builders itself: changing the global active
+// builder is an intrusive side effect for the user's whole machine, and the
+// docker-container/remote drivers do not load images into the local store by
+// default (which breaks our FROM <local-image> chains). We only adapt to
+// whatever driver the user already has active.
+func activeBuilderDriver(cmd string) string {
+	builderDriverOnce.Do(func() {
+		builderDriverValue = detectBuilderDriver(cmd)
+	})
+	return builderDriverValue
+}
+
+// resetBuilderDriverCache clears the cached active driver so the next call to
+// activeBuilderDriver re-inspects. Used by tests after swapping the detector.
+func resetBuilderDriverCache() {
+	builderDriverOnce = sync.Once{}
+	builderDriverValue = ""
+}
+
+// supportsCacheExport reports whether the active buildx driver for the given
+// runtime command can export build cache. Podman always can (its layers cache
+// does not need --cache-to). Docker can only when a non-default driver is active.
+func supportsCacheExport(cmd string) bool {
+	if cmd == "podman" {
+		return true
+	}
+	return cacheExportDrivers[activeBuilderDriver(cmd)]
+}
+
+// needsLoad reports whether the active buildx driver keeps build results in
+// the buildx cache instead of the local image store, requiring an explicit
+// --load. The default "docker" driver auto-loads, so it does not need --load.
+// Podman loads by default too. The non-default docker drivers (docker-container,
+// remote, etc.) need --load for downstream FROM <local-image> builds to resolve.
+func needsLoad(cmd string) bool {
+	if cmd == "podman" {
+		return false
+	}
+	driver := activeBuilderDriver(cmd)
+	// Unknown driver: play it safe and don't add --load (the default docker
+	// behavior), since --load is unnecessary there and harmless only there.
+	if driver == "" || driver == "docker" {
+		return false
+	}
+	return true
+}
+
+// buildArgs returns the build flags common to every image build. For docker it
+// enables BuildKit and adapts to the active buildx driver:
+//   - --cache-from is always added (cache import works on every driver).
+//   - --cache-to is added only when the active driver supports cache export.
+//     The default "docker" driver rejects --cache-to, so omitting it there
+//     prevents the "Cache export is not supported for the docker driver" abort.
+//   - --load is added for non-default docker drivers (docker-container, remote,
+//     ...), which otherwise leave the built image in the buildx cache and break
+//     downstream FROM <local-image> builds. The default driver auto-loads.
 func buildArgs(cmd string) []string {
 	var args []string
 	if cmd == "podman" {
 		args = append(args, "--layers", "--pull=newer")
+		return args
+	}
+
+	os.Setenv("DOCKER_BUILDKIT", "1")
+	args = append(args, "--progress=auto")
+
+	cacheDir := filepath.Join(config.Cache, "buildx")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		ui.Warnf("Failed to create buildx cache dir: %v", err)
+	}
+
+	// Importing cache works on every driver, so always wire up --cache-from.
+	args = append(args, "--cache-from", "type=local,src="+cacheDir)
+
+	if supportsCacheExport(cmd) {
+		args = append(args, "--cache-to", "type=local,dest="+cacheDir+",mode=max")
 	} else {
-		os.Setenv("DOCKER_BUILDKIT", "1")
-		cacheDir := filepath.Join(config.Cache, "buildx")
-		if err := os.MkdirAll(cacheDir, 0755); err != nil {
-			ui.Warnf("Failed to create buildx cache dir: %v", err)
-		}
-		args = append(args,
-			"--progress=auto",
-			"--cache-from", "type=local,src="+cacheDir,
-			"--cache-to", "type=local,dest="+cacheDir+",mode=max",
-		)
+		ui.Warnf("Active buildx driver %q cannot export cache; using build cache import only. Switch to a docker-container buildx driver to enable cache export.",
+			activeBuilderDriver(cmd))
+	}
+
+	if needsLoad(cmd) {
+		// Non-default drivers keep results in the build cache; --load pulls
+		// the built image into the local store so later FROM <image> works.
+		args = append(args, "--load")
 	}
 	return args
 }
