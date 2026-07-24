@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. v0.2.4). Required for manual dispatch."
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -30,7 +36,15 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        run: |
+          # On a tag push, GITHUB_REF_NAME is the tag (e.g. v0.2.4). On a
+          # manual workflow_dispatch, use the supplied version input instead.
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push base image
         uses: docker/build-push-action@v6
@@ -80,7 +94,11 @@ jobs:
 
       - name: Build binaries
         run: |
-          VERSION=${GITHUB_REF_NAME}
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
           LDFLAGS="-s -w -X github.com/cloud-exit/exitbox/cmd.Version=${VERSION}"
 
           GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o exitbox-linux-amd64 .
