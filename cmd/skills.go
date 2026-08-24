@@ -32,8 +32,9 @@ func newSkillsCmd() *cobra.Command {
 		Long: `Install, list, and remove skills for AI coding agents.
 
 Skills are SKILL.md files that provide specialized capabilities.
-Installed skills are shared across all agents (Claude, Codex, OpenCode)
-in a workspace via automatic symlinking at container start.`,
+Installed skills are shared across skill-capable agents (Claude, Codex,
+OpenCode, Pi, Kimi Code) in a workspace via automatic symlinking at
+container start.`,
 	}
 
 	cmd.AddCommand(newSkillsInstallCmd())

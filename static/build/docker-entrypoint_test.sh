@@ -1764,6 +1764,57 @@ test_link_skills_pi() {
 test_link_skills_pi
 
 # ============================================================================
+# Test: link_skills wires skills into Kimi Code's skills dirs
+# ============================================================================
+test_link_skills_kimi() {
+    local base home result
+    base="$(mktemp -d "$TEST_TMPDIR/skillws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/skillhome.XXXXXX")"
+    mkdir -p "$base/default/skills/my-skill"
+    printf -- '---\nname: my-skill\n---\n' > "$base/default/skills/my-skill/SKILL.md"
+    mkdir -p "$home/.kimi-code"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="kimi"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        link_skills
+        [[ -L "$home/.kimi-code/skills/my-skill" ]] && echo "LINKED_KIMI_CODE"
+        [[ -L "$home/.agents/skills/my-skill" ]] && echo "LINKED_AGENTS"
+    )" 2>/dev/null
+    assert_contains "link_skills links skills into ~/.kimi-code/skills" "$result" "LINKED_KIMI_CODE"
+    assert_contains "link_skills links skills into ~/.agents/skills for Kimi" "$result" "LINKED_AGENTS"
+}
+
+test_link_skills_kimi
+
+# ============================================================================
+# Test: link_skills does not nest a link inside a real skill dir
+# ============================================================================
+test_link_skills_skips_real_dir() {
+    local base home result
+    base="$(mktemp -d "$TEST_TMPDIR/skillws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/skillhome.XXXXXX")"
+    mkdir -p "$base/default/skills/graphify"
+    printf -- '---\nname: graphify\n---\n' > "$base/default/skills/graphify/SKILL.md"
+    # graphify's own CLI already installed a real directory at that name.
+    mkdir -p "$home/.kimi-code/skills/graphify"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="kimi"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        link_skills
+        [[ -e "$home/.kimi-code/skills/graphify/graphify" ]] && echo NESTED || echo CLEAN
+    )" 2>/dev/null
+    assert_eq "link_skills leaves an existing real skill dir alone" "CLEAN" "$result"
+}
+
+test_link_skills_skips_real_dir
+
+# ============================================================================
 # Test: setup_graphify installs/removes the /graphify skill per agent
 # ============================================================================
 test_setup_graphify() {

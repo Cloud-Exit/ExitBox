@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/agents/jstools"
 )
 
 func TestComputeExternalToolPackages_Valid(t *testing.T) {
@@ -32,7 +34,7 @@ func TestComputeExternalToolInstallSteps_Valid(t *testing.T) {
 	if len(steps) != 1 {
 		t.Fatalf("ComputeExternalToolInstallSteps(Bun, GitHub CLI) = %v, want one step", steps)
 	}
-	if steps[0] != "RUN npm install -g bun\n" {
+	if steps[0] != jstools.InstallBun()+"\n" {
 		t.Fatalf("ComputeExternalToolInstallSteps(Bun, GitHub CLI) = %q, want bun install step", steps[0])
 	}
 }

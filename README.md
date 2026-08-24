@@ -284,12 +284,13 @@ exitbox skills remove frontend-design
 
 Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name>/`. On container start, ExitBox symlinks each skill into the active agent's native skill path:
 
-| Agent    | Skill path inside container              |
-|:---------|:-----------------------------------------|
-| Claude   | `~/.claude/skills/<name>/SKILL.md`       |
-| Codex    | `~/.agents/skills/<name>/SKILL.md`       |
-| OpenCode | `~/.config/opencode/skills/<name>/SKILL.md` |
-| Qwen     | `~/.config/qwen/skills/<name>/SKILL.md`  |
+| Agent     | Skill path inside container              |
+|:----------|:-----------------------------------------|
+| Claude    | `~/.claude/skills/<name>/SKILL.md`       |
+| Codex     | `~/.agents/skills/<name>/SKILL.md`       |
+| OpenCode  | `~/.config/opencode/skills/<name>/SKILL.md` (+ `~/.agents/skills/`) |
+| Pi        | `~/.pi/agent/skills/<name>/SKILL.md` (+ `~/.agents/skills/`) |
+| Kimi Code | `~/.kimi-code/skills/<name>/SKILL.md` (+ `~/.agents/skills/`) |
 
 All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
 

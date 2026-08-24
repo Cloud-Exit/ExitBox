@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 
 	"github.com/cloud-exit/exitbox/internal/agents"
+	"github.com/cloud-exit/exitbox/internal/agents/jstools"
 )
 
 // Role represents a developer role preset (Frontend, Backend, etc.) that
@@ -184,7 +185,7 @@ var AllExternalTools = []ExternalTool{
 		Name:        "Bun",
 		Description: "bun — JavaScript runtime and package manager",
 		Packages:    []string{"nodejs", "npm"},
-		InstallStep: "RUN npm install -g bun\n",
+		InstallStep: jstools.InstallBun() + "\n",
 	},
 	{
 		Name:        "GitHub CLI",
