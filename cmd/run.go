@@ -119,7 +119,31 @@ func newAgentRunCmd(agt agent.Agent) *cobra.Command {
 	return &cobra.Command{
 		Use:                agt.Name() + " [args...]",
 		Short:              "Run " + display,
-		Long:               "Run " + display + " in an isolated container.",
+		Long: fmt.Sprintf(`Run %s in an isolated container.
+
+Flags:
+  -f, --no-firewall       Disable network firewall
+  -r, --read-only         Mount workspace as read-only
+  -n, --no-env            Don't pass host environment variables
+      --name SESSION      Name this session (resumes if it already exists)
+      --resume [SESSION]  Resume a session by name/id (or last active if bare)
+      --no-resume         Force a fresh session (overrides --name auto-resume)
+  -u, --update            Check for and apply agent updates
+      --version VERSION   Pin specific agent version (e.g., 1.0.123)
+  -v, --verbose           Enable verbose output
+  -w, --workspace NAME    Use a specific workspace for this session
+  -e, --env KEY=VALUE     Pass environment variables
+  -t, --tools PKG         Add Alpine packages to the image
+  -i, --include-dir DIR   Mount host dir inside /workspace
+  -a, --allow-urls DOM    Allow extra domains for this session
+      --ollama            Use host Ollama for local models
+      --memory SIZE       Container memory limit (default: 8g)
+      --cpus COUNT        Container CPU limit (default: 4)
+
+Examples:
+  exitbox run %s                        Start a new session
+  exitbox run %s --name "feature-x"     Start or resume session "feature-x"
+  exitbox run %s --version 1.0.123      Run specific version`, display, agt.Name(), agt.Name(), agt.Name()),
 		DisableFlagParsing: true,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			return completeAgentRunArgs(agt.Name(), args, toComplete)
