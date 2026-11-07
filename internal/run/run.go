@@ -317,17 +317,23 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		args = append(args, "-v", dir+":/workspace/"+base)
 	}
 
-	// Mount the entire config directory so the entrypoint can read/write
-	// config.yaml (workspace switching) and access workspace profiles.
-	// Ensure the config file exists before mounting (otherwise the runtime
-	// creates a directory named config.yaml instead of a file).
-	configFile := filepath.Join(config.Home, "config.yaml")
-	if _, statErr := os.Stat(configFile); statErr != nil {
-		if saveErr := config.SaveConfig(cfg); saveErr != nil {
-			ui.Warnf("Failed to create config file for mount: %v", saveErr)
-		}
+	// Expose only a read-only runtime config and the active workspace's
+	// profile dir; the host config tree (settings, allowlist, other
+	// workspaces' credentials) never enters the container.
+	activeName := ""
+	if activeWorkspace != nil {
+		activeName = activeWorkspace.Workspace.Name
 	}
-	args = append(args, "-v", config.Home+":/home/user/.exitbox-config")
+	cfgMount, err := prepareConfigMount(cfg, activeName)
+	if err != nil {
+		return 1, fmt.Errorf("failed to prepare config mount: %w", err)
+	}
+	defer func() {
+		if cleanErr := cfgMount.Cleanup(); cleanErr != nil {
+			ui.Warnf("Failed to remove runtime config dir: %v", cleanErr)
+		}
+	}()
+	args = append(args, cfgMount.Args...)
 
 	if activeWorkspace != nil {
 		if err := profile.EnsureAgentConfig(activeWorkspace.Workspace.Name, opts.Agent); err != nil {

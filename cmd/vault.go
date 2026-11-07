@@ -98,24 +98,40 @@ func newVaultInitCmd() *cobra.Command {
 }
 
 func newVaultSetCmd() *cobra.Command {
-	var workspace string
+	var workspace, file string
 	cmd := &cobra.Command{
 		Use:   "set <KEY>",
-		Short: "Set a secret in the vault (value prompted securely)",
+		Short: "Set a secret in the vault (value prompted securely or read from a file)",
 		Long: "Set a secret key-value pair in the vault. The value is read from\n" +
-			"stdin with masked input to avoid leaking secrets in shell history.",
+			"stdin with masked input to avoid leaking secrets in shell history,\n" +
+			"or from a file with --file (stored byte-for-byte, e.g. PEM keys).",
+		Example: "  exitbox vault set API_TOKEN\n" +
+			"  exitbox vault set TLS_KEY --file ./server.key",
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			ws := resolveVaultWorkspace(workspace)
 			requireInitialized(ws)
 
 			key := args[0]
+
+			// Read the file before the password prompt so a bad path fails fast.
+			var value string
+			if file != "" {
+				v, err := vault.ReadValueFile(file)
+				if err != nil {
+					ui.Errorf("Failed to read value file: %v", err)
+				}
+				value = v
+			}
+
 			password := promptPassword("Enter vault password: ")
 
-			// Prompt for the secret value securely (masked).
-			value := promptPassword(fmt.Sprintf("Enter value for %s: ", key))
-			if value == "" {
-				ui.Error("Value cannot be empty")
+			if file == "" {
+				// Prompt for the secret value securely (masked).
+				value = promptPassword(fmt.Sprintf("Enter value for %s: ", key))
+				if value == "" {
+					ui.Error("Value cannot be empty")
+				}
 			}
 
 			if err := vault.QuickSet(ws, password, key, value); err != nil {
@@ -125,6 +141,7 @@ func newVaultSetCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Workspace name")
+	cmd.Flags().StringVar(&file, "file", "", "Read the secret value from a file instead of prompting")
 	return cmd
 }
 
@@ -143,7 +160,12 @@ func newVaultGetCmd() *cobra.Command {
 			if err != nil {
 				ui.Errorf("%v", err)
 			}
-			fmt.Println(val)
+			// Exact bytes when redirected so "get KEY > file" round-trips --file.
+			if term.IsTerminal(int(os.Stdout.Fd())) {
+				fmt.Println(val)
+			} else {
+				fmt.Print(val)
+			}
 		},
 	}
 	cmd.Flags().StringVarP(&workspace, "workspace", "w", "", "Workspace name")
@@ -153,8 +175,8 @@ func newVaultGetCmd() *cobra.Command {
 func newVaultListCmd() *cobra.Command {
 	var workspace string
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List secret keys in the vault",
+		Use:     "list",
+		Short:   "List secret keys in the vault",
 		Aliases: []string{"ls"},
 		Run: func(cmd *cobra.Command, args []string) {
 			ws := resolveVaultWorkspace(workspace)
@@ -181,10 +203,10 @@ func newVaultListCmd() *cobra.Command {
 func newVaultDeleteCmd() *cobra.Command {
 	var workspace string
 	cmd := &cobra.Command{
-		Use:   "delete <KEY>",
-		Short: "Delete a secret from the vault",
+		Use:     "delete <KEY>",
+		Short:   "Delete a secret from the vault",
 		Aliases: []string{"rm"},
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			ws := resolveVaultWorkspace(workspace)
 			requireInitialized(ws)

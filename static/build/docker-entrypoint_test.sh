@@ -1824,6 +1824,36 @@ test_link_skills_pi() {
 test_link_skills_pi
 
 # ============================================================================
+# Test: workspace_switch_menu signals the host and never writes config.yaml
+# (mounted read-only; a writable config let agents alter the next run).
+# ============================================================================
+test_workspace_switch_menu_no_config_write() {
+    local cfgdir result
+    cfgdir="$(mktemp -d "$TEST_TMPDIR/wscfg.XXXXXX")"
+    printf 'workspaces:\n  active: work\n' > "$cfgdir/config.yaml"
+    chmod 0444 "$cfgdir/config.yaml"
+    result="$(
+        export GLOBAL_CONFIG_FILE="$cfgdir/config.yaml"
+        export EXITBOX_WORKSPACE_NAME="work"
+        ensure_workspace_files() { :; }
+        effective_session_name() { echo "default"; }
+        workspace_entries() { echo "global:personal"; }
+        fzf() { echo "global:personal"; }
+        yq() { echo "YQ_CALLED $*"; }
+        set_active_workspace() { echo "YQ_CALLED set_active_workspace $*"; }
+        write_session_action() { echo "ACTION ws=$1 session=$2 resume=$3"; }
+        request_graceful_switch() { :; }
+        eval "$(extract_func workspace_switch_menu)"
+        workspace_switch_menu
+    )" 2>/dev/null
+    assert_contains "switch menu writes session action for host" "$result" "ACTION ws=personal session=default resume=true"
+    assert_eq "switch menu does not call yq" "" "$(printf '%s' "$result" | grep YQ_CALLED || true)"
+    assert_file_content "switch menu leaves config.yaml untouched" "$cfgdir/config.yaml" "$(printf 'workspaces:\n  active: work')"
+}
+
+test_workspace_switch_menu_no_config_write
+
+# ============================================================================
 # Test: link_skills wires skills into Kimi Code's skills dirs
 # ============================================================================
 test_link_skills_kimi() {
