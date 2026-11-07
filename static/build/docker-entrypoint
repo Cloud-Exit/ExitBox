@@ -1699,6 +1699,7 @@ are masked — secrets are ONLY accessible through vault IPC commands.
 exitbox-vault list                    # List key names
 exitbox-vault get <KEY>               # Get a secret value (stdout)
 exitbox-vault set <KEY> <VALUE>       # Store a secret (host approval required)
+exitbox-vault set <KEY> -f <FILE>     # Store a file's contents ("-" = stdin, max 48 KB)
 exitbox-vault env                     # Print all KEY=VALUE pairs
 \`\`\`
 

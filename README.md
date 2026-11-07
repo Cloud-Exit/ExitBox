@@ -701,6 +701,7 @@ Shell completion:
 ```bash
 exitbox vault init -w <workspace>       # Initialize a new vault
 exitbox vault set <KEY> -w <workspace>  # Set a secret (value prompted securely)
+exitbox vault set <KEY> --file <file>   # Set a secret from a file (e.g. PEM key, max 48 KB)
 exitbox vault get <KEY> -w <workspace>  # Retrieve a secret
 exitbox vault list -w <workspace>       # List secret keys
 exitbox vault delete <KEY>              # Delete a secret
@@ -718,7 +719,8 @@ Inside the container, agents use the `exitbox-vault` binary to interact with the
 exitbox-vault list                    # List key names
 exitbox-vault get <KEY>               # Get a secret value (stdout)
 exitbox-vault set <KEY> <VALUE>       # Store a secret (host approval required)
-exitbox-vault env                     # Print all KEY=VALUE pairs
+exitbox-vault set <KEY> -f <FILE>     # Store a file's contents ("-" = stdin, max 48 KB)
+exitbox-vault env                     # Print all KEY=VALUE pairs (shell-quoted, eval-safe)
 ```
 
 Every `get` and `set` triggers a tmux popup on the host terminal requiring explicit approval before the operation proceeds.

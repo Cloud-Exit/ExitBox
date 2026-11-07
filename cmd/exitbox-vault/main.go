@@ -22,6 +22,7 @@
 //
 //	exitbox-vault get <KEY>          # prints value to stdout
 //	exitbox-vault set <KEY> <VALUE>  # stores a secret in the vault
+//	exitbox-vault set <KEY> -f <FILE> # stores a file's contents ("-" = stdin)
 //	exitbox-vault list               # prints key names, one per line
 //	exitbox-vault env                # prints KEY=VALUE pairs (for eval)
 package main
@@ -30,10 +31,17 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"strings"
+	"unicode/utf8"
 )
+
+// maxFileValueSize keeps file values well under the 64 KB IPC line limit.
+const maxFileValueSize = 48 * 1024
 
 type request struct {
 	Type    string      `json:"type"`
@@ -87,11 +95,14 @@ func main() {
 		}
 		cmdGet(os.Args[2])
 	case "set":
-		if len(os.Args) < 4 {
+		key, value, err := parseSetArgs(os.Args[2:], os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			fmt.Fprintln(os.Stderr, "Usage: exitbox-vault set <KEY> <VALUE>")
+			fmt.Fprintln(os.Stderr, "       exitbox-vault set <KEY> -f <FILE>   (\"-\" reads stdin)")
 			os.Exit(1)
 		}
-		cmdSet(os.Args[2], os.Args[3])
+		cmdSet(key, value)
 	case "list":
 		cmdList()
 	case "env":
@@ -106,8 +117,75 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  exitbox-vault get <KEY>          # prints secret value to stdout")
 	fmt.Fprintln(os.Stderr, "  exitbox-vault set <KEY> <VALUE>  # stores a secret in the vault")
+	fmt.Fprintln(os.Stderr, "  exitbox-vault set <KEY> -f <FILE> # stores a file's contents (\"-\" = stdin)")
 	fmt.Fprintln(os.Stderr, "  exitbox-vault list               # prints key names, one per line")
 	fmt.Fprintln(os.Stderr, "  exitbox-vault env                # prints KEY=VALUE pairs (for eval)")
+}
+
+// parseSetArgs resolves "<KEY> <VALUE>" or "<KEY> -f|--file <PATH|->".
+func parseSetArgs(args []string, stdin io.Reader) (string, string, error) {
+	if len(args) != 2 && len(args) != 3 {
+		return "", "", errors.New("wrong number of arguments")
+	}
+	key := args[0]
+	if len(args) == 2 {
+		if args[1] == "-f" || args[1] == "--file" {
+			return "", "", fmt.Errorf("%s requires a path", args[1])
+		}
+		return key, args[1], nil
+	}
+	if args[1] != "-f" && args[1] != "--file" {
+		return "", "", fmt.Errorf("unexpected argument %q", args[1])
+	}
+	value, err := readValueFile(args[2], stdin)
+	if err != nil {
+		return "", "", err
+	}
+	return key, value, nil
+}
+
+// readValueFile reads a value byte-for-byte from path, or stdin for "-".
+func readValueFile(path string, stdin io.Reader) (string, error) {
+	r := stdin
+	name := "stdin"
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = f.Close() }()
+		info, err := f.Stat()
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("%s is a directory", path)
+		}
+		r = f
+		name = path
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxFileValueSize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxFileValueSize {
+		return "", fmt.Errorf("%s exceeds %d KB limit", name, maxFileValueSize/1024)
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("%s is empty", name)
+	}
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("%s is not valid UTF-8 text (base64-encode binary files first)", name)
+	}
+	return string(data), nil
+}
+
+// shellQuote makes a value safe for eval; plain values stay unquoted.
+func shellQuote(v string) string {
+	if v != "" && strings.Trim(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.,:/@%+=") == "" {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
 
 func cmdGet(key string) {
@@ -196,7 +274,7 @@ func cmdEnv() {
 			hasFailure = true
 			continue
 		}
-		fmt.Printf("%s=%s\n", key, resp.Value)
+		fmt.Printf("%s=%s\n", key, shellQuote(resp.Value))
 	}
 
 	if hasFailure {

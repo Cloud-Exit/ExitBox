@@ -24,10 +24,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	badger "github.com/dgraph-io/badger/v4"
 	"golang.org/x/crypto/argon2"
@@ -342,7 +344,46 @@ func Destroy(workspace string) error {
 	return os.RemoveAll(vaultDir(workspace))
 }
 
-// ExportEnvFormat returns key-value pairs as KEY=VALUE lines.
+// MaxFileValueSize caps file-sourced values so they still fit the 64 KB
+// IPC line limit when read back from inside a container.
+const MaxFileValueSize = 48 * 1024
+
+// ReadValueFile reads a secret value from a file, byte-for-byte.
+func ReadValueFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", path)
+	}
+
+	// Read one byte past the cap so oversize input is detected without stat
+	// (pipes and /dev/fd paths report size 0).
+	data, err := io.ReadAll(io.LimitReader(f, MaxFileValueSize+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > MaxFileValueSize {
+		return "", fmt.Errorf("%s exceeds %d KB limit", path, MaxFileValueSize/1024)
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("%s is not valid UTF-8 text (base64-encode binary files first)", path)
+	}
+	return string(data), nil
+}
+
+// ExportEnvFormat returns key-value pairs as KEY=VALUE lines. Multi-line
+// values are double-quoted with escapes so ParseEnvFile round-trips them.
 func ExportEnvFormat(store map[string]string) string {
 	keys := make([]string, 0, len(store))
 	for k := range store {
@@ -352,10 +393,16 @@ func ExportEnvFormat(store map[string]string) string {
 
 	var buf strings.Builder
 	for _, k := range keys {
-		fmt.Fprintf(&buf, "%s=%s\n", k, store[k])
+		v := store[k]
+		if strings.ContainsAny(v, "\n\r") {
+			v = `"` + envEscaper.Replace(v) + `"`
+		}
+		fmt.Fprintf(&buf, "%s=%s\n", k, v)
 	}
 	return buf.String()
 }
+
+var envEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`)
 
 // --- internal helpers ---
 
@@ -417,11 +464,43 @@ func ParseEnvFile(data []byte) map[string]string {
 }
 
 // unquoteEnvValue strips matching single or double quotes from a value.
+// Double-quoted values containing \n or \r are unescaped (the form
+// ExportEnvFormat writes for multi-line values).
 func unquoteEnvValue(s string) string {
 	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+		if s[0] == '"' && s[len(s)-1] == '"' {
+			inner := s[1 : len(s)-1]
+			if strings.Contains(inner, `\n`) || strings.Contains(inner, `\r`) {
+				return unescapeEnvValue(inner)
+			}
+			return inner
+		}
+		if s[0] == '\'' && s[len(s)-1] == '\'' {
 			return s[1 : len(s)-1]
 		}
 	}
 	return s
+}
+
+func unescapeEnvValue(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 == len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case '\\', '"':
+			b.WriteByte(s[i])
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }

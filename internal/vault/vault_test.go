@@ -1,8 +1,10 @@
 package vault
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -486,5 +488,95 @@ func TestUnquoteEnvValue(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("unquoteEnvValue(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestReadValueFile(t *testing.T) {
+	dir := t.TempDir()
+	pem := "-----BEGIN KEY-----\nabc=\n-----END KEY-----\n"
+	p := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(p, []byte(pem), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadValueFile(p)
+	if err != nil {
+		t.Fatalf("ReadValueFile: %v", err)
+	}
+	if got != pem {
+		t.Errorf("got %q, want %q (byte-for-byte)", got, pem)
+	}
+}
+
+func TestReadValueFile_Errors(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	tests := []struct {
+		name, path, wantErr string
+	}{
+		{"missing", filepath.Join(dir, "nope"), "no such file"},
+		{"directory", dir, "is a directory"},
+		{"empty", write("empty", nil), "is empty"},
+		{"binary", write("bin", []byte{0xff, 0xfe, 0x00}), "not valid UTF-8"},
+		{"oversize", write("big", bytes.Repeat([]byte("a"), MaxFileValueSize+1)), "exceeds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadValueFile(tt.path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReadValueFile_AtLimit(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "max")
+	if err := os.WriteFile(p, bytes.Repeat([]byte("a"), MaxFileValueSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadValueFile(p); err != nil {
+		t.Errorf("value at limit rejected: %v", err)
+	}
+}
+
+func TestExportEnvFormat_MultiLine(t *testing.T) {
+	store := map[string]string{"PEM": "a\nb\"c\\d\r\n"}
+	got := ExportEnvFormat(store)
+	want := `PEM="a\nb\"c\\d\r\n"` + "\n"
+	if got != want {
+		t.Errorf("ExportEnvFormat = %q, want %q", got, want)
+	}
+}
+
+func TestEnvFormat_RoundTrip(t *testing.T) {
+	store := map[string]string{
+		"PLAIN":  "value=with=equals",
+		"PEM":    "-----BEGIN KEY-----\nMIIabc==\n-----END KEY-----\n",
+		"TRICKY": "line1\n\"quoted\" C:\\path\\n\\\\\r\nend\\",
+	}
+	got := ParseEnvFile([]byte(ExportEnvFormat(store)))
+	if len(got) != len(store) {
+		t.Fatalf("got %d keys, want %d: %v", len(got), len(store), got)
+	}
+	for k, v := range store {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestParseEnvFile_DoubleQuotedEscapes(t *testing.T) {
+	env := ParseEnvFile([]byte(`A="x\ny"` + "\n" + `B="no escapes \t here"` + "\n"))
+	if env["A"] != "x\ny" {
+		t.Errorf("A = %q, want %q", env["A"], "x\ny")
+	}
+	if env["B"] != `no escapes \t here` {
+		t.Errorf("B = %q, want unchanged", env["B"])
 	}
 }
