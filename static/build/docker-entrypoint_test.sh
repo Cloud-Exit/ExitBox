@@ -753,33 +753,22 @@ test_write_tmux_conf_scroll_settings() {
 }
 
 # ============================================================================
-# Test: write_tmux_conf default-terminal prefers tmux-256color (extended keys)
+# Test: write_tmux_conf always sets default-terminal tmux-256color
 # ============================================================================
 test_write_tmux_conf_default_terminal() {
-    # When tmux-256color terminfo is available, it must be the default-terminal
-    # (its terminfo declares the extended-key capabilities Pi needs).
-    local with_tmux
-    with_tmux="$(
+    # Alpine images have the tmux-256color terminfo but no infocmp; an infocmp
+    # probe used to fall back to xterm-256color there, which breaks tmux.
+    local out
+    out="$(
         AGENT="pi"; EXITBOX_WORKSPACE_NAME="default"; EXITBOX_VERSION="test"
         unset EXITBOX_KEYBINDINGS
         eval "$PARSE_KB_FUNC"; parse_keybindings
         eval "$DISPLAY_FUNC"; eval "$TMUX_CONF_FUNC"
-        infocmp() { return 0; }
+        infocmp() { return 127; }
         cat "$(write_tmux_conf)"
     )" 2>/dev/null
-    assert_contains "default-terminal prefers tmux-256color" "$with_tmux" 'set -g default-terminal "tmux-256color"'
-
-    # When it is NOT available, fall back to xterm-256color (no breakage).
-    local without_tmux
-    without_tmux="$(
-        AGENT="pi"; EXITBOX_WORKSPACE_NAME="default"; EXITBOX_VERSION="test"
-        unset EXITBOX_KEYBINDINGS
-        eval "$PARSE_KB_FUNC"; parse_keybindings
-        eval "$DISPLAY_FUNC"; eval "$TMUX_CONF_FUNC"
-        infocmp() { return 1; }
-        cat "$(write_tmux_conf)"
-    )" 2>/dev/null
-    assert_contains "default-terminal falls back to xterm-256color" "$without_tmux" 'set -g default-terminal "xterm-256color"'
+    assert_contains "default-terminal is tmux-256color without infocmp" "$out" 'set-option -g default-terminal "tmux-256color"'
+    assert_eq "no xterm-256color default-terminal" "" "$(printf '%s\n' "$out" | grep 'default-terminal "xterm-256color"' || true)"
 }
 
 # ============================================================================

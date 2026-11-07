@@ -50,8 +50,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
     sed gawk gettext python3 python3-venv \
     # Networking
     dnsutils netcat-openbsd socat \
-    # Terminal (ncurses-term carries tmux-256color, ncurses-bin has infocmp,
-    # which the entrypoint uses to pick default-terminal)
+    # Terminal (ncurses-term carries tmux-256color, the entrypoint's
+    # tmux default-terminal; ncurses-bin has infocmp/tput)
     tmux ncurses-term ncurses-bin \
     # Runtime libraries
     libstdc++6 libgcc-s1 \
