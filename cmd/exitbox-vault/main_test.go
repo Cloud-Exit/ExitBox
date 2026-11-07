@@ -17,6 +17,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +48,6 @@ func TestParseSetArgs(t *testing.T) {
 		{"flag no path", []string{"K", "-f"}, "", "", "requires a path"},
 		{"missing value", []string{"K"}, "", "", "wrong number"},
 		{"extra positional", []string{"K", "a", "b"}, "", "", "unexpected argument"},
-		{"missing file", []string{"K", "-f", p + ".nope"}, "", "", "no such file"},
 		{"oversize stdin", []string{"K", "-f", "-"}, strings.Repeat("a", maxFileValueSize+1), "", "exceeds"},
 		{"binary stdin", []string{"K", "-f", "-"}, "\xff\xfe", "", "not valid UTF-8"},
 	}
@@ -66,6 +67,14 @@ func TestParseSetArgs(t *testing.T) {
 				t.Errorf("got (%q, %q), want (K, %q)", key, value, tt.wantValue)
 			}
 		})
+	}
+}
+
+func TestParseSetArgs_MissingFile(t *testing.T) {
+	// OS-specific message, so match the error kind.
+	_, _, err := parseSetArgs([]string{"K", "-f", filepath.Join(t.TempDir(), "nope")}, nil)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want fs.ErrNotExist", err)
 	}
 }
 
