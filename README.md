@@ -747,6 +747,7 @@ Agents are automatically informed about vault commands and these rules via sandb
 #### How Workspaces Work
 
 - **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
+- **Minimal config mount**: The container gets only the active workspace's `profiles/global/<workspace>/` directory plus a generated read-only `config.yaml` (workspace names only). Other workspaces, `allowlist.yaml`, and settings such as `default_flags` stay on the host, so an agent cannot read other workspaces' credentials or loosen its own next run.
 - **Development stacks**: Each workspace can have its own set of dev roles (languages/tools). The setup wizard or `exitbox workspaces add` lets you pick the stack for each workspace.
 - **Per-project auto-detection**: Workspaces can be scoped to a directory. When you run an agent from that directory, ExitBox automatically uses the matching workspace.
 - **Default workspace**: Set via `exitbox setup` or `exitbox workspaces default`. Used when no directory-scoped workspace matches.

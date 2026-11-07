@@ -334,24 +334,6 @@ resolve_active_workspace() {
     echo "global:default"
 }
 
-set_active_workspace() {
-    local scope="$1"
-    local name="$2"
-    if [[ -z "$scope" || -z "$name" ]]; then
-        return 1
-    fi
-
-    ensure_workspace_files
-
-    # Write new keys
-    NAME="$name" yq -i '.settings.default_workspace = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
-    NAME="$name" yq -i '.workspaces.active = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
-    # Also write old keys for backward compat with configs not yet migrated
-    NAME="$name" yq -i '.settings.default_profile = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
-    NAME="$name" yq -i '.profiles.active = strenv(NAME)' "$GLOBAL_CONFIG_FILE"
-    return 0
-}
-
 link_path() {
     local src="$1"
     local dst="$2"
@@ -399,9 +381,9 @@ apply_active_workspace_links() {
         workspace_root="$profile_root"
     fi
 
-    # Credential isolation: only the workspace that was mounted at container
-    # start has real data. If the user switched to a different workspace via
-    # Ctrl+P, its directory is empty (not bind-mounted from host).
+    # Credential isolation: the host mounts only the active workspace's
+    # profile dir (read-only config.yaml, nothing else from ~/.config/exitbox),
+    # so any other workspace has no data in this container.
     if [[ -n "$EXITBOX_MOUNTED_WORKSPACE" && "$name" != "$EXITBOX_MOUNTED_WORKSPACE" ]]; then
         echo "" >&2
         echo "[NOTE] Switched to workspace '${name}', but this container was started with workspace '${EXITBOX_MOUNTED_WORKSPACE}'." >&2
@@ -839,7 +821,8 @@ workspace_switch_menu() {
         exit 0
     fi
 
-    set_active_workspace "$scope" "$name"
+    # The host validates the name and restarts with that workspace mounted;
+    # config.yaml is read-only here.
     write_session_action "$name" "$current_session" "true"
     echo "Saving current session and switching to workspace '${name}'..."
     request_graceful_switch
