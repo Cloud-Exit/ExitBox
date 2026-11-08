@@ -371,6 +371,40 @@ Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name
 
 All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
 
+### Claude Code Subagents
+
+[Subagents](https://code.claude.com/docs/en/sub-agents) are Markdown files with YAML frontmatter that Claude Code can delegate tasks to. ExitBox keeps a subagent store per workspace and links every stored file into `~/.claude/agents/` when a Claude container starts.
+
+```bash
+# Create one with valid frontmatter and open it in $EDITOR
+exitbox subagents new code-reviewer --model sonnet --tools "Read, Grep, Glob" \
+  --description "Reviews diffs for bugs and style issues"
+
+# Add from a local file or directory, a raw URL, or a GitHub file or directory
+exitbox subagents add ./agents/
+exitbox subagents add https://github.com/org/repo/tree/main/agents
+exitbox subagents add ./reviewer.md --force   # replace a stored subagent with the same name
+
+# Copy the host's ~/.claude/agents into the store (existing names are skipped)
+exitbox subagents import
+
+# Inspect, change, and check
+exitbox subagents list            # name, model, tools, source, status, shadowing
+exitbox subagents list --json
+exitbox subagents show code-reviewer
+exitbox subagents edit code-reviewer
+exitbox subagents validate        # exits non-zero on any error
+exitbox subagents rm code-reviewer
+```
+
+All commands take `-w <workspace>`. A subagent is identified by the `name` in its frontmatter, not by its file name.
+
+- **Store**: `~/.config/exitbox/profiles/global/<workspace>/subagents/<name>.md`. It is mounted read-only into the container, so a session cannot rewrite the prompts the next session trusts.
+- **Linking**: each file becomes a symlink in `~/.claude/agents/`. A real file with the same file name already there (created inside the container, or copied by `exitbox config import claude`) is kept, and the managed one is skipped with a warning. A project's own `.claude/agents/` is never touched.
+- **Changes** made on the host reach a running session at the next container start.
+- **Validation**: Claude Code skips a broken agent file without telling you. `validate`, `new`, `edit`, and `add` report these as errors: an opening `---` that is not on line 1, YAML that does not parse, a missing `name` or `description`, a `name` that starts with `-`, contains `:`, or is longer than 256 characters, and two files with the same `name`. Warnings cover unknown fields (with the closest known one), a `model` that is not `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a `claude-*` ID, an `autoCompactWindow` that is not a plain integer from 100000 to 1000000 (`200k` is read as 200), and an env profile that sets `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, which makes Claude Code ignore every `model` field.
+- **Shadowing**: `list` flags a stored subagent when a project agent has the same name (project agents win), or when the container already has a file with the same file name or name.
+
 ### Named Resumable Sessions
 
 When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox captures this token and can pass it on the next run, so you seamlessly resume where you left off.
@@ -622,6 +656,14 @@ exitbox config edit <agent>        # Open agent config file in $EDITOR
 exitbox skills install <source>    # Install a skill from URL/path
 exitbox skills list                # List installed skills
 exitbox skills remove <name>       # Remove an installed skill
+exitbox subagents list             # List Claude Code subagents and their status
+exitbox subagents new <name>       # Create a subagent and open it in $EDITOR
+exitbox subagents add <source>     # Add subagents from a file, dir, URL, or GitHub path
+exitbox subagents import           # Copy the host's ~/.claude/agents into the store
+exitbox subagents edit <name>      # Edit a subagent in $EDITOR and validate it
+exitbox subagents show <name>      # Print a subagent file
+exitbox subagents rm <name>        # Remove a subagent
+exitbox subagents validate [name]  # Check subagents against Claude Code's loading rules
 exitbox env create <profile>       # Create a new env profile
 exitbox env edit <profile>         # Edit env profile in $EDITOR
 exitbox env list                   # List env profiles
