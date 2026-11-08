@@ -71,7 +71,8 @@ func (m *configMount) Cleanup() error {
 }
 
 // prepareConfigMount builds the runtime config in a temp dir and returns the
-// mounts for it (read-only) and the active workspace's profile dir (read-write).
+// mounts for it (read-only), the active workspace's profile dir (read-write),
+// and that workspace's subagent store (read-only).
 // An empty wsName falls back to "default", matching the entrypoint.
 func prepareConfigMount(cfg *config.Config, wsName string) (*configMount, error) {
 	if wsName == "" {
@@ -84,6 +85,12 @@ func prepareConfigMount(cfg *config.Config, wsName string) (*configMount, error)
 	hostWsDir := filepath.Join(config.Home, "profiles", "global", wsName)
 	if err := os.MkdirAll(hostWsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating workspace dir: %w", err)
+	}
+	// The subagent store doubles as the read-only mountpoint inside the
+	// workspace mount, so it must exist before the container starts.
+	hostSubagentsDir := filepath.Join(hostWsDir, "subagents")
+	if err := os.MkdirAll(hostSubagentsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating subagent store: %w", err)
 	}
 
 	tmp, err := os.MkdirTemp("", "exitbox-cfg-*")
@@ -126,9 +133,13 @@ func prepareConfigMount(cfg *config.Config, wsName string) (*configMount, error)
 		return fail(fmt.Errorf("creating workspace mountpoint: %w", err))
 	}
 
+	containerWsDir := containerConfigRoot + "/profiles/global/" + wsName
 	m.Args = []string{
 		"-v", tmp + ":" + containerConfigRoot + ":ro",
-		"-v", hostWsDir + ":" + containerConfigRoot + "/profiles/global/" + wsName,
+		"-v", hostWsDir + ":" + containerWsDir,
+		// Subagent definitions are prompts Claude Code trusts on every start;
+		// a writable store would let one session plant instructions for the next.
+		"-v", hostSubagentsDir + ":" + containerWsDir + "/subagents:ro",
 	}
 	return m, nil
 }

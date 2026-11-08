@@ -57,13 +57,17 @@ func TestPrepareConfigMount_OnlyActiveWorkspace(t *testing.T) {
 	}
 	wantRO := m.tempDir + ":" + containerConfigRoot + ":ro"
 	wantWS := filepath.Join(home, "profiles", "global", "work") + ":" + containerConfigRoot + "/profiles/global/work"
-	want := []string{"-v", wantRO, "-v", wantWS}
+	wantSub := filepath.Join(home, "profiles", "global", "work", "subagents") + ":" + containerConfigRoot + "/profiles/global/work/subagents:ro"
+	want := []string{"-v", wantRO, "-v", wantWS, "-v", wantSub}
 	if strings.Join(m.Args, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("args = %q, want %q", m.Args, want)
 	}
 
 	if _, err := os.Stat(filepath.Join(home, "profiles", "global", "work")); err != nil {
 		t.Errorf("host workspace dir not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "profiles", "global", "work", "subagents")); err != nil {
+		t.Errorf("subagent store mountpoint not created: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(m.tempDir, "profiles", "global", "work")); err != nil {
 		t.Errorf("nested mountpoint not pre-created: %v", err)

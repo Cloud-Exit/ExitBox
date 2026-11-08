@@ -1815,6 +1815,87 @@ test_link_skills_pi() {
 test_link_skills_pi
 
 # ============================================================================
+# Test: link_subagents links the store into ~/.claude/agents, keeps real
+# files, removes dangling store links, and leaves foreign files alone
+# ============================================================================
+test_link_subagents_claude() {
+    local base home other result
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    other="$(mktemp -d "$TEST_TMPDIR/subother.XXXXXX")"
+    mkdir -p "$base/default/subagents" "$home/claude-real/agents"
+    printf -- '---\nname: reviewer\ndescription: d\n---\n' > "$base/default/subagents/reviewer.md"
+    printf -- '---\nname: mine\ndescription: managed\n---\n' > "$base/default/subagents/mine.md"
+    printf -- 'x' > "$base/default/subagents/notes.txt"
+    ln -s "$home/claude-real" "$home/.claude"
+    # Real file created in the container with the same file name as a managed one.
+    printf -- '---\nname: mine\ndescription: container\n---\n' > "$home/claude-real/agents/mine.md"
+    # Stale link into the store (subagent removed on the host).
+    ln -s "$base/default/subagents/gone.md" "$home/claude-real/agents/gone.md"
+    # Foreign files: a real file, a link elsewhere, a dangling link elsewhere.
+    printf -- 'own' > "$home/claude-real/agents/own.md"
+    printf -- 'x' > "$other/elsewhere.md"
+    ln -s "$other/elsewhere.md" "$home/claude-real/agents/elsewhere.md"
+    ln -s "$other/missing.md" "$home/claude-real/agents/foreign-dangling.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="claude"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        link_subagents 2>&1
+        a="$home/claude-real/agents"
+        [[ -L "$a/reviewer.md" && "$(readlink "$a/reviewer.md")" == "$base/default/subagents/reviewer.md" ]] && echo "LINKED"
+        [[ ! -L "$a/mine.md" ]] && grep -q container "$a/mine.md" && echo "REAL_KEPT"
+        [[ ! -e "$a/gone.md" && ! -L "$a/gone.md" ]] && echo "DANGLING_REMOVED"
+        [[ -f "$a/own.md" && ! -L "$a/own.md" ]] && echo "OWN_KEPT"
+        [[ "$(readlink "$a/elsewhere.md")" == "$other/elsewhere.md" ]] && echo "FOREIGN_LINK_KEPT"
+        [[ -L "$a/foreign-dangling.md" ]] && echo "FOREIGN_DANGLING_KEPT"
+        [[ ! -e "$a/notes.txt" ]] && echo "NON_MD_SKIPPED"
+    )"
+    assert_contains "link_subagents links store files" "$result" "LINKED"
+    assert_contains "link_subagents keeps a real file with the same name" "$result" "REAL_KEPT"
+    assert_contains "link_subagents warns about the skipped name" "$result" "[WARN] Subagent mine.md"
+    assert_contains "link_subagents removes dangling store links" "$result" "DANGLING_REMOVED"
+    assert_contains "link_subagents leaves real foreign files" "$result" "OWN_KEPT"
+    assert_contains "link_subagents leaves foreign links" "$result" "FOREIGN_LINK_KEPT"
+    assert_contains "link_subagents leaves dangling foreign links" "$result" "FOREIGN_DANGLING_KEPT"
+    assert_contains "link_subagents only links .md files" "$result" "NON_MD_SKIPPED"
+}
+
+test_link_subagents_claude
+
+# ============================================================================
+# Test: link_subagents is a no-op for other agents and without a store
+# ============================================================================
+test_link_subagents_other_agents() {
+    local base home result
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    mkdir -p "$base/default/subagents" "$home/.claude" "$home/.codex"
+    printf -- '---\nname: r\ndescription: d\n---\n' > "$base/default/subagents/r.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        for AGENT in codex opencode pi kimi; do
+            export AGENT
+            link_subagents
+        done
+        [[ -e "$home/.claude/agents" ]] && echo "TOUCHED_CLAUDE"
+        find "$home" -name 'r.md' | grep -q . && echo "LINKED_SOMEWHERE"
+        export AGENT=claude EXITBOX_WORKSPACE_NAME=empty
+        link_subagents
+        [[ -e "$home/.claude/agents" ]] && echo "CREATED_EMPTY_DIR"
+        echo done
+    )" 2>/dev/null
+    assert_eq "link_subagents does nothing for non-Claude agents or without a store" "done" "$result"
+}
+
+test_link_subagents_other_agents
+
+# ============================================================================
 # Test: workspace_switch_menu signals the host and never writes config.yaml
 # (mounted read-only; a writable config let agents alter the next run).
 # ============================================================================

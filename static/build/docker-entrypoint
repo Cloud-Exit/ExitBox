@@ -587,6 +587,55 @@ link_skills() {
     esac
 }
 
+# Link the workspace's Claude Code subagents (read-only store) into
+# ~/.claude/agents, one symlink per file. A real file with the same name
+# (created in the container or copied by `exitbox config import`) wins and is
+# left alone; only dangling links into the store are removed.
+link_subagents() {
+    [[ "$AGENT" == "claude" ]] || return 0
+    local ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
+    local store="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents"
+    local real_dir agents_dir src link target
+    real_dir="$(readlink -f "$HOME/.claude")"
+    [[ -d "$real_dir" ]] || return 0
+    agents_dir="$real_dir/agents"
+
+    # Drop links into any workspace's store whose target is gone.
+    if [[ -d "$agents_dir" ]]; then
+        for link in "$agents_dir"/*.md; do
+            [[ -L "$link" ]] || continue
+            target="$(readlink "$link")"
+            case "$target" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*)
+                    [[ -e "$link" ]] || rm -f "$link"
+                    ;;
+            esac
+        done
+    fi
+
+    [[ -d "$store" ]] || return 0
+    for src in "$store"/*.md; do
+        [[ -f "$src" ]] || continue
+        mkdir -p "$agents_dir"
+        link="$agents_dir/$(basename "$src")"
+        if [[ -e "$link" && ! -L "$link" ]]; then
+            echo "[WARN] Subagent $(basename "$src"): a file with that name already exists in ~/.claude/agents; keeping it and skipping the managed one" >&2
+            continue
+        fi
+        if [[ -L "$link" ]]; then
+            target="$(readlink "$link")"
+            case "$target" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*) ;;
+                *)
+                    echo "[WARN] Subagent $(basename "$src"): ~/.claude/agents has a foreign link with that name; skipping the managed one" >&2
+                    continue
+                    ;;
+            esac
+        fi
+        ln -sfn "$src" "$link"
+    done
+}
+
 default_session_name() {
     date +"%Y-%m-%d %H:%M:%S"
 }
@@ -1055,6 +1104,7 @@ run_agent_loop() {
         inject_sandbox_instructions
         inject_codex_approval_rules
         link_skills
+        link_subagents
         setup_graphify
         setup_plugins
     fi
@@ -2084,6 +2134,7 @@ if [[ -n "$AGENT" ]]; then
     inject_sandbox_instructions
     inject_codex_approval_rules
     link_skills
+    link_subagents
     setup_graphify
     setup_plugins
 fi
