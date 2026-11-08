@@ -327,3 +327,110 @@ func defaultHTTPGet(url string) ([]byte, error) {
 	}
 	return io.ReadAll(resp.Body)
 }
+
+// FetchMarkdown retrieves every *.md file a source points at: a single file
+// (local path, raw URL, GitHub blob) or a directory (local or GitHub tree),
+// searched recursively. Keys are paths relative to the source.
+func FetchMarkdown(source string) (map[string][]byte, error) {
+	files := make(map[string][]byte)
+	switch DetectSource(source) {
+	case SourceGitHubTree:
+		m := githubTreeRE.FindStringSubmatch(source)
+		if err := githubFetchMarkdown(m[1], m[2], m[3], m[4], "", files); err != nil {
+			return nil, fmt.Errorf("fetching GitHub directory: %w", err)
+		}
+	case SourceGitHubBlob:
+		m := githubBlobRE.FindStringSubmatch(source)
+		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", m[1], m[2], m[3], m[4])
+		content, err := httpGet(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("downloading %s: %w", rawURL, err)
+		}
+		files[path.Base(m[4])] = content
+	case SourceRawURL:
+		content, err := httpGet(source)
+		if err != nil {
+			return nil, fmt.Errorf("downloading %s: %w", source, err)
+		}
+		u := strings.SplitN(source, "?", 2)[0]
+		files[path.Base(strings.TrimSuffix(u, "/"))] = content
+	default:
+		info, err := os.Stat(source)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", source, err)
+		}
+		if !info.IsDir() {
+			content, err := os.ReadFile(source)
+			if err != nil {
+				return nil, err
+			}
+			files[filepath.Base(source)] = content
+			break
+		}
+		err = filepath.WalkDir(source, func(p string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				if p != source && strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".md") {
+				return nil
+			}
+			rel, relErr := filepath.Rel(source, p)
+			if relErr != nil {
+				return relErr
+			}
+			content, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return readErr
+			}
+			files[filepath.ToSlash(rel)] = content
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .md files found in %s", source)
+	}
+	return files, nil
+}
+
+// githubFetchMarkdown recursively fetches the *.md files of a GitHub directory.
+func githubFetchMarkdown(owner, repo, ref, dirPath, prefix string, files map[string][]byte) error {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", owner, repo, dirPath, ref)
+	entries, err := githubListDir(apiURL)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		relPath := entry.Name
+		if prefix != "" {
+			relPath = prefix + "/" + entry.Name
+		}
+		switch entry.Type {
+		case "file":
+			if entry.DownloadURL == "" || !strings.HasSuffix(entry.Name, ".md") {
+				continue
+			}
+			content, err := httpGet(entry.DownloadURL)
+			if err != nil {
+				return fmt.Errorf("downloading %s: %w", relPath, err)
+			}
+			files[relPath] = content
+		case "dir":
+			if strings.HasPrefix(entry.Name, ".") {
+				continue
+			}
+			if err := githubFetchMarkdown(owner, repo, ref, dirPath+"/"+entry.Name, relPath, files); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
