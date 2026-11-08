@@ -2,6 +2,8 @@ package vault
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -519,11 +521,14 @@ func TestReadValueFile_Errors(t *testing.T) {
 	tests := []struct {
 		name, path, wantErr string
 	}{
-		{"missing", filepath.Join(dir, "nope"), "no such file"},
 		{"directory", dir, "is a directory"},
 		{"empty", write("empty", nil), "is empty"},
 		{"binary", write("bin", []byte{0xff, 0xfe, 0x00}), "not valid UTF-8"},
 		{"oversize", write("big", bytes.Repeat([]byte("a"), MaxFileValueSize+1)), "exceeds"},
+	}
+	// OS-specific message, so match the error kind.
+	if _, err := ReadValueFile(filepath.Join(dir, "nope")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing: err = %v, want fs.ErrNotExist", err)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

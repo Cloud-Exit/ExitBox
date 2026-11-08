@@ -19,6 +19,7 @@ package run
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -71,7 +72,8 @@ func TestPrepareConfigMount_OnlyActiveWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o755 {
+	// Windows has no Unix permission bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 		t.Errorf("runtime dir mode = %o, want 755", info.Mode().Perm())
 	}
 }
