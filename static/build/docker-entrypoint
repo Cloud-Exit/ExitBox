@@ -111,6 +111,13 @@ set-option -g default-terminal "tmux-256color"
 set -g extended-keys on
 ${extkeys_format}
 set -as terminal-features "*:extkeys"
+# Wrap tmux's own redraws in synchronized-output markers (DEC 2026) so the
+# outer terminal paints each frame at once. tmux 3.7 also holds a pane while
+# the agent's frame is open; without this, TUI frames still reach the
+# terminal in pieces and the cursor visibly jumps. Terminals without 2026 ignore it.
+set -as terminal-features "*:sync"
+# Claude Code's recommended tmux setting: pass focus in/out to the agent.
+set -g focus-events on
 set -g status-position top
 set -g status-style "bg=colour236,fg=colour255"
 set -g status-left " ExitBox  ${display} "
