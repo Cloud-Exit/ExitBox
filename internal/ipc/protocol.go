@@ -41,6 +41,10 @@ type AllowDomainRequest struct {
 type AllowDomainResponse struct {
 	Approved bool   `json:"approved"`
 	Error    string `json:"error,omitempty"`
+	// FirewallEnabled reports whether a Squid proxy is actually filtering
+	// this container. False means the request was approved automatically
+	// because every domain is already reachable.
+	FirewallEnabled bool `json:"firewall_enabled"`
 }
 
 // VaultGetRequest is the payload for "vault_get" requests.

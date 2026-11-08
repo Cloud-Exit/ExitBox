@@ -202,6 +202,10 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 			if portAvailable("127.0.0.1", 8085) {
 				args = append(args, "-p", "127.0.0.1:8085:2085")
 			}
+			// OpenCode 2.x's built-in ChatGPT login uses the Codex callback port.
+			if portAvailable("127.0.0.1", 1455) {
+				args = append(args, "-p", "127.0.0.1:1455:2455")
+			}
 		}
 	}
 
@@ -438,6 +442,11 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		"-e", "EXITBOX_STATUS_BAR="+fmt.Sprint(opts.StatusBar),
 		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(opts.Resume),
 		"-e", "EXITBOX_SESSION_NAME="+opts.SessionName,
+		// Tells the entrypoint (and exitbox-allow) whether a Squid proxy
+		// actually sits in front of this container. Without it the injected
+		// sandbox instructions claim the firewall is on even under
+		// --no-firewall, so agents ask to "allow" domains that already work.
+		"-e", "EXITBOX_FIREWALL_ENABLED="+fmt.Sprint(!opts.NoFirewall),
 	)
 	if opts.ResumeToken != "" {
 		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
@@ -568,35 +577,36 @@ func (rw *redactorWriter) Write(p []byte) (int, error) {
 
 func isReservedEnvVar(key string) bool {
 	reserved := map[string]bool{
-		"EXITBOX_AGENT":           true,
-		"EXITBOX_PROJECT_NAME":    true,
-		"EXITBOX_PROJECT_KEY":     true,
-		"EXITBOX_WORKSPACE_SCOPE": true,
-		"EXITBOX_WORKSPACE_NAME":  true,
-		"EXITBOX_VERSION":         true,
-		"EXITBOX_STATUS_BAR":      true,
-		"EXITBOX_AUTO_RESUME":     true,
-		"EXITBOX_IPC_SOCKET":      true,
-		"EXITBOX_RESUME_TOKEN":    true,
-		"EXITBOX_SESSION_NAME":    true,
-		"EXITBOX_KEYBINDINGS":     true,
-		"EXITBOX_HOST_PORTS":      true,
-		"EXITBOX_VAULT_ENABLED":   true,
-		"EXITBOX_VAULT_READONLY":  true,
-		"EXITBOX_RTK":             true,
-		"EXITBOX_GPU":             true,
-		"EXITBOX_PLUGINS":         true,
-		"EXITBOX_IDE_PORT":        true,
-		"CLAUDE_CODE_SSE_PORT":    true,
-		"ENABLE_IDE_INTEGRATION":  true,
-		"TERM":                    true,
-		"http_proxy":              true,
-		"https_proxy":             true,
-		"HTTP_PROXY":              true,
-		"HTTPS_PROXY":             true,
-		"no_proxy":                true,
-		"NO_PROXY":                true,
-		"SSH_AUTH_SOCK":           true,
+		"EXITBOX_AGENT":            true,
+		"EXITBOX_PROJECT_NAME":     true,
+		"EXITBOX_PROJECT_KEY":      true,
+		"EXITBOX_WORKSPACE_SCOPE":  true,
+		"EXITBOX_WORKSPACE_NAME":   true,
+		"EXITBOX_VERSION":          true,
+		"EXITBOX_STATUS_BAR":       true,
+		"EXITBOX_AUTO_RESUME":      true,
+		"EXITBOX_FIREWALL_ENABLED": true,
+		"EXITBOX_IPC_SOCKET":       true,
+		"EXITBOX_RESUME_TOKEN":     true,
+		"EXITBOX_SESSION_NAME":     true,
+		"EXITBOX_KEYBINDINGS":      true,
+		"EXITBOX_HOST_PORTS":       true,
+		"EXITBOX_VAULT_ENABLED":    true,
+		"EXITBOX_VAULT_READONLY":   true,
+		"EXITBOX_RTK":              true,
+		"EXITBOX_GPU":              true,
+		"EXITBOX_PLUGINS":          true,
+		"EXITBOX_IDE_PORT":         true,
+		"CLAUDE_CODE_SSE_PORT":     true,
+		"ENABLE_IDE_INTEGRATION":   true,
+		"TERM":                     true,
+		"http_proxy":               true,
+		"https_proxy":              true,
+		"HTTP_PROXY":               true,
+		"HTTPS_PROXY":              true,
+		"no_proxy":                 true,
+		"NO_PROXY":                 true,
+		"SSH_AUTH_SOCK":            true,
 	}
 	if strings.HasPrefix(key, "EXITBOX_PLUGIN_") {
 		// Plugin settings are rendered from config; a hand-passed value
@@ -629,17 +639,20 @@ func portAvailable(host string, port int) bool {
 }
 
 // newIPCServer creates and configures an IPC server.
-// When firewallEnabled is true, it also registers the allow_domain handler.
+//
+// The allow_domain handler is registered regardless of firewall mode. With the
+// firewall off it auto-approves (nothing is blocked), which beats the old
+// behaviour of replying "unknown message type" to an agent that ran
+// `exitbox-allow` out of habit.
 func newIPCServer(firewallEnabled bool, rt container.Runtime, containerName string) (*ipc.Server, error) {
 	s, err := ipc.NewServer()
 	if err != nil {
 		return nil, err
 	}
-	if firewallEnabled {
-		s.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
-			Runtime:       rt,
-			ContainerName: containerName,
-		}))
-	}
+	s.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
+		Runtime:         rt,
+		ContainerName:   containerName,
+		FirewallEnabled: firewallEnabled,
+	}))
 	return s, nil
 }

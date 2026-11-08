@@ -70,7 +70,7 @@ ExitBox automatically:
 - **RTK Token Optimizer (Experimental)** — optional [rtk](https://github.com/rtk-ai/rtk) integration reduces CLI output token consumption by 60-90%
 - **Graphify Knowledge Graph (Experimental)** — optional [graphify](https://github.com/safishamsi/graphify) external tool; when selected, the `/graphify` skill is auto-installed into compatible agents and removed when deselected
 - **External Tools** — configure third-party tools (GitHub CLI, etc.) via the setup wizard; packages are auto-installed at image build time
-- **Supply-Chain Hardened Installs** — Claude Code and OpenCode installed via direct download with SHA-256 checksum verification
+- **Supply-Chain Hardened Installs** — Claude Code and OpenCode installed via direct download with checksum verification (OpenCode 2.x: npm platform package checked against the registry SHA-512 integrity; 1.x: GitHub release SHA-256 digest)
 - **Alpine Base Image** — minimal ~5 MB base with 3-layer image hierarchy and incremental rebuilds
 - **Setup Wizard** — interactive TUI that configures roles, languages, tools, agents, firewall, and vault in one pass
 - **Cross-Platform** — native binaries for Linux, macOS, and Windows
@@ -164,7 +164,7 @@ The token is never stored in the container filesystem. Every vault read triggers
 
 ### OpenCode Authentication
 
-OpenCode supports OAuth login for providers like Google (Gemini). The OAuth flow starts a local callback server inside the container, and ExitBox automatically publishes the callback port (8085) to the host so the browser redirect works.
+OpenCode supports OAuth login for providers like Google (Gemini). The OAuth flow starts a local callback server inside the container, and ExitBox automatically publishes the callback ports to the host so the browser redirect works: `8085` (Google/Gemini) and `1455` (OpenCode 2.x built-in ChatGPT login, shared with Codex, so only one of them can use it at a time).
 
 ```bash
 exitbox run opencode -- auth login    # starts OAuth flow, opens browser URL on host
@@ -944,6 +944,7 @@ agents:
     enabled: false
   opencode:
     enabled: true
+    # version: "1.19.0"  # OpenCode builds 2.x by default; pin a 1.x release to stay on v1
 
 tools:
   user:
@@ -1107,7 +1108,7 @@ When Codex is enabled, ExitBox publishes callback port `1455` on the shared `exi
 |:----------------------|:-------------------------------------|
 | `VERBOSE`             | Enable verbose output                |
 | `CONTAINER_RUNTIME`   | Force runtime (`podman` or `docker`) |
-| `EXITBOX_NO_FIREWALL`| Disable firewall (`true`)            |
+| `EXITBOX_NO_FIREWALL`| Disable firewall (`true`/`1`/`yes`; `false`/`0`/`no` re-enables). Overridden by an explicit `--no-firewall` |
 | `EXITBOX_SQUID_DNS`  | Squid DNS servers (comma/space list, default: `1.1.1.1,8.8.8.8`) |
 | `EXITBOX_SQUID_DNS_SEARCH` | Squid DNS search domains (default: `.` to disable inherited search suffixes) |
 

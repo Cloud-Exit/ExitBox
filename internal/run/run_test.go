@@ -86,6 +86,7 @@ func TestIsReservedEnvVar(t *testing.T) {
 		"EXITBOX_VERSION",
 		"EXITBOX_STATUS_BAR",
 		"EXITBOX_AUTO_RESUME",
+		"EXITBOX_FIREWALL_ENABLED",
 		"EXITBOX_SESSION_NAME",
 		"EXITBOX_KEYBINDINGS",
 		"EXITBOX_HOST_PORTS",
@@ -142,9 +143,11 @@ func TestNewIPCServer_AlwaysCreated(t *testing.T) {
 	}
 }
 
-// TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall ensures the
-// allow_domain handler is only registered when firewall is enabled.
-func TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall(t *testing.T) {
+// TestNewIPCServer_AllowDomainHandler_AlwaysRegistered ensures the
+// allow_domain handler is registered in both modes. Registering it under
+// --no-firewall lets `exitbox-allow` auto-approve instead of failing with
+// "unknown message type".
+func TestNewIPCServer_AllowDomainHandler_AlwaysRegistered(t *testing.T) {
 	withFirewall, err := newIPCServer(true, nil, "test")
 	if err != nil {
 		t.Fatalf("newIPCServer(firewall=true) failed: %v", err)
@@ -158,8 +161,8 @@ func TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall(t *testing.T) {
 	if !withFirewall.HasHandler("allow_domain") {
 		t.Error("allow_domain handler missing with firewall enabled")
 	}
-	if withoutFirewall.HasHandler("allow_domain") {
-		t.Error("allow_domain handler present with firewall disabled; should be absent")
+	if !withoutFirewall.HasHandler("allow_domain") {
+		t.Error("allow_domain handler missing with firewall disabled")
 	}
 }
 

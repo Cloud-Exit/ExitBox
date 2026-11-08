@@ -38,6 +38,10 @@ const promptTimeout = 30 * time.Second
 type AllowDomainHandlerConfig struct {
 	Runtime       container.Runtime
 	ContainerName string
+	// FirewallEnabled records whether a Squid proxy is actually in front of
+	// the container. When false there is nothing to reload and no domain is
+	// blocked, so the handler approves without prompting.
+	FirewallEnabled bool
 	// PromptFunc overrides the tmux popup prompt for testing.
 	PromptFunc func(domain string) (bool, error)
 	// ReloadFunc overrides domain reload for testing.
@@ -79,21 +83,29 @@ func NewAllowDomainHandler(cfg AllowDomainHandlerConfig) HandlerFunc {
 			return AllowDomainResponse{Error: fmt.Sprintf("invalid domain: %v", err)}, nil
 		}
 
+		// With the firewall off nothing filters traffic, so surfacing a
+		// second popup for an already-reachable domain is just noise.
+		if !cfg.FirewallEnabled {
+			return AllowDomainResponse{Approved: true, FirewallEnabled: false}, nil
+		}
+
+		// From here on the firewall is on, so every response reports it as
+		// such: the client uses this to word its output correctly.
 		approved, err := promptFn(domain)
 		if err != nil {
-			return AllowDomainResponse{Error: fmt.Sprintf("prompt failed: %v", err)}, nil
+			return AllowDomainResponse{Error: fmt.Sprintf("prompt failed: %v", err), FirewallEnabled: true}, nil
 		}
 
 		if !approved {
-			return AllowDomainResponse{Approved: false}, nil
+			return AllowDomainResponse{Approved: false, FirewallEnabled: true}, nil
 		}
 
 		// Use the normalized form for Squid (may have leading dot for hostnames).
 		if err := reloadFn(normalized); err != nil {
-			return AllowDomainResponse{Error: fmt.Sprintf("failed to update firewall: %v", err)}, nil
+			return AllowDomainResponse{Error: fmt.Sprintf("failed to update firewall: %v", err), FirewallEnabled: true}, nil
 		}
 
-		return AllowDomainResponse{Approved: true}, nil
+		return AllowDomainResponse{Approved: true, FirewallEnabled: true}, nil
 	}
 }
 

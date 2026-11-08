@@ -15,6 +15,7 @@ func TestAllowDomainHandlerApproved(t *testing.T) {
 	defer srv.Stop()
 
 	srv.Handle("allow_domain", NewAllowDomainHandler(AllowDomainHandlerConfig{
+		FirewallEnabled: true,
 		PromptFunc: func(domain string) (bool, error) {
 			return true, nil
 		},
@@ -27,6 +28,9 @@ func TestAllowDomainHandlerApproved(t *testing.T) {
 	resp := sendAllowDomain(t, srv, "example.com")
 	if !resp.Approved {
 		t.Error("expected approved=true")
+	}
+	if !resp.FirewallEnabled {
+		t.Error("expected firewall_enabled=true when the firewall is on")
 	}
 	if resp.Error != "" {
 		t.Errorf("unexpected error: %s", resp.Error)
@@ -41,6 +45,7 @@ func TestAllowDomainHandlerDenied(t *testing.T) {
 	defer srv.Stop()
 
 	srv.Handle("allow_domain", NewAllowDomainHandler(AllowDomainHandlerConfig{
+		FirewallEnabled: true,
 		PromptFunc: func(domain string) (bool, error) {
 			return false, nil
 		},
@@ -54,6 +59,65 @@ func TestAllowDomainHandlerDenied(t *testing.T) {
 	resp := sendAllowDomain(t, srv, "example.com")
 	if resp.Approved {
 		t.Error("expected approved=false")
+	}
+	if !resp.FirewallEnabled {
+		t.Error("expected firewall_enabled=true")
+	}
+}
+
+// TestAllowDomainHandlerNoFirewallAutoApproves covers --no-firewall: no Squid
+// proxy exists, so no domain is blocked and the user should not be prompted.
+func TestAllowDomainHandlerNoFirewallAutoApproves(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	srv.Handle("allow_domain", NewAllowDomainHandler(AllowDomainHandlerConfig{
+		FirewallEnabled: false,
+		PromptFunc: func(domain string) (bool, error) {
+			t.Error("prompt should not be shown when the firewall is off")
+			return false, nil
+		},
+		ReloadFunc: func(domain string) error {
+			t.Error("squid should not be reloaded when the firewall is off")
+			return nil
+		},
+	}))
+	srv.Start()
+
+	resp := sendAllowDomain(t, srv, "example.com")
+	if !resp.Approved {
+		t.Error("expected approved=true when the firewall is off")
+	}
+	if resp.FirewallEnabled {
+		t.Error("expected firewall_enabled=false")
+	}
+	if resp.Error != "" {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+// TestAllowDomainHandlerNoFirewallStillValidates ensures domain validation
+// happens before the no-firewall short-circuit.
+func TestAllowDomainHandlerNoFirewallStillValidates(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	srv.Handle("allow_domain", NewAllowDomainHandler(AllowDomainHandlerConfig{
+		FirewallEnabled: false,
+	}))
+	srv.Start()
+
+	if resp := sendAllowDomain(t, srv, "not a valid domain!!!"); resp.Error == "" {
+		t.Error("expected validation error even with the firewall off")
+	}
+	if resp := sendAllowDomain(t, srv, ""); resp.Error == "" {
+		t.Error("expected empty-domain error even with the firewall off")
 	}
 }
 

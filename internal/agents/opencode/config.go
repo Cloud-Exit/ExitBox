@@ -22,7 +22,8 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 )
 
-// GenerateConfig produces an OpenCode config map.
+// GenerateConfig produces an OpenCode config map in the 1.x schema, which
+// OpenCode 2.x migrates on load, so it works on either pinned major.
 func (o *OpenCode) GenerateConfig(cfg config.ServerConfig) (map[string]interface{}, error) {
 	result := map[string]interface{}{
 		"$schema": "https://opencode.ai/config.json",
@@ -66,9 +67,17 @@ func (o *OpenCode) ConfigFilePath(agentDir string) string {
 	return filepath.Join(agentDir, ".config", "opencode", "opencode.json")
 }
 
-// ExtractConfigServerURLs walks provider.*.options.baseURL in an OpenCode config.
+// ExtractConfigServerURLs walks provider.*.options.baseURL (1.x) and
+// providers.*.settings.baseURL (2.x) in an OpenCode config.
 func (o *OpenCode) ExtractConfigServerURLs(data map[string]interface{}) []string {
-	providers, ok := data["provider"].(map[string]interface{})
+	var urls []string
+	urls = append(urls, providerBaseURLs(data, "provider", "options")...)
+	urls = append(urls, providerBaseURLs(data, "providers", "settings")...)
+	return urls
+}
+
+func providerBaseURLs(data map[string]interface{}, providersKey, optionsKey string) []string {
+	providers, ok := data[providersKey].(map[string]interface{})
 	if !ok {
 		return nil
 	}
@@ -78,7 +87,7 @@ func (o *OpenCode) ExtractConfigServerURLs(data map[string]interface{}) []string
 		if !ok {
 			continue
 		}
-		opts, ok := provider["options"].(map[string]interface{})
+		opts, ok := provider[optionsKey].(map[string]interface{})
 		if !ok {
 			continue
 		}

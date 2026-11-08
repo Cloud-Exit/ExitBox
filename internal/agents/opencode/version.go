@@ -4,25 +4,45 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/container"
 )
 
-// GetLatestVersion queries npm for the latest version.
-// The Dockerfile installs from GitHub releases using v${VERSION}.
-// Invariant: npm latest must match a tagged GitHub release vX.
-// If they diverge (publish lag, pipeline changes), builds will fail.
+// v2RegistryPackage is the npm package whose latest dist-tag tracks OpenCode
+// 2.x. Per-platform binaries ship as @opencode/cli-<target> at the same version.
+const v2RegistryPackage = "@opencode/cli"
+
+// IsV2 reports whether version selects the OpenCode 2.x line. An empty
+// version means latest, which is 2.x.
+func IsV2(version string) bool {
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if v == "" {
+		return true
+	}
+	major, err := strconv.Atoi(strings.SplitN(v, ".", 2)[0])
+	if err != nil {
+		return false
+	}
+	return major >= 2
+}
+
+// GetLatestVersion queries npm for the latest OpenCode 2.x version.
+// Pin agents.opencode.version to a 1.x release to stay on OpenCode 1.
 func (o *OpenCode) GetLatestVersion() (string, error) {
-	pkg := o.NpmPackageName()
-	if pkg == "" {
+	if o.NpmPackageName() == "" {
 		return "", fmt.Errorf("unsupported architecture for OpenCode")
 	}
 	out, err := exec.Command("curl", "-fsSL",
-		fmt.Sprintf("https://registry.npmjs.org/%s/latest", pkg)).Output()
+		"https://registry.npmjs.org/"+strings.Replace(v2RegistryPackage, "/", "%2f", 1)+"/latest").Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch OpenCode latest version: %w", err)
 	}
+	return parseRegistryVersion(out)
+}
+
+func parseRegistryVersion(out []byte) (string, error) {
 	var release struct {
 		Version string `json:"version"`
 		Error   string `json:"error"`

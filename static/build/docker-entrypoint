@@ -1551,27 +1551,28 @@ fi
 # SANDBOX INSTRUCTIONS
 # ============================================================================
 
-SANDBOX_INSTRUCTIONS="<!-- BEGIN-EXITBOX-SANDBOX -->
-# ExitBox Sandbox Environment
+# BEGIN-EXITBOX-SANDBOX-BLOCK
+# The injected instructions must describe the network the container ACTUALLY
+# has. Under --no-firewall there is no Squid proxy, so anything that lists
+# allowlisted-through-the-firewall behaviour has to change, otherwise agents
+# keep asking to "allow" domains that were never blocked.
+#
+# EXITBOX_FIREWALL_ENABLED is set by the host. When absent, probe http_proxy
+# (set by the host only when Squid is in play); with neither signal, assume
+# the firewall is off, which is the case this fix targets.
+if [[ -n "${EXITBOX_FIREWALL_ENABLED:-}" ]]; then
+    FIREWALL_ON="${EXITBOX_FIREWALL_ENABLED}"
+elif [[ -n "${http_proxy:-}" ]]; then
+    FIREWALL_ON="true"
+else
+    FIREWALL_ON="false"
+fi
 
-You are running inside an ExitBox sandboxed container. Important constraints:
+# Accept the usual truthy spellings, not just the literal "true" the host sends.
+if [[ "$FIREWALL_ON" == "true" || "$FIREWALL_ON" == "1" || "$FIREWALL_ON" == "yes" ]]; then
+    NETWORK_MODE_INSTRUCTIONS="Network access is filtered through a firewall proxy. Only allowlisted domains are reachable."
 
-- You CANNOT run container runtimes (docker, podman, nerdctl, etc.) inside this container.
-- You CANNOT manage containers, images, volumes, or networks from within this environment.
-- Do NOT attempt to debug issues by running docker/podman commands - they are not available.
-- You CANNOT install packages. Do NOT run \`apk add\`, \`apt-get install\`, \`pip install\`,
-  \`npm install -g\`, \`cargo install\`, \`go install\`, or any other system-level package manager commands.
-  You do not have permission and they will fail. All tools and packages are pre-installed
-  at image build time by the host user. If you need a tool that is not available, inform
-  the user and suggest they add it via \`exitbox setup\` or \`--tools\` flag on the host.
-- WORKSPACE: The project codebase is ALWAYS mounted at /workspace. This is your ONLY
-  working directory. You CANNOT access files, directories, or paths outside of /workspace.
-  All file operations (read, write, search, git) must be within /workspace.
-  Do NOT attempt to access /home, /etc, /var, or any other system path for project files.
-- Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
-- You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
-- If you encounter permission errors or network issues, they are likely due to sandbox restrictions.
-- IMPORTANT - Domain access requests: When ANY network request fails due to the firewall
+    DOMAIN_ACCESS_INSTRUCTIONS="- IMPORTANT - Domain access requests: When ANY network request fails due to the firewall
   (HTTP 403 from proxy, connection refused, SSL errors, timeouts to non-allowlisted hosts),
   you MUST ask the user whether they want to allow access to that domain.
   If the user agrees, run \`exitbox-allow <domain>\` to request access.
@@ -1589,7 +1590,53 @@ You are running inside an ExitBox sandboxed container. Important constraints:
     exitbox-allow bunny.net          # covers fonts.bunny.net, cdn.bunny.net, etc.
     exitbox-allow npmjs.org          # covers registry.npmjs.org
     exitbox-allow example.com        # covers api.example.com, www.example.com, etc.
-- SENSITIVE DATA: When any command output, log, or file content contains sensitive
+"
+
+    MCP_NETWORK_INSTRUCTIONS="  If an MCP server fails to connect, the most likely cause is that its API domain
+  is not in the firewall allowlist. Use \`exitbox-allow <domain>\` to request access
+  for the provider's root domain (e.g. \`exitbox-allow atlassian.net\` for Atlassian,
+  \`exitbox-allow linear.app\` for Linear, \`exitbox-allow slack.com\` for Slack).
+"
+else
+    NETWORK_MODE_INSTRUCTIONS="The firewall is DISABLED for this container (started with --no-firewall).
+  There is no Squid proxy and NO domain allowlist: every host on the internet is reachable.
+  Do NOT run \`exitbox-allow\` for a normal network failure, and do NOT describe the network
+  as filtered or proxied, because it is not."
+
+    DOMAIN_ACCESS_INSTRUCTIONS="- \"exitbox-allow\" still works under --no-firewall but is almost never needed, since no
+  domain is blocked. Reach for it only after a request genuinely fails with a proxy-style
+  error, and only when the user recognises the domain as one they expect to need.
+  If you do call it, request the ROOT domain (for \`fonts.bunny.net\` use \`bunny.net\`).
+  Do NOT also request a subdomain of a domain you already requested.
+"
+
+    MCP_NETWORK_INSTRUCTIONS="  If an MCP server fails to connect, the most likely causes are credentials or the
+  server process itself, NOT the network: every domain is reachable here. Only after
+  ruling those out should you consider \`exitbox-allow <domain>\`.
+"
+fi
+
+SANDBOX_INSTRUCTIONS="<!-- BEGIN-EXITBOX-SANDBOX -->
+# ExitBox Sandbox Environment
+
+You are running inside an ExitBox sandboxed container. Important constraints:
+
+- You CANNOT run container runtimes (docker, podman, nerdctl, etc.) inside this container.
+- You CANNOT manage containers, images, volumes, or networks from within this environment.
+- Do NOT attempt to debug issues by running docker/podman commands - they are not available.
+- You CANNOT install packages. Do NOT run \`apk add\`, \`apt-get install\`, \`pip install\`,
+  \`npm install -g\`, \`cargo install\`, \`go install\`, or any other system-level package manager commands.
+  You do not have permission and they will fail. All tools and packages are pre-installed
+  at image build time by the host user. If you need a tool that is not available, inform
+  the user and suggest they add it via \`exitbox setup\` or \`--tools\` flag on the host.
+- WORKSPACE: The project codebase is ALWAYS mounted at /workspace. This is your ONLY
+  working directory. You CANNOT access files, directories, or paths outside of /workspace.
+  All file operations (read, write, search, git) must be within /workspace.
+  Do NOT attempt to access /home, /etc, /var, or any other system path for project files.
+- NETWORK: ${NETWORK_MODE_INSTRUCTIONS}
+- You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
+- If you encounter permission errors or network issues, they are likely due to sandbox restrictions.
+${DOMAIN_ACCESS_INSTRUCTIONS}- SENSITIVE DATA: When any command output, log, or file content contains sensitive
   information (passwords, API keys, tokens, secrets, credentials, private keys),
   you MUST replace the actual values with \`<redacted>\` before displaying them to the
   user. NEVER show raw secret values in your responses, tool outputs, or summaries.
@@ -1597,11 +1644,7 @@ You are running inside an ExitBox sandboxed container. Important constraints:
   \`API_KEY=<redacted>\`. This applies to ALL contexts — code output, logs, configs, etc.
 - MCP SERVERS: MCP servers CAN work inside this sandbox. Do NOT tell the user that
   MCP servers are unavailable or that the sandbox prevents them from working.
-  If an MCP server fails to connect, the most likely cause is that its API domain
-  is not in the firewall allowlist. Use \`exitbox-allow <domain>\` to request access
-  for the provider's root domain (e.g. \`exitbox-allow atlassian.net\` for Atlassian,
-  \`exitbox-allow linear.app\` for Linear, \`exitbox-allow slack.com\` for Slack).
-  MCP auth tokens are stored in the agent config directory which is mounted into
+${MCP_NETWORK_INSTRUCTIONS}  MCP auth tokens are stored in the agent config directory which is mounted into
   the container. If auth fails, the user may need to re-authenticate — do not assume
   it is impossible. Guide the user through the auth flow instead of giving up.
 - Focus on writing, testing, and debugging code within /workspace. That is your scope.
@@ -1934,6 +1977,7 @@ Overall average: **60-90% token reduction** on common development operations.
 <!-- END-EXITBOX-RTK -->
 "
 fi
+# END-EXITBOX-SANDBOX-BLOCK
 
 inject_sandbox_instructions() {
     local target=""
@@ -2028,6 +2072,8 @@ if [[ "$AGENT" == "codex" ]]; then
     start_codex_callback_relay
 elif [[ "$AGENT" == "opencode" ]]; then
     start_opencode_callback_relay
+    # OpenCode 2.x's built-in ChatGPT login listens on the Codex callback port.
+    start_codex_callback_relay
 fi
 start_ide_relay
 setup_git_credential_helper

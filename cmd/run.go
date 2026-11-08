@@ -430,9 +430,23 @@ type parsedFlags struct {
 	Remaining      []string
 }
 
+// noFirewallFromEnv applies the documented EXITBOX_NO_FIREWALL override.
+// It wins over the config default but is still overridden by an explicit
+// --no-firewall on the command line, which parseRunFlags sets afterwards.
+func noFirewallFromEnv(fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("EXITBOX_NO_FIREWALL"))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFlags {
 	f := parsedFlags{
-		NoFirewall: defaults.NoFirewall,
+		NoFirewall: noFirewallFromEnv(defaults.NoFirewall),
 		ReadOnly:   defaults.ReadOnly,
 		NoEnv:      defaults.NoEnv,
 		Resume:     defaults.AutoResume,

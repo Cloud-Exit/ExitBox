@@ -16,14 +16,14 @@ import sys
 
 
 def request_allow(sock_path, domain):
-    """Send an allow_domain IPC request and return (approved, error)."""
+    """Send an allow_domain IPC request and return (approved, firewall, error)."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.connect(sock_path)
     except OSError as exc:
-        return False, (
+        return False, True, (
             f"IPC socket not available ({exc}). "
-            "Domain allow requests require firewall mode"
+            "Domain allow requests need the host exitbox process to be running"
         )
 
     req = json.dumps({
@@ -42,7 +42,7 @@ def request_allow(sock_path, domain):
     sock.close()
 
     if not buf.strip():
-        return False, "no response from host"
+        return False, True, "no response from host"
 
     resp = json.loads(buf)
     payload = resp.get("payload", {})
@@ -51,9 +51,12 @@ def request_allow(sock_path, domain):
 
     err = payload.get("error", "")
     if err:
-        return False, err
+        return False, True, err
 
-    return payload.get("approved", False), None
+    # Absent field means an older host: assume the firewall is on.
+    firewall = payload.get("firewall_enabled", True)
+
+    return payload.get("approved", False), firewall, None
 
 
 def main():
@@ -65,12 +68,14 @@ def main():
     failed = False
 
     for domain in sys.argv[1:]:
-        approved, err = request_allow(sock_path, domain)
+        approved, firewall, err = request_allow(sock_path, domain)
         if err:
             print(f"Error: {domain}: {err}", file=sys.stderr)
             failed = True
             continue
-        if approved:
+        if not firewall:
+            print(f"Approved: {domain} (no firewall, all domains reachable)")
+        elif approved:
             print(f"Approved: {domain}")
         else:
             print(f"Denied: {domain}")

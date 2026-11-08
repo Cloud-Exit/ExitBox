@@ -107,6 +107,51 @@ func TestParseRunFlags_DoubleDash(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_NoFirewallEnvOverride(t *testing.T) {
+	tests := []struct {
+		env      string
+		fallback bool
+		want     bool
+	}{
+		{"true", false, true},
+		{"TRUE", false, true},
+		{"1", false, true},
+		{"yes", false, true},
+		{"  true  ", false, true},
+		{"false", true, false},
+		{"0", true, false},
+		{"no", true, false},
+		{"", true, true},
+		{"", false, false},
+		{"garbage", true, true},
+	}
+	for _, tc := range tests {
+		t.Run("env="+tc.env, func(t *testing.T) {
+			t.Setenv("EXITBOX_NO_FIREWALL", tc.env)
+			if got := noFirewallFromEnv(tc.fallback); got != tc.want {
+				t.Errorf("noFirewallFromEnv(%v) with EXITBOX_NO_FIREWALL=%q = %v, want %v",
+					tc.fallback, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseRunFlags_EnvFalseBeatsConfigDefault(t *testing.T) {
+	t.Setenv("EXITBOX_NO_FIREWALL", "false")
+	f := parseRunFlags(nil, config.DefaultFlags{NoFirewall: true})
+	if f.NoFirewall {
+		t.Error("EXITBOX_NO_FIREWALL=false should override a true config default")
+	}
+}
+
+func TestParseRunFlags_ExplicitFlagBeatsEnv(t *testing.T) {
+	t.Setenv("EXITBOX_NO_FIREWALL", "false")
+	f := parseRunFlags([]string{"--no-firewall"}, config.DefaultFlags{})
+	if !f.NoFirewall {
+		t.Error("--no-firewall should override EXITBOX_NO_FIREWALL=false")
+	}
+}
+
 func TestParseRunFlags_DefaultsFromConfig(t *testing.T) {
 	defaults := config.DefaultFlags{
 		NoFirewall: true,

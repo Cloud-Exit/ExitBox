@@ -58,6 +58,10 @@ unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
 unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET EXITBOX_KEYBINDINGS
 unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN EXITBOX_VAULT_ENABLED
 unset EXITBOX_VAULT_READONLY EXITBOX_RTK EXITBOX_HOST_PORTS
+# The firewall flag and proxy vars decide which instruction variant is emitted,
+# so clear them too and let each test pin what it needs.
+unset EXITBOX_FIREWALL_ENABLED EXITBOX_NO_FIREWALL
+unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
@@ -747,6 +751,7 @@ test_write_tmux_conf_scroll_settings() {
     assert_contains "write_tmux_conf sets large history" "$output" 'set -g history-limit 100000'
     assert_contains "write_tmux_conf enables extended-keys" "$output" 'set -g extended-keys on'
     assert_contains "write_tmux_conf advertises extkeys for all terminals" "$output" 'terminal-features "*:extkeys"'
+    assert_contains "write_tmux_conf advertises synchronized output for all terminals" "$output" 'terminal-features "*:sync"'
     assert_contains "write_tmux_conf uses csi-u extended-keys format" "$output" 'set -g extended-keys-format csi-u'
     assert_contains "write_tmux_conf shows workspace shortcut" "$output" 'C-M-p: workspaces'
     assert_contains "write_tmux_conf shows session shortcut" "$output" 'C-M-s: sessions'
@@ -941,10 +946,11 @@ echo ""
 echo "Testing vault sandbox instructions..."
 
 # Extract the sandbox instructions block from the entrypoint.
-# The block starts with SANDBOX_INSTRUCTIONS= and the vault conditional follows.
+# The block starts at the BEGIN-EXITBOX-SANDBOX sentinel comment and runs
+# through the end, so it covers the firewall-mode selection that feeds the
+# template as well as every conditional that appends to it.
 extract_sandbox_instructions() {
-    # Extract everything from the SANDBOX_INSTRUCTIONS section through the vault conditional.
-    awk '/^SANDBOX_INSTRUCTIONS="/,/^fi$/{print}' "$ENTRYPOINT"
+    awk '/^# BEGIN-EXITBOX-SANDBOX-BLOCK$/,/^# END-EXITBOX-SANDBOX-BLOCK$/{print}' "$ENTRYPOINT"
 }
 
 SANDBOX_BLOCK="$(extract_sandbox_instructions)"
@@ -1033,6 +1039,186 @@ test_vault_instructions_present_when_enabled
 test_vault_instructions_contain_security_rules
 test_vault_instructions_contain_usage_pattern
 test_vault_instructions_contain_redacted
+
+# ============================================================================
+# Firewall-mode sandbox instructions
+#
+# The instructions must describe the network the container actually has:
+# under --no-firewall there is no Squid proxy, so the "ask before allowing a
+# domain" text has to change or agents keep requesting domains that were
+# never blocked.
+# ============================================================================
+
+# Render the sandbox block with a pinned firewall state and a cleared proxy
+# var, so the result does not depend on the ambient environment.
+render_with_firewall_state() {
+    local state="$1"
+    shift
+    (
+        unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+        if [[ "$state" == "unset" ]]; then
+            unset EXITBOX_FIREWALL_ENABLED
+        else
+            EXITBOX_FIREWALL_ENABLED="$state"
+        fi
+        eval "$@"
+        printf '%s' "$SANDBOX_INSTRUCTIONS"
+    )
+}
+
+test_firewall_off_says_no_proxy() {
+    local result
+    result="$(render_with_firewall_state false eval "$SANDBOX_BLOCK")"
+    if [[ "$result" == *"firewall is DISABLED"* && "$result" == *"no Squid proxy"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: EXITBOX_FIREWALL_ENABLED=false should state there is no firewall/proxy")
+    fi
+}
+
+test_firewall_off_drops_filtered_claim() {
+    local result
+    result="$(render_with_firewall_state false eval "$SANDBOX_BLOCK")"
+    if [[ "$result" != *"Only allowlisted domains are reachable"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: firewall-off instructions should not claim only allowlisted domains are reachable")
+    fi
+}
+
+test_firewall_off_keeps_exitbox_allow_as_fallback() {
+    local result
+    result="$(render_with_firewall_state false eval "$SANDBOX_BLOCK")"
+    if [[ "$result" == *"exitbox-allow"* && "$result" == *"almost never needed"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: firewall-off instructions should mention exitbox-allow is still available but rarely needed")
+    fi
+}
+
+test_firewall_off_says_the_mandatory_prompt_not_required() {
+    local result
+    result="$(render_with_firewall_state false eval "$SANDBOX_BLOCK")"
+    if [[ "$result" != *"you MUST ask the user whether they want to allow access"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: firewall-off instructions should not require asking before every allow request")
+    fi
+}
+
+test_firewall_on_keeps_filtered_wording() {
+    local result
+    result="$(render_with_firewall_state true eval "$SANDBOX_BLOCK")"
+    if [[ "$result" == *"Only allowlisted domains are reachable"* \
+        && "$result" == *"you MUST ask the user whether they want to allow access"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: EXITBOX_FIREWALL_ENABLED=true should keep the firewall/allowlist wording")
+    fi
+}
+
+test_firewall_on_has_no_disabled_notice() {
+    local result
+    result="$(render_with_firewall_state true eval "$SANDBOX_BLOCK")"
+    if [[ "$result" != *"firewall is DISABLED"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: firewall-on instructions should not mention a disabled firewall")
+    fi
+}
+
+# Legacy fallback: no EXITBOX_FIREWALL_ENABLED but http_proxy is set, which is
+# how the host signals Squid. Must behave as firewall-on.
+test_firewall_proxy_env_fallback_implies_on() {
+    local result
+    result="$(
+        unset EXITBOX_FIREWALL_ENABLED
+        http_proxy=http://172.18.0.2:3128
+        eval "$SANDBOX_BLOCK"
+        printf '%s' "$SANDBOX_INSTRUCTIONS"
+    )"
+    if [[ "$result" == *"Only allowlisted domains are reachable"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: http_proxy set without EXITBOX_FIREWALL_ENABLED should imply firewall on")
+    fi
+}
+
+# With neither signal, default to firewall-off. The host always sets
+# http_proxy when Squid is in play, so a missing proxy means an old host
+# running --no-firewall, which is exactly the case this fix targets.
+test_firewall_no_signals_defaults_off() {
+    local result
+    result="$(render_with_firewall_state unset eval "$SANDBOX_BLOCK")"
+    if [[ "$result" == *"firewall is DISABLED"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: no firewall signal should default to firewall-off wording")
+    fi
+}
+
+# The mode-specific text must not leak an unexpanded variable.
+test_firewall_mode_vars_are_expanded() {
+    local result
+    result="$(render_with_firewall_state false eval "$SANDBOX_BLOCK")"
+    if [[ "$result" != *'${NETWORK_MODE_INSTRUCTIONS}'* \
+        && "$result" != *'${DOMAIN_ACCESS_INSTRUCTIONS}'* \
+        && "$result" != *'${MCP_NETWORK_INSTRUCTIONS}'* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: sandbox template still contains unexpanded mode variables")
+    fi
+}
+
+test_firewall_off_says_no_proxy
+test_firewall_off_drops_filtered_claim
+test_firewall_off_keeps_exitbox_allow_as_fallback
+test_firewall_off_says_the_mandatory_prompt_not_required
+test_firewall_on_keeps_filtered_wording
+test_firewall_on_has_no_disabled_notice
+test_firewall_proxy_env_fallback_implies_on
+test_firewall_no_signals_defaults_off
+test_firewall_mode_vars_are_expanded
+
+# Truthy spellings other than the literal "true" must still enable the mode.
+test_firewall_truthy_spellings_enable_on() {
+    local state result
+    for state in true 1 yes; do
+        result="$(render_with_firewall_state "$state" eval "$SANDBOX_BLOCK")"
+        if [[ "$result" != *"Only allowlisted domains are reachable"* ]]; then
+            ((FAIL++))
+            ERRORS+=("FAIL: EXITBOX_FIREWALL_ENABLED=$state should enable firewall-on wording")
+            return
+        fi
+    done
+    ((PASS++))
+}
+
+# And falsy spellings other than "false" must disable it.
+test_firewall_falsy_spellings_disable() {
+    local state result
+    for state in false 0 no; do
+        result="$(render_with_firewall_state "$state" eval "$SANDBOX_BLOCK")"
+        if [[ "$result" != *"firewall is DISABLED"* ]]; then
+            ((FAIL++))
+            ERRORS+=("FAIL: EXITBOX_FIREWALL_ENABLED=$state should disable firewall wording")
+            return
+        fi
+    done
+    ((PASS++))
+}
+
+test_firewall_truthy_spellings_enable_on
+test_firewall_falsy_spellings_disable
 
 test_vault_readonly_no_set_command() {
     local result

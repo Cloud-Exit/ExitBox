@@ -19,6 +19,7 @@ package opencode
 import (
 	"encoding/json"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -120,5 +121,30 @@ func TestConfigFilePath_OpenCode(t *testing.T) {
 	want := filepath.Join("/base", ".config", "opencode", "opencode.json")
 	if got != want {
 		t.Errorf("ConfigFilePath(/base) = %q, want %q", got, want)
+	}
+}
+
+func TestExtractConfigServerURLs_OpenCode(t *testing.T) {
+	o := &OpenCode{}
+
+	if urls := o.ExtractConfigServerURLs(map[string]interface{}{"model": "a/b"}); len(urls) != 0 {
+		t.Errorf("expected no URLs, got %v", urls)
+	}
+
+	var data map[string]interface{}
+	raw := `{
+		"provider": {"v1": {"options": {"baseURL": "http://v1:8080/v1"}}, "bad": "x"},
+		"providers": {
+			"v2": {"package": "aisdk:@ai-sdk/openai-compatible", "settings": {"baseURL": "http://v2:8080/v1"}},
+			"empty": {"settings": {"baseURL": ""}}
+		}
+	}`
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		t.Fatal(err)
+	}
+	urls := o.ExtractConfigServerURLs(data)
+	sort.Strings(urls)
+	if len(urls) != 2 || urls[0] != "http://v1:8080/v1" || urls[1] != "http://v2:8080/v1" {
+		t.Errorf("ExtractConfigServerURLs() = %v, want v1 and v2 base URLs", urls)
 	}
 }

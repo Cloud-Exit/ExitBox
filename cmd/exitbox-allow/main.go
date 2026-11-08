@@ -49,6 +49,10 @@ type response struct {
 type allowDomainResponse struct {
 	Approved bool   `json:"approved"`
 	Error    string `json:"error,omitempty"`
+	// Pointer so an older host that omits the field is treated as
+	// firewall-enabled (the pre-existing behaviour) rather than as
+	// "no firewall", which would mislabel a real approve/deny.
+	FirewallEnabled *bool `json:"firewall_enabled,omitempty"`
 }
 
 func main() {
@@ -64,15 +68,20 @@ func main() {
 
 	hasFailure := false
 	for _, domain := range os.Args[1:] {
-		approved, err := requestAllow(socketPath, domain)
+		approved, firewallEnabled, err := requestAllow(socketPath, domain)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s: %v\n", domain, err)
 			hasFailure = true
 			continue
 		}
-		if approved {
+		switch {
+		case !firewallEnabled:
+			// Nothing is blocked, so the request is a no-op. Say so instead
+			// of implying a firewall rule was added.
+			fmt.Printf("Approved: %s (no firewall, all domains reachable)\n", domain)
+		case approved:
 			fmt.Printf("Approved: %s\n", domain)
-		} else {
+		default:
 			fmt.Printf("Denied: %s\n", domain)
 			hasFailure = true
 		}
@@ -83,15 +92,15 @@ func main() {
 	}
 }
 
-func requestAllow(socketPath, domain string) (bool, error) {
+func requestAllow(socketPath, domain string) (approved, firewallEnabled bool, err error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		// Distinguish "socket missing" from "socket exists but connect denied"
 		// to help diagnose stale bind-mount scenarios.
 		if _, statErr := os.Stat(socketPath); statErr == nil {
-			return false, fmt.Errorf("IPC socket exists but connect failed (%v). The host exitbox process may have exited while this container is still running", err)
+			return false, true, fmt.Errorf("IPC socket exists but connect failed (%v). The host exitbox process may have exited while this container is still running", err)
 		}
-		return false, fmt.Errorf("IPC socket not available (%v). Domain allow requests require firewall mode", err)
+		return false, true, fmt.Errorf("IPC socket not available (%v). Domain allow requests need the host exitbox process to be running", err)
 	}
 	defer conn.Close()
 
@@ -106,37 +115,40 @@ func requestAllow(socketPath, domain string) (bool, error) {
 
 	data, err := json.Marshal(req)
 	if err != nil {
-		return false, err
+		return false, true, err
 	}
 	data = append(data, '\n')
 
 	if _, err := conn.Write(data); err != nil {
-		return false, err
+		return false, true, err
 	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return false, err
+			return false, true, err
 		}
-		return false, fmt.Errorf("no response from host")
+		return false, true, fmt.Errorf("no response from host")
 	}
 
 	var resp response
 	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		return false, err
+		return false, true, err
 	}
 
 	var payload allowDomainResponse
 	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		return false, err
+		return false, true, err
 	}
 
 	if payload.Error != "" {
-		return false, fmt.Errorf("%s", payload.Error)
+		return false, true, fmt.Errorf("%s", payload.Error)
 	}
 
-	return payload.Approved, nil
+	// Absent field means an older host: assume the firewall is on.
+	fwEnabled := payload.FirewallEnabled == nil || *payload.FirewallEnabled
+
+	return payload.Approved, fwEnabled, nil
 }
 
 func randomID() string {
