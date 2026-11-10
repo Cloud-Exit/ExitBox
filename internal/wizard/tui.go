@@ -62,6 +62,9 @@ const (
 	stepVault
 	stepEnvProfiles
 	stepReview
+	// The Subagent Management pages sit outside the sidebar steps.
+	stepSubagentAgents
+	stepSubagentManage
 	stepDone
 )
 
@@ -167,6 +170,9 @@ type Model struct {
 	// Plugins step
 	pluginCursor int         // highlighted plugin row
 	pluginForm   *PluginForm // open plugin configuration menu, nil when closed
+
+	// Subagent Management pages
+	sub subagentMenu
 
 	// Vault step: 0=choice, 1=password, 2=confirm
 	vaultPhase     int
@@ -577,6 +583,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDomains(msg)
 	case stepReview:
 		return m.updateReview(msg)
+	case stepSubagentAgents:
+		return m.updateSubagentAgents(msg)
+	case stepSubagentManage:
+		return m.updateSubagentManage(msg)
 	}
 
 	return m, nil
@@ -621,6 +631,10 @@ func (m Model) View() string {
 		content = m.viewDomains()
 	case stepReview:
 		content = m.viewReview()
+	case stepSubagentAgents:
+		return m.viewSubagentAgents()
+	case stepSubagentManage:
+		return m.viewSubagentManage()
 	case stepDone:
 		return ""
 	default:
@@ -2619,6 +2633,7 @@ const (
 	topMenuWorkspace = "Workspace management"
 	topMenuGeneral   = "General settings"
 	topMenuEnv       = "Env profiles"
+	topMenuSubagents = "Subagent Management"
 )
 
 var topMenuOptions = []struct {
@@ -2628,6 +2643,7 @@ var topMenuOptions = []struct {
 	{topMenuWorkspace, "Configure roles, languages, tools, packages, and workspace settings"},
 	{topMenuGeneral, "Configure keybindings and global preferences"},
 	{topMenuEnv, "View env profiles for a workspace (create/edit via 'exitbox env' CLI)"},
+	{topMenuSubagents, "Subagents and master skill of each coding agent, per workspace"},
 }
 
 func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2658,6 +2674,8 @@ func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case topMenuEnv:
 				// Env profiles view
 				m.step = stepEnvProfiles
+			case topMenuSubagents:
+				m = m.openSubagentAgents()
 			}
 			m.cursor = 0
 		case "esc", "q":
