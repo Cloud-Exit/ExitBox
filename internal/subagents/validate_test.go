@@ -35,7 +35,7 @@ func findingFor(fs []Finding, field string) (Finding, bool) {
 }
 
 func TestParse_Valid(t *testing.T) {
-	def, findings := Parse(fm("name: reviewer\ndescription: Reviews code\nmodel: sonnet\ntools: Read, Grep,  Bash"))
+	def, findings := Claude.Parse("", fm("name: reviewer\ndescription: Reviews code\nmodel: sonnet\ntools: Read, Grep,  Bash"))
 	if len(findings) != 0 {
 		t.Fatalf("findings = %v, want none", findings)
 	}
@@ -48,7 +48,7 @@ func TestParse_Valid(t *testing.T) {
 }
 
 func TestParse_ToolsList(t *testing.T) {
-	def, findings := Parse(fm("name: r\ndescription: d\ntools:\n  - Read\n  - Edit"))
+	def, findings := Claude.Parse("", fm("name: r\ndescription: d\ntools:\n  - Read\n  - Edit"))
 	if len(findings) != 0 {
 		t.Fatalf("findings = %v", findings)
 	}
@@ -63,7 +63,7 @@ func TestParse_LineEndingsAndBOM(t *testing.T) {
 		"bom":  "\uFEFF---\nname: r\ndescription: d\n---\nbody\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			def, findings := Parse([]byte(data))
+			def, findings := Claude.Parse("", []byte(data))
 			if HasErrors(findings) || def == nil || def.Name != "r" {
 				t.Errorf("def = %+v, findings = %v", def, findings)
 			}
@@ -98,7 +98,7 @@ func TestParse_SkipRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, findings := Parse([]byte(tc.data))
+			_, findings := Claude.Parse("", []byte(tc.data))
 			if !HasErrors(findings) {
 				t.Fatalf("findings = %v, want an error", findings)
 			}
@@ -111,7 +111,7 @@ func TestParse_SkipRules(t *testing.T) {
 }
 
 func TestParse_NameAtLimit(t *testing.T) {
-	_, findings := Parse(fm("name: " + strings.Repeat("é", 256) + "\ndescription: d"))
+	_, findings := Claude.Parse("", fm("name: "+strings.Repeat("é", 256)+"\ndescription: d"))
 	if HasErrors(findings) {
 		t.Errorf("256-character name rejected: %v", findings)
 	}
@@ -129,7 +129,7 @@ func TestParse_UnknownFieldSuggestions(t *testing.T) {
 	}
 	for field, want := range cases {
 		t.Run(field, func(t *testing.T) {
-			_, findings := Parse(fm("name: r\ndescription: d\n" + field + ": x"))
+			_, findings := Claude.Parse("", fm("name: r\ndescription: d\n"+field+": x"))
 			f, ok := findingFor(findings, field)
 			if !ok || f.Severity != Warning {
 				t.Fatalf("findings = %v, want warning on %s", findings, field)
@@ -156,7 +156,7 @@ func TestParse_KnownFieldsNoWarnings(t *testing.T) {
 		}
 		b.WriteString(f + ": x\n")
 	}
-	_, findings := Parse(fm(b.String()))
+	_, findings := Claude.Parse("", fm(b.String()))
 	if len(findings) != 0 {
 		t.Errorf("known fields produced findings: %v", findings)
 	}
@@ -178,7 +178,7 @@ func TestParse_AutoCompactWindow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.value, func(t *testing.T) {
-			_, findings := Parse(fm("name: r\ndescription: d\nautoCompactWindow: " + tc.value))
+			_, findings := Claude.Parse("", fm("name: r\ndescription: d\nautoCompactWindow: "+tc.value))
 			if HasErrors(findings) {
 				t.Fatalf("autoCompactWindow must only warn: %v", findings)
 			}
@@ -223,7 +223,7 @@ func TestParse_ModelFindings(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
-			_, findings := Parse(fm("name: r\ndescription: d\nmodel: " + tc.model))
+			_, findings := Claude.Parse("", fm("name: r\ndescription: d\nmodel: "+tc.model))
 			f, ok := findingFor(findings, "model")
 			if tc.want == "" {
 				if ok {
@@ -245,7 +245,7 @@ func TestCheckDuplicates(t *testing.T) {
 		{File: "c.md", Def: &Definition{Name: "solo"}},
 		{File: "d.md"},
 	}
-	CheckDuplicates(entries)
+	checkDuplicates(Claude, entries)
 	for i, wantErr := range []bool{true, true, false, false} {
 		if got := HasErrors(entries[i].Findings); got != wantErr {
 			t.Errorf("%s: error=%v, want %v (%v)", entries[i].File, got, wantErr, entries[i].Findings)

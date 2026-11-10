@@ -28,14 +28,40 @@ import (
 	"github.com/cloud-exit/exitbox/internal/subagents"
 )
 
+// withSubagentsHome points ExitBox at an empty config home with Claude as
+// the only enabled agent, so commands without --agent work on Claude.
 func withSubagentsHome(t *testing.T) {
 	t.Helper()
 	old := config.Home
 	config.Home = t.TempDir()
 	t.Cleanup(func() { config.Home = old })
+	enableAgents(t, "claude")
 	oldEditor := runEditor
 	runEditor = func(string) error { return nil }
 	t.Cleanup(func() { runEditor = oldEditor })
+}
+
+// enableAgents writes a config in which exactly these agents are enabled.
+func enableAgents(t *testing.T, names ...string) {
+	t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.Agents = config.AgentConfig{}
+	for _, n := range names {
+		cfg.SetAgentEnabled(n, true)
+	}
+	if err := config.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// withHostAgents makes every agent's host agents directory a temp dir.
+func withHostAgents(t *testing.T) string {
+	t.Helper()
+	host := t.TempDir()
+	old := hostAgentsDir
+	hostAgentsDir = func(h *subagents.Harness) (string, error) { return filepath.Join(host, h.Agent), nil }
+	t.Cleanup(func() { hostAgentsDir = old })
+	return host
 }
 
 func runSubagents(t *testing.T, args ...string) (string, string, error) {
@@ -69,11 +95,11 @@ func TestSubagentsNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	want := filepath.Join(subagents.StoreDir("work"), "code-reviewer.md")
+	want := filepath.Join(subagents.Claude.StoreDir("work"), "code-reviewer.md")
 	if edited != want || !strings.Contains(out, want) {
 		t.Errorf("edited %q, out %q, want %q", edited, out, want)
 	}
-	e, err := subagents.Find("work", "code-reviewer")
+	e, err := subagents.Claude.Find("work", "code-reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +117,7 @@ func TestSubagentsNew_RejectsBadName(t *testing.T) {
 	if _, _, err := runSubagents(t, "new", "a:b", "-w", "work"); err == nil {
 		t.Fatal("expected error for name with ':'")
 	}
-	if entries, _ := subagents.ListStore("work"); len(entries) != 0 {
+	if entries, _ := subagents.Claude.ListStore("work"); len(entries) != 0 {
 		t.Errorf("invalid scaffold stored: %v", entries)
 	}
 }
@@ -129,7 +155,7 @@ func TestSubagentsAdd(t *testing.T) {
 	if _, _, err := runSubagents(t, "add", filepath.Join(src, "one.md"), "-w", "work", "--force"); err != nil {
 		t.Errorf("--force: %v", err)
 	}
-	if entries, _ := subagents.ListStore("work"); len(entries) != 2 {
+	if entries, _ := subagents.Claude.ListStore("work"); len(entries) != 2 {
 		t.Errorf("entries = %d, want 2", len(entries))
 	}
 }
@@ -147,14 +173,11 @@ func TestSubagentsAdd_InvalidFileFails(t *testing.T) {
 
 func TestSubagentsImport(t *testing.T) {
 	withSubagentsHome(t)
-	host := t.TempDir()
-	old := hostClaudeAgentsDir
-	hostClaudeAgentsDir = func() (string, error) { return host, nil }
-	t.Cleanup(func() { hostClaudeAgentsDir = old })
+	host := filepath.Join(withHostAgents(t), "claude")
 
 	writeAgent(t, filepath.Join(host, "a.md"), "a", "from host")
 	writeAgent(t, filepath.Join(host, "nested", "b.md"), "b", "from host")
-	if _, err := subagents.Save("work", []byte("---\nname: a\ndescription: mine\n---\n"), subagents.SourceManaged, "", false); err != nil {
+	if _, err := subagents.Claude.Save("work", "", []byte("---\nname: a\ndescription: mine\n---\n"), subagents.SourceManaged, "", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,10 +188,10 @@ func TestSubagentsImport(t *testing.T) {
 	if !strings.Contains(out, "Imported 1") || !strings.Contains(out, "skipped 1") {
 		t.Errorf("out = %q", out)
 	}
-	if e, _ := subagents.Find("work", "a"); e.Def.Description != "mine" {
+	if e, _ := subagents.Claude.Find("work", "a"); e.Def.Description != "mine" {
 		t.Errorf("existing name overwritten without --force")
 	}
-	b, err := subagents.Find("work", "b")
+	b, err := subagents.Claude.Find("work", "b")
 	if err != nil || b.Source != subagents.SourceImported {
 		t.Errorf("b = %+v, err = %v", b, err)
 	}
@@ -176,29 +199,29 @@ func TestSubagentsImport(t *testing.T) {
 	if _, _, err := runSubagents(t, "import", "-w", "work", "--force"); err != nil {
 		t.Fatalf("import --force: %v", err)
 	}
-	if e, _ := subagents.Find("work", "a"); e.Def.Description != "from host" || e.Source != subagents.SourceImported {
+	if e, _ := subagents.Claude.Find("work", "a"); e.Def.Description != "from host" || e.Source != subagents.SourceImported {
 		t.Errorf("--force did not replace: %+v", e)
 	}
 }
 
 func TestSubagentsRm(t *testing.T) {
 	withSubagentsHome(t)
-	writeAgent(t, filepath.Join(subagents.StoreDir("work"), "file.md"), "by-name", "d")
+	writeAgent(t, filepath.Join(subagents.Claude.StoreDir("work"), "file.md"), "by-name", "d")
 	if _, _, err := runSubagents(t, "rm", "missing", "-w", "work"); err == nil {
 		t.Error("rm missing should fail")
 	}
 	out, _, err := runSubagents(t, "rm", "by-name", "-w", "work")
-	if err != nil || !strings.Contains(out, "Removed by-name") {
+	if err != nil || !strings.Contains(out, "subagent by-name (file.md)") {
 		t.Errorf("rm: out = %q, err = %v", out, err)
 	}
-	if _, err := os.Stat(filepath.Join(subagents.StoreDir("work"), "file.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(subagents.Claude.StoreDir("work"), "file.md")); !os.IsNotExist(err) {
 		t.Errorf("file still present")
 	}
 }
 
 func TestSubagentsValidate_ExitCodes(t *testing.T) {
 	withSubagentsHome(t)
-	dir := subagents.StoreDir("work")
+	dir := subagents.Claude.StoreDir("work")
 	writeAgent(t, filepath.Join(dir, "good.md"), "good", "d")
 
 	out, _, err := runSubagents(t, "validate", "-w", "work")
@@ -229,8 +252,8 @@ func TestSubagentsValidate_ExitCodes(t *testing.T) {
 
 func TestSubagentsList_JSON(t *testing.T) {
 	withSubagentsHome(t)
-	writeAgent(t, filepath.Join(subagents.StoreDir("work"), "r.md"), "r", "d")
-	writeAgent(t, filepath.Join(subagents.ContainerAgentsDir("work"), "r.md"), "container-r", "d")
+	writeAgent(t, filepath.Join(subagents.Claude.StoreDir("work"), "r.md"), "r", "d")
+	writeAgent(t, filepath.Join(subagents.Claude.ContainerAgentsDir("work"), "r.md"), "container-r", "d")
 
 	out, _, err := runSubagents(t, "list", "-w", "work", "--json")
 	if err != nil {
@@ -251,7 +274,7 @@ func TestSubagentsList_JSON(t *testing.T) {
 	if got.Workspace != "work" || len(got.Subagents) != 2 {
 		t.Fatalf("got = %+v", got)
 	}
-	if s := got.Subagents[0]; s.Name != "r" || s.Source != "managed" || s.Status != "ok" || !strings.Contains(s.ShadowedBy, "link is skipped") {
+	if s := got.Subagents[0]; s.Name != "r" || s.Source != "managed" || s.Status != "ok" || !strings.Contains(s.ShadowedBy, "the managed one is skipped") {
 		t.Errorf("store entry = %+v", s)
 	}
 	if s := got.Subagents[1]; s.Name != "container-r" || s.Source != "container" {
@@ -276,7 +299,7 @@ func TestSubagents_RejectsTraversalWorkspace(t *testing.T) {
 
 func TestSubagentsShow(t *testing.T) {
 	withSubagentsHome(t)
-	writeAgent(t, filepath.Join(subagents.StoreDir("work"), "x.md"), "shown", "d")
+	writeAgent(t, filepath.Join(subagents.Claude.StoreDir("work"), "x.md"), "shown", "d")
 	out, _, err := runSubagents(t, "show", "shown", "-w", "work")
 	if err != nil || !strings.Contains(out, "name: shown") {
 		t.Errorf("out = %q, err = %v", out, err)

@@ -40,14 +40,14 @@ func agentFile(name, desc string) []byte {
 
 func TestSave_WritesNameFile(t *testing.T) {
 	withHome(t)
-	path, err := Save("work", agentFile("code-reviewer", "Reviews"), SourceManaged, "", false)
+	path, err := Claude.Save("work", "", agentFile("code-reviewer", "Reviews"), SourceManaged, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(path) != "code-reviewer.md" || filepath.Dir(path) != StoreDir("work") {
+	if filepath.Base(path) != "code-reviewer.md" || filepath.Dir(path) != Claude.StoreDir("work") {
 		t.Errorf("path = %s", path)
 	}
-	entries, err := ListStore("work")
+	entries, err := Claude.ListStore("work")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,13 +58,13 @@ func TestSave_WritesNameFile(t *testing.T) {
 
 func TestSave_RefusesExistingName(t *testing.T) {
 	withHome(t)
-	if _, err := Save("w", agentFile("r", "one"), SourceManaged, "", false); err != nil {
+	if _, err := Claude.Save("w", "", agentFile("r", "one"), SourceManaged, "", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Save("w", agentFile("r", "two"), SourceManaged, "", false); !errors.Is(err, ErrExists) {
+	if _, err := Claude.Save("w", "", agentFile("r", "two"), SourceManaged, "", false); !errors.Is(err, ErrExists) {
 		t.Fatalf("err = %v, want ErrExists", err)
 	}
-	path, err := Save("w", agentFile("r", "two"), SourceManaged, "", true)
+	path, err := Claude.Save("w", "", agentFile("r", "two"), SourceManaged, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestSave_RefusesExistingName(t *testing.T) {
 	if !strings.Contains(string(data), "two") {
 		t.Errorf("force did not replace: %s", data)
 	}
-	entries, err := ListStore("w")
+	entries, err := Claude.ListStore("w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +86,14 @@ func TestSave_RefusesExistingName(t *testing.T) {
 
 func TestSave_ForceKeepsExistingFileName(t *testing.T) {
 	withHome(t)
-	dir := StoreDir("w")
+	dir := Claude.StoreDir("w")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "legacy.md"), agentFile("r", "old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path, err := Save("w", agentFile("r", "new"), SourceManaged, "", true)
+	path, err := Claude.Save("w", "", agentFile("r", "new"), SourceManaged, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestSave_ForceKeepsExistingFileName(t *testing.T) {
 
 func TestSave_RenamesOnFileCollision(t *testing.T) {
 	withHome(t)
-	p1, err := Save("w", agentFile("a b", "one"), SourceManaged, "", false)
+	p1, err := Claude.Save("w", "", agentFile("a b", "one"), SourceManaged, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := Save("w", agentFile("a-b", "two"), SourceManaged, "", false)
+	p2, err := Claude.Save("w", "", agentFile("a-b", "two"), SourceManaged, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,39 +119,39 @@ func TestSave_RenamesOnFileCollision(t *testing.T) {
 
 func TestSave_RejectsInvalid(t *testing.T) {
 	withHome(t)
-	_, err := Save("w", []byte("---\nname: r\n---\n"), SourceManaged, "", false)
+	_, err := Claude.Save("w", "", []byte("---\nname: r\n---\n"), SourceManaged, "", false)
 	var inv *InvalidError
 	if !errors.As(err, &inv) || !strings.Contains(err.Error(), "description") {
 		t.Fatalf("err = %v, want InvalidError about description", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(StoreDir("w"), "r.md")); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Stat(filepath.Join(Claude.StoreDir("w"), "r.md")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("invalid file was written")
 	}
 }
 
 func TestSave_RecordsSource(t *testing.T) {
 	withHome(t)
-	if _, err := Save("w", agentFile("imp", "d"), SourceImported, "/home/u/.claude/agents/imp.md", false); err != nil {
+	if _, err := Claude.Save("w", "", agentFile("imp", "d"), SourceImported, "/home/u/.claude/agents/imp.md", false); err != nil {
 		t.Fatal(err)
 	}
-	e, err := Find("w", "imp")
+	e, err := Claude.Find("w", "imp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if e.Source != SourceImported || e.Origin != "/home/u/.claude/agents/imp.md" {
 		t.Errorf("entry = %+v", e)
 	}
-	if _, err := Remove("w", "imp"); err != nil {
+	if _, err := Claude.Remove("w", "imp"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(StoreDir("w"), manifestFile)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(Claude.StoreDir("w"), manifestFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("manifest should be removed with its last record")
 	}
 }
 
 func TestFindAndRemove_ByNameNotFile(t *testing.T) {
 	withHome(t)
-	dir := StoreDir("w")
+	dir := Claude.StoreDir("w")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -161,16 +161,16 @@ func TestFindAndRemove_ByNameNotFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "broken.md"), []byte("no frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if e, err := Find("w", "real-name"); err != nil || e.File != "file-name.md" {
-		t.Errorf("Find(real-name) = %+v, %v", e, err)
+	if e, err := Claude.Find("w", "real-name"); err != nil || e.File != "file-name.md" {
+		t.Errorf("Claude.Find(real-name) = %+v, %v", e, err)
 	}
-	if e, err := Find("w", "broken"); err != nil || e.File != "broken.md" {
-		t.Errorf("Find(broken) by file stem = %+v, %v", e, err)
+	if e, err := Claude.Find("w", "broken"); err != nil || e.File != "broken.md" {
+		t.Errorf("Claude.Find(broken) by file stem = %+v, %v", e, err)
 	}
-	if _, err := Find("w", "missing"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Find(missing) err = %v", err)
+	if _, err := Claude.Find("w", "missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Claude.Find(missing) err = %v", err)
 	}
-	if _, err := Remove("w", "real-name"); err != nil {
+	if _, err := Claude.Remove("w", "real-name"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "file-name.md")); !errors.Is(err, os.ErrNotExist) {
@@ -180,7 +180,7 @@ func TestFindAndRemove_ByNameNotFile(t *testing.T) {
 
 func TestListStore_FlagsDuplicatesAndSkipsOthers(t *testing.T) {
 	withHome(t)
-	dir := StoreDir("w")
+	dir := Claude.StoreDir("w")
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestListStore_FlagsDuplicatesAndSkipsOthers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	entries, err := ListStore("w")
+	entries, err := Claude.ListStore("w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestListStore_FlagsDuplicatesAndSkipsOthers(t *testing.T) {
 
 func TestListStore_MissingDir(t *testing.T) {
 	withHome(t)
-	entries, err := ListStore("nope")
+	entries, err := Claude.ListStore("nope")
 	if err != nil || entries != nil {
 		t.Errorf("entries = %v, err = %v", entries, err)
 	}
@@ -221,11 +221,11 @@ func TestListStore_MissingDir(t *testing.T) {
 func TestInventory_Shadowing(t *testing.T) {
 	withHome(t)
 	for _, n := range []string{"same-file", "same-name", "project-wins", "clean"} {
-		if _, err := Save("w", agentFile(n, "d"), SourceManaged, "", false); err != nil {
+		if _, err := Claude.Save("w", "", agentFile(n, "d"), SourceManaged, "", false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cdir := ContainerAgentsDir("w")
+	cdir := Claude.ContainerAgentsDir("w")
 	if err := os.MkdirAll(cdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestInventory_Shadowing(t *testing.T) {
 	mustWrite(t, filepath.Join(cdir, "other.md"), agentFile("same-name", "d"))
 	// A link created by the entrypoint is not a container-owned file.
 	linked := true
-	if err := os.Symlink(filepath.Join(StoreDir("w"), "clean.md"), filepath.Join(cdir, "clean.md")); err != nil {
+	if err := os.Symlink(filepath.Join(Claude.StoreDir("w"), "clean.md"), filepath.Join(cdir, "clean.md")); err != nil {
 		t.Logf("symlinks unavailable, skipping link check: %v", err)
 		linked = false
 	}
@@ -244,7 +244,7 @@ func TestInventory_Shadowing(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(pdir, "p.md"), agentFile("project-wins", "d"))
 
-	entries, err := Inventory("w", project)
+	entries, err := Claude.Inventory("w", project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,8 +253,8 @@ func TestInventory_Shadowing(t *testing.T) {
 		got[string(e.Source)+":"+e.File] = e
 	}
 	checks := map[string]string{
-		"managed:same-file.md":    "link is skipped",
-		"managed:same-name.md":    "filesystem order",
+		"managed:same-file.md":    "the managed one is skipped",
+		"managed:same-name.md":    "loads only one of them",
 		"managed:project-wins.md": "project file .claude/agents/team/p.md",
 		"managed:clean.md":        "",
 	}
@@ -285,7 +285,7 @@ func TestFileNameFor(t *testing.T) {
 		"a/b\\c":           "a-b-c.md",
 	}
 	for in, want := range cases {
-		if got := FileNameFor(in); got != want {
+		if got := Claude.FileNameFor(in); got != want {
 			t.Errorf("FileNameFor(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -308,14 +308,14 @@ func mustWrite(t *testing.T, path string, data []byte) {
 
 func TestNames_Dedup(t *testing.T) {
 	withHome(t)
-	dir := StoreDir("w")
+	dir := Claude.StoreDir("w")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(dir, "a.md"), agentFile("same", "d"))
 	mustWrite(t, filepath.Join(dir, "b.md"), agentFile("same", "d"))
 	mustWrite(t, filepath.Join(dir, "broken.md"), []byte("x"))
-	if got := strings.Join(Names("w"), ","); got != "broken,same" {
+	if got := strings.Join(Claude.Names("w"), ","); got != "broken,same" {
 		t.Errorf("Names = %s", got)
 	}
 }

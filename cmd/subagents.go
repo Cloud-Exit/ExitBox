@@ -23,7 +23,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -34,21 +33,13 @@ import (
 	"github.com/cloud-exit/exitbox/internal/skills"
 	"github.com/cloud-exit/exitbox/internal/subagents"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 const nextStartNote = "Running sessions pick this up at the next container start."
 
-// hostClaudeAgentsDir is the host's user-level Claude Code agents directory.
-var hostClaudeAgentsDir = func() (string, error) {
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		return filepath.Join(dir, "agents"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".claude", "agents"), nil
+// hostAgentsDir is the host's user-level agents directory of a coding agent.
+var hostAgentsDir = func(h *subagents.Harness) (string, error) {
+	return h.HostDir()
 }
 
 // runEditor opens a file in $EDITOR (default vi).
@@ -67,17 +58,25 @@ var runEditor = func(path string) error {
 func newSubagentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "subagents",
-		Short: "Manage per-workspace Claude Code subagents",
-		Long: `Manage the Claude Code subagents (agents/*.md files) of a workspace.
+		Short: "Manage per-workspace subagents of each coding agent",
+		Long: `Manage the subagents of a workspace, per coding agent.
 
-Each workspace has its own subagent store. On container start, ExitBox links
-every stored file into ~/.claude/agents/ inside the Claude container. The
-store is mounted read-only, so the agent cannot change its own definitions.
-Files are checked against the loading rules of Claude Code, which skips a
-broken file without telling you.
+Every coding agent has its own subagent format, so a workspace keeps one
+store per agent: ` + strings.Join(agentNames(hasSubagents), ", ") + `.
+Pick the agent with --agent. You can leave it out when only one enabled agent
+has subagents, and for edit, show, rm and validate when the name is stored
+for one agent only.
 
-A subagent is identified by the name in its frontmatter, not its file name.
-Changes made on the host reach running sessions at the next container start.`,
+On container start, ExitBox puts every stored file into the agent's own
+agents directory (for Claude Code: ~/.claude/agents). The stores are mounted
+read-only, so an agent cannot change its own definitions. Files are checked
+against the loading rules of their agent, which mostly skips a broken file
+without telling you.
+
+Changes made on the host reach running sessions at the next container start.
+
+Which tasks go to which subagent is decided in the agent's master skill:
+exitbox agents skill edit`,
 		SilenceUsage: true,
 	}
 	cmd.AddCommand(
@@ -99,6 +98,116 @@ Changes made on the host reach running sessions at the next container start.`,
 func addWorkspaceFlag(cmd *cobra.Command, ws *string) {
 	cmd.Flags().StringVarP(ws, "workspace", "w", "", "Workspace name (default: active)")
 	_ = cmd.RegisterFlagCompletionFunc("workspace", completeWorkspaceFlagValues)
+}
+
+// harnessKind is a feature a command needs from a coding agent.
+type harnessKind struct {
+	fits    func(*subagents.Harness) bool
+	missing string // why an agent does not fit; %s is its display name
+}
+
+var (
+	hasSubagents = harnessKind{
+		fits:    func(h *subagents.Harness) bool { return h.HasSubagents() },
+		missing: "%s has no native subagents",
+	}
+	hasSkills = harnessKind{
+		fits:    func(h *subagents.Harness) bool { return h.Skills },
+		missing: "ExitBox links no skills for %s, so it cannot have a master skill",
+	}
+)
+
+func agentNames(kind harnessKind) []string {
+	var out []string
+	for _, h := range subagents.Harnesses() {
+		if kind.fits(h) {
+			out = append(out, h.Agent)
+		}
+	}
+	return out
+}
+
+func addAgentFlag(cmd *cobra.Command, agent *string, kind harnessKind) {
+	names := agentNames(kind)
+	cmd.Flags().StringVar(agent, "agent", "", "Coding agent: "+strings.Join(names, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("agent", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return names, cobra.ShellCompDirectiveNoFileComp
+	})
+}
+
+// pickHarness returns the coding agent a command works on: the one named by
+// --agent, or else the only enabled agent that has the feature.
+func pickHarness(flag string, kind harnessKind) (*subagents.Harness, error) {
+	all := agentNames(kind)
+	if flag != "" {
+		h := subagents.HarnessFor(flag)
+		switch {
+		case h == nil:
+			return nil, fmt.Errorf("unknown agent %q; choose one of: %s", flag, strings.Join(all, ", "))
+		case !kind.fits(h):
+			return nil, fmt.Errorf(kind.missing+"; agents that can: %s", h.Label, strings.Join(all, ", "))
+		}
+		return h, nil
+	}
+	cfg := config.LoadOrDefault()
+	var enabled []string
+	for _, name := range all {
+		if cfg.IsAgentEnabled(name) {
+			enabled = append(enabled, name)
+		}
+	}
+	switch len(enabled) {
+	case 1:
+		return subagents.HarnessFor(enabled[0]), nil
+	case 0:
+		enabled = all
+	}
+	return nil, fmt.Errorf("pick a coding agent with --agent (%s)", strings.Join(enabled, ", "))
+}
+
+// subagentHarnesses returns the agents a listing covers: the one named by
+// --agent, or every agent that has subagents.
+func subagentHarnesses(flag string) ([]*subagents.Harness, error) {
+	if flag == "" {
+		return subagents.WithSubagents(), nil
+	}
+	h, err := pickHarness(flag, hasSubagents)
+	if err != nil {
+		return nil, err
+	}
+	return []*subagents.Harness{h}, nil
+}
+
+// findStored finds a stored subagent by name. Without --agent it looks in
+// every agent's store and wants exactly one match.
+func findStored(ws, flag, name string) (*subagents.Harness, subagents.Entry, error) {
+	set, err := subagentHarnesses(flag)
+	if err != nil {
+		return nil, subagents.Entry{}, err
+	}
+	var hits []*subagents.Harness
+	var found subagents.Entry
+	for _, h := range set {
+		e, err := h.Find(ws, name)
+		if errors.Is(err, subagents.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, subagents.Entry{}, err
+		}
+		hits, found = append(hits, h), e
+	}
+	switch len(hits) {
+	case 0:
+		return nil, subagents.Entry{}, fmt.Errorf("subagent %q %w in workspace '%s'", name, subagents.ErrNotFound, ws)
+	case 1:
+		return hits[0], found, nil
+	}
+	var names []string
+	for _, h := range hits {
+		names = append(names, h.Agent)
+	}
+	return nil, subagents.Entry{}, fmt.Errorf("subagent %q is stored for %s; pick one with --agent", name, strings.Join(names, " and "))
 }
 
 // resolveSubagentsWorkspace resolves the workspace like resolveAgentsWorkspace
@@ -144,6 +253,30 @@ func workspaceEnvFindings(ws string) []subagents.Finding {
 	return subagents.EnvFindings(envs)
 }
 
+// workspaceNotes returns what is about a whole agent or workspace rather
+// than one file: Claude Code's model override as findings, and the known
+// limits of the agents that have stored subagents as notes.
+func workspaceNotes(ws string, stored map[*subagents.Harness]int) ([]subagents.Finding, []string) {
+	var findings []subagents.Finding
+	if stored[subagents.Claude] > 0 {
+		findings = workspaceEnvFindings(ws)
+	}
+	var notes []string
+	for _, h := range subagents.WithSubagents() {
+		if stored[h] > 0 && h.Caveat != "" {
+			notes = append(notes, fmt.Sprintf("note: %s: %s", h.Agent, h.Caveat))
+		}
+	}
+	return findings, notes
+}
+
+func printWorkspaceNotes(w io.Writer, findings []subagents.Finding, notes []string) {
+	printFindings(w, "", findings)
+	for _, n := range notes {
+		_, _ = fmt.Fprintln(w, n)
+	}
+}
+
 func printFindings(w io.Writer, indent string, fs []subagents.Finding) {
 	for _, f := range fs {
 		_, _ = fmt.Fprintf(w, "%s%s\n", indent, f)
@@ -178,6 +311,7 @@ func entryStatus(e subagents.Entry) string {
 // --- list ---
 
 type subagentJSON struct {
+	Agent       string              `json:"agent"`
 	Name        string              `json:"name"`
 	File        string              `json:"file"`
 	Path        string              `json:"path"`
@@ -192,20 +326,22 @@ type subagentJSON struct {
 }
 
 func newSubagentsListCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List subagents with their model, tools, source and validation status",
-		Long: `List the workspace's stored subagents, plus the Claude agent files the
-container and the current project already have.
+		Short: "List subagents with their agent, model, tools, source and validation status",
+		Long: `List the workspace's stored subagents, plus the agent files the container
+and the current project already have. Without --agent, every coding agent
+is listed.
 
 Sources:
   managed    created or added with exitbox subagents
-  imported   copied from the host ~/.claude/agents with 'import'
-  container  a real file in the workspace's ~/.claude/agents (created in the
-             container, or copied by 'exitbox config import claude')
-  project    the current project's .claude/agents
+  imported   copied from the host's agents directory with 'import'
+  container  a real file in the workspace's agents directory (created in the
+             container, or copied by 'exitbox config import')
+  project    the current project's agents directory, for agents whose
+             project agents win over user-level ones
 
 A stored subagent is shadowed when a project agent has the same name, or a
 container file has the same file name or name.`,
@@ -215,23 +351,37 @@ container file has the same file name or name.`,
 			if err != nil {
 				return err
 			}
-			projectDir, _ := os.Getwd()
-			entries, err := subagents.Inventory(ws, projectDir)
+			set, err := subagentHarnesses(agent)
 			if err != nil {
 				return err
 			}
-			wsFindings := workspaceEnvFindings(ws)
+			projectDir, _ := os.Getwd()
+			var entries []subagents.Entry
+			stored := map[*subagents.Harness]int{}
+			for _, h := range set {
+				es, err := h.Inventory(ws, projectDir)
+				if err != nil {
+					return err
+				}
+				for _, e := range es {
+					if e.Source == subagents.SourceManaged || e.Source == subagents.SourceImported {
+						stored[h]++
+					}
+				}
+				entries = append(entries, es...)
+			}
+			wsFindings, notes := workspaceNotes(ws, stored)
 			out := cmd.OutOrStdout()
 
 			if asJSON {
-				return writeSubagentsJSON(out, ws, entries, wsFindings)
+				return writeSubagentsJSON(out, ws, entries, wsFindings, notes)
 			}
 			if len(entries) == 0 {
 				_, _ = fmt.Fprintf(out, "No subagents in workspace '%s'.\n", ws)
-				_, _ = fmt.Fprintf(out, "Create one with: exitbox subagents new <name> -w %s\n", ws)
+				_, _ = fmt.Fprintf(out, "Create one with: exitbox subagents new <name> --agent <agent> -w %s\n", ws)
 			} else {
 				tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-				_, _ = fmt.Fprintln(tw, "NAME\tMODEL\tTOOLS\tSOURCE\tSTATUS\tNOTES")
+				_, _ = fmt.Fprintln(tw, "AGENT\tNAME\tMODEL\tTOOLS\tSOURCE\tSTATUS\tNOTES")
 				for _, e := range entries {
 					name, model, tools := "-", "-", "all"
 					if e.Def != nil {
@@ -248,20 +398,21 @@ container file has the same file name or name.`,
 					if name == "-" {
 						name = e.File
 					}
-					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", name, model, tools, e.Source, entryStatus(e), entryNote(e))
+					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Agent, name, model, tools, e.Source, entryStatus(e), entryNote(e))
 				}
 				if err := tw.Flush(); err != nil {
 					return err
 				}
 			}
-			if len(wsFindings) > 0 {
+			if len(wsFindings)+len(notes) > 0 {
 				_, _ = fmt.Fprintln(out)
-				printFindings(out, "", wsFindings)
+				printWorkspaceNotes(out, wsFindings, notes)
 			}
 			return nil
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON")
 	return cmd
 }
@@ -281,11 +432,11 @@ func entryNote(e subagents.Entry) string {
 	return ""
 }
 
-func writeSubagentsJSON(w io.Writer, ws string, entries []subagents.Entry, wsFindings []subagents.Finding) error {
+func writeSubagentsJSON(w io.Writer, ws string, entries []subagents.Entry, wsFindings []subagents.Finding, notes []string) error {
 	items := make([]subagentJSON, 0, len(entries))
 	for _, e := range entries {
 		it := subagentJSON{
-			File: e.File, Path: e.Path, Source: e.Source, Origin: e.Origin,
+			Agent: e.Agent, File: e.File, Path: e.Path, Source: e.Source, Origin: e.Origin,
 			Status: entryStatus(e), Findings: e.Findings, ShadowedBy: e.Shadow,
 		}
 		if it.Findings == nil {
@@ -299,71 +450,62 @@ func writeSubagentsJSON(w io.Writer, ws string, entries []subagents.Entry, wsFin
 	if wsFindings == nil {
 		wsFindings = []subagents.Finding{}
 	}
+	if notes == nil {
+		notes = []string{}
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(map[string]any{
 		"workspace": ws,
 		"subagents": items,
 		"findings":  wsFindings,
+		"notes":     notes,
 	})
 }
 
 // --- new ---
 
-type scaffoldFrontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Tools       string `yaml:"tools,omitempty"`
-	Model       string `yaml:"model,omitempty"`
-}
-
-func scaffoldSubagent(name, description, tools, model string) ([]byte, error) {
-	if description == "" {
-		description = "Describe when Claude should delegate to this subagent."
-	}
-	fm, err := yaml.Marshal(scaffoldFrontmatter{Name: name, Description: description, Tools: tools, Model: model})
-	if err != nil {
-		return nil, err
-	}
-	body := "You are " + name + ". Describe the role, the steps to follow, and what to return.\n"
-	return []byte("---\n" + string(fm) + "---\n\n" + body), nil
-}
-
 func newSubagentsNewCmd() *cobra.Command {
-	var workspace, model, tools, description string
+	var workspace, agent, model, tools, description string
 	cmd := &cobra.Command{
 		Use:   "new <name>",
 		Short: "Create a subagent and open it in $EDITOR",
-		Long: `Create a subagent with valid frontmatter in the workspace store, open it in
-$EDITOR (default vi), and validate it when the editor exits.
+		Long: `Create a subagent in the agent's own format, with the fields it needs, open
+it in $EDITOR (default vi), and validate it when the editor exits.
 
-Refuses to overwrite an existing subagent; use 'edit' for that.
+Refuses to overwrite an existing subagent; use 'edit' for that. A flag the
+agent's format has no field for is refused.
 
 Examples:
-  exitbox subagents new code-reviewer
-  exitbox subagents new log-reader --model haiku --tools "Read, Grep" \
-    --description "Reads long log files and reports the errors it finds"`,
+  exitbox subagents new code-reviewer --agent claude
+  exitbox subagents new log-reader --agent claude --model haiku --tools "Read, Grep" \
+    --description "Reads long log files and reports the errors it finds"
+  exitbox subagents new pr_explorer --agent codex --description "Read-only codebase explorer"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := resolveSubagentsWorkspace(workspace)
 			if err != nil {
 				return err
 			}
-			data, err := scaffoldSubagent(args[0], description, tools, model)
+			h, err := pickHarness(agent, hasSubagents)
 			if err != nil {
 				return err
 			}
-			path, err := subagents.Save(ws, data, subagents.SourceManaged, "", false)
+			data, err := h.Scaffold(subagents.ScaffoldOptions{Name: args[0], Description: description, Tools: tools, Model: model})
+			if err != nil {
+				return err
+			}
+			path, err := h.Save(ws, args[0]+h.Ext, data, subagents.SourceManaged, "", false)
 			if err != nil {
 				if errors.Is(err, subagents.ErrExists) {
-					return fmt.Errorf("%w; use 'exitbox subagents edit %s'", err, args[0])
+					return fmt.Errorf("%w; use 'exitbox subagents edit %s --agent %s'", err, args[0], h.Agent)
 				}
 				return err
 			}
 			if err := runEditor(path); err != nil {
 				return fmt.Errorf("editor exited with error: %w", err)
 			}
-			if err := reportStoreFile(cmd, ws, path); err != nil {
+			if err := reportStoreFile(cmd, h, ws, path); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n%s\n", path, nextStartNote)
@@ -371,16 +513,17 @@ Examples:
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
-	cmd.Flags().StringVar(&model, "model", "", "Model: sonnet, opus, haiku, fable, inherit, or a claude-* ID")
+	addAgentFlag(cmd, &agent, hasSubagents)
+	cmd.Flags().StringVar(&model, "model", "", "Model, in the form the agent expects")
 	cmd.Flags().StringVar(&tools, "tools", "", "Comma-separated tools (default: inherit all)")
-	cmd.Flags().StringVar(&description, "description", "", "When Claude should delegate to this subagent")
+	cmd.Flags().StringVar(&description, "description", "", "When the agent should delegate to this subagent")
 	return cmd
 }
 
 // reportStoreFile validates one stored file in the context of the whole
 // store (for duplicate names), prints its findings, and fails on errors.
-func reportStoreFile(cmd *cobra.Command, ws, path string) error {
-	entries, err := subagents.ListStore(ws)
+func reportStoreFile(cmd *cobra.Command, h *subagents.Harness, ws, path string) error {
+	entries, err := h.ListStore(ws)
 	if err != nil {
 		return err
 	}
@@ -390,8 +533,8 @@ func reportStoreFile(cmd *cobra.Command, ws, path string) error {
 		}
 		printFindings(cmd.ErrOrStderr(), "  ", e.Findings)
 		if subagents.HasErrors(e.Findings) {
-			return fmt.Errorf("%s has errors; Claude Code will skip it. Fix with: exitbox subagents edit %s -w %s",
-				e.File, strings.TrimSuffix(e.File, ".md"), ws)
+			return fmt.Errorf("%s has errors; %s will skip it. Fix with: exitbox subagents edit %s --agent %s -w %s",
+				e.File, h.Label, strings.TrimSuffix(e.File, h.Ext), h.Agent, ws)
 		}
 		return nil
 	}
@@ -400,92 +543,43 @@ func reportStoreFile(cmd *cobra.Command, ws, path string) error {
 
 // --- add / import ---
 
-type addResult struct {
-	added, skipped, failed int
-}
-
-// storeFiles saves fetched files into the store. Files without a name are
-// documentation and skipped quietly; missing names in a single-file source
-// are an error.
-func storeFiles(cmd *cobra.Command, ws string, files map[string][]byte, origin func(rel string) string,
-	src subagents.Source, force, skipExisting bool) addResult {
-	var res addResult
-	out, errw := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	rels := make([]string, 0, len(files))
-	for rel := range files {
-		rels = append(rels, rel)
-	}
-	sort.Strings(rels)
-	seen := map[string]string{}
-	for _, rel := range rels {
-		data := files[rel]
-		if len(data) > subagents.MaxFileSize {
-			_, _ = fmt.Fprintf(errw, "  %s: larger than %d bytes, skipped\n", rel, subagents.MaxFileSize)
-			res.failed++
-			continue
-		}
-		def, findings := subagents.Parse(data)
-		if def == nil || def.Name == "" {
-			if len(files) == 1 {
-				_, _ = fmt.Fprintf(errw, "  %s: not a subagent\n", rel)
-				printFindings(errw, "    ", findings)
-				res.failed++
-			} else {
-				res.skipped++
+// printOutcomes reports each file of an add or import. Documentation that
+// was skipped gets no line.
+func printOutcomes(out, errw io.Writer, outcomes []subagents.Outcome) {
+	for _, o := range outcomes {
+		switch o.Status {
+		case subagents.Added:
+			_, _ = fmt.Fprintf(out, "  %s -> %s\n", o.Name, o.File)
+			printFindings(errw, "    ", o.Findings)
+		case subagents.Skipped:
+			if o.Reason != "" {
+				_, _ = fmt.Fprintf(out, "  %s: %s\n", o.Source, o.Reason)
 			}
-			continue
+		case subagents.Failed:
+			_, _ = fmt.Fprintf(errw, "  %s: %s\n", o.Source, o.Reason)
+			printFindings(errw, "    ", o.Findings)
 		}
-		if prev, ok := seen[def.Name]; ok {
-			_, _ = fmt.Fprintf(errw, "  %s: name %q is also used by %s in this source, skipped\n", rel, def.Name, prev)
-			res.failed++
-			continue
-		}
-		seen[def.Name] = rel
-		path, err := subagents.Save(ws, data, src, origin(rel), force)
-		var inv *subagents.InvalidError
-		switch {
-		case errors.As(err, &inv):
-			_, _ = fmt.Fprintf(errw, "  %s: invalid, skipped\n", rel)
-			printFindings(errw, "    ", inv.Findings)
-			res.failed++
-			continue
-		case errors.Is(err, subagents.ErrExists) && skipExisting:
-			_, _ = fmt.Fprintf(out, "  %s: %v, skipped (use --force to replace)\n", rel, err)
-			res.skipped++
-			continue
-		case errors.Is(err, subagents.ErrExists):
-			_, _ = fmt.Fprintf(errw, "  %s: %v; use --force to replace\n", rel, err)
-			res.failed++
-			continue
-		case err != nil:
-			_, _ = fmt.Fprintf(errw, "  %s: %v\n", rel, err)
-			res.failed++
-			continue
-		}
-		_, _ = fmt.Fprintf(out, "  %s -> %s\n", def.Name, filepath.Base(path))
-		printFindings(errw, "    ", findings)
-		res.added++
 	}
-	return res
 }
 
 func newSubagentsAddCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "add <source>",
 		Short: "Add subagents from a file, directory, URL, or GitHub path",
-		Long: `Add subagent files to the workspace store.
+		Long: `Add subagent files to an agent's store.
 
 Sources:
   Local file:        ./code-reviewer.md
-  Local directory:   ./agents/        (every *.md with a name, recursively)
+  Local directory:   ./agents/        (every file with the agent's extension, recursively)
   Raw URL:           https://example.com/agents/reviewer.md
   GitHub file:       https://github.com/org/repo/blob/main/agents/reviewer.md
   GitHub directory:  https://github.com/org/repo/tree/main/agents
 
-Files are stored as <name>.md by their frontmatter name. Files without a name
-are treated as documentation and skipped. Use --force to replace a stored
+The files must be in the agent's own format: adding does not convert between
+agents. Files are stored by subagent name; files that define no subagent are
+treated as documentation and skipped. Use --force to replace a stored
 subagent with the same name.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -493,85 +587,87 @@ subagent with the same name.`,
 			if err != nil {
 				return err
 			}
+			h, err := pickHarness(agent, hasSubagents)
+			if err != nil {
+				return err
+			}
 			source := args[0]
-			files, err := skills.FetchMarkdown(source)
+			files, err := skills.FetchFiles(source, h.Ext)
 			if err != nil {
 				return err
 			}
 			single := len(files) == 1
-			res := storeFiles(cmd, ws, files, func(rel string) string {
+			outcomes := h.StoreFiles(ws, files, func(rel string) string {
 				if single {
 					return source
 				}
 				return strings.TrimSuffix(source, "/") + "/" + rel
 			}, subagents.SourceManaged, force, false)
-			return summarize(cmd, ws, "Added", res)
+			printOutcomes(cmd.OutOrStdout(), cmd.ErrOrStderr(), outcomes)
+			return summarize(cmd, h, ws, "Added", outcomes)
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	cmd.Flags().BoolVar(&force, "force", false, "Replace stored subagents with the same name")
 	return cmd
 }
 
 func newSubagentsImportCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "import",
-		Short: "Copy the host's ~/.claude/agents into the workspace store",
-		Long: `Copy every subagent in the host's ~/.claude/agents (or $CLAUDE_CONFIG_DIR/agents)
-into the workspace store. Subagents whose name is already stored are skipped
-unless --force is given.`,
+		Short: "Copy the host's subagents of an agent into the workspace store",
+		Long: `Copy every subagent in the agent's user-level agents directory on the host
+(for Claude Code: ~/.claude/agents, or $CLAUDE_CONFIG_DIR/agents) into the
+workspace store. Subagents whose name is already stored are skipped unless
+--force is given.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ws, err := resolveSubagentsWorkspace(workspace)
 			if err != nil {
 				return err
 			}
-			dir, err := hostClaudeAgentsDir()
+			h, err := pickHarness(agent, hasSubagents)
 			if err != nil {
 				return err
 			}
-			entries, err := subagents.ScanDir(dir, subagents.SourceImported, false)
+			dir, err := hostAgentsDir(h)
 			if err != nil {
 				return err
 			}
-			if len(entries) == 0 {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No subagent files in %s.\n", dir)
+			outcomes, err := h.ImportDir(ws, dir, force)
+			if err != nil {
+				return err
+			}
+			if len(outcomes) == 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No %s subagent files in %s.\n", h.Label, dir)
 				return nil
 			}
-			files := map[string][]byte{}
-			for _, e := range entries {
-				data, err := subagents.ReadFile(e.Path)
-				if err != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %v\n", e.File, err)
-					continue
-				}
-				files[e.File] = data
-			}
-			res := storeFiles(cmd, ws, files, func(rel string) string {
-				return filepath.Join(dir, filepath.FromSlash(rel))
-			}, subagents.SourceImported, force, true)
-			return summarize(cmd, ws, "Imported", res)
+			printOutcomes(cmd.OutOrStdout(), cmd.ErrOrStderr(), outcomes)
+			return summarize(cmd, h, ws, "Imported", outcomes)
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	cmd.Flags().BoolVar(&force, "force", false, "Replace stored subagents with the same name")
 	return cmd
 }
 
-func summarize(cmd *cobra.Command, ws, verb string, res addResult) error {
+func summarize(cmd *cobra.Command, h *subagents.Harness, ws, verb string, outcomes []subagents.Outcome) error {
+	added, skipped, failed := subagents.Tally(outcomes)
 	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(out, "%s %d subagent(s) into workspace '%s'", verb, res.added, ws)
-	if res.skipped > 0 {
-		_, _ = fmt.Fprintf(out, ", skipped %d", res.skipped)
+	_, _ = fmt.Fprintf(out, "%s %d %s subagent(s) into workspace '%s'", verb, added, h.Label, ws)
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(out, ", skipped %d", skipped)
 	}
 	_, _ = fmt.Fprintln(out, ".")
-	if res.added > 0 {
+	if added > 0 {
 		_, _ = fmt.Fprintln(out, nextStartNote)
 	}
-	if res.failed > 0 {
-		return fmt.Errorf("%d file(s) not added", res.failed)
+	if failed > 0 {
+		return fmt.Errorf("%d file(s) not added", failed)
 	}
 	return nil
 }
@@ -579,7 +675,7 @@ func summarize(cmd *cobra.Command, ws, verb string, res addResult) error {
 // --- edit / show / rm / validate ---
 
 func newSubagentsEditCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	cmd := &cobra.Command{
 		Use:               "edit <name>",
 		Short:             "Edit a subagent in $EDITOR and validate it",
@@ -590,14 +686,14 @@ func newSubagentsEditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			e, err := subagents.Find(ws, args[0])
+			h, e, err := findStored(ws, agent, args[0])
 			if err != nil {
 				return err
 			}
 			if err := runEditor(e.Path); err != nil {
 				return fmt.Errorf("editor exited with error: %w", err)
 			}
-			if err := reportStoreFile(cmd, ws, e.Path); err != nil {
+			if err := reportStoreFile(cmd, h, ws, e.Path); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), nextStartNote)
@@ -605,11 +701,12 @@ func newSubagentsEditCmd() *cobra.Command {
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	return cmd
 }
 
 func newSubagentsShowCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	cmd := &cobra.Command{
 		Use:               "show <name>",
 		Short:             "Print a subagent file",
@@ -620,7 +717,7 @@ func newSubagentsShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			e, err := subagents.Find(ws, args[0])
+			_, e, err := findStored(ws, agent, args[0])
 			if err != nil {
 				return err
 			}
@@ -633,16 +730,17 @@ func newSubagentsShowCmd() *cobra.Command {
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	return cmd
 }
 
 func newSubagentsRmCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	cmd := &cobra.Command{
 		Use:               "rm <name>",
 		Aliases:           []string{"remove"},
 		Short:             "Remove a subagent from the store",
-		Long:              "Remove a subagent from the workspace store. Its link in the container is dropped at the next start.",
+		Long:              "Remove a subagent from the workspace store. It leaves the container at the next start.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeSubagentNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -650,30 +748,48 @@ func newSubagentsRmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			e, err := subagents.Remove(ws, args[0])
+			h, _, err := findStored(ws, agent, args[0])
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from workspace '%s'.\n%s\n", entryLabel(e), ws, nextStartNote)
+			e, err := h.Remove(ws, args[0])
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed %s subagent %s from workspace '%s'.\n%s\n", h.Label, entryLabel(e), ws, nextStartNote)
 			return nil
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	return cmd
 }
 
+// validateLong lists where each agent's rules come from.
+func validateLong() string {
+	var b strings.Builder
+	b.WriteString(`Check stored subagents against the rules their coding agent applies when it
+loads agent files. Errors are files the agent skips, mostly without telling
+you; warnings are fields it ignores or values that will not do what you
+expect.
+
+Without a name, every agent's subagents and master skill are checked. Exits
+non-zero when any error is found.
+
+Where the rules come from:
+`)
+	for _, h := range subagents.WithSubagents() {
+		b.WriteString(fmt.Sprintf("  %-9s %s (checked against %s)\n", h.Agent, h.DocsURL, h.Checked))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func newSubagentsValidateCmd() *cobra.Command {
-	var workspace string
+	var workspace, agent string
 	cmd := &cobra.Command{
-		Use:   "validate [name]",
-		Short: "Check subagents against Claude Code's loading rules",
-		Long: fmt.Sprintf(`Check stored subagents against the rules Claude Code applies when it loads
-agent files. Errors are files Claude Code skips without telling you; warnings
-are fields it ignores or values that will not do what you expect.
-
-Exits non-zero when any error is found.
-
-Rules follow %s (checked against Claude Code %s).`, subagents.DocsURL, subagents.CheckedVersion),
+		Use:               "validate [name]",
+		Short:             "Check subagents against their agent's loading rules",
+		Long:              validateLong(),
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeSubagentNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -681,49 +797,84 @@ Rules follow %s (checked against Claude Code %s).`, subagents.DocsURL, subagents
 			if err != nil {
 				return err
 			}
-			entries, err := subagents.ListStore(ws)
-			if err != nil {
-				return err
+			out := cmd.OutOrStdout()
+			errs := 0
+			report := func(label string, fs []subagents.Finding) {
+				if len(fs) == 0 {
+					_, _ = fmt.Fprintf(out, "%s: ok\n", label)
+					return
+				}
+				_, _ = fmt.Fprintf(out, "%s:\n", label)
+				printFindings(out, "  ", fs)
+				if subagents.HasErrors(fs) {
+					errs++
+				}
 			}
+
+			stored := map[*subagents.Harness]int{}
 			if len(args) == 1 {
-				e, err := subagents.Find(ws, args[0])
+				h, e, err := findStored(ws, agent, args[0])
+				if err != nil {
+					return err
+				}
+				// The store listing carries the duplicate-name findings.
+				entries, err := h.ListStore(ws)
 				if err != nil {
 					return err
 				}
 				for _, s := range entries {
 					if s.Path == e.Path {
-						e = s // keeps duplicate-name findings
+						e = s
 					}
 				}
-				entries = []subagents.Entry{e}
-			}
-			out := cmd.OutOrStdout()
-			if len(entries) == 0 {
-				_, _ = fmt.Fprintf(out, "No subagents in workspace '%s'.\n", ws)
-			}
-			errs := 0
-			for _, e := range entries {
-				if len(e.Findings) == 0 {
-					_, _ = fmt.Fprintf(out, "%s: ok\n", entryLabel(e))
-					continue
+				stored[h]++
+				report(h.Agent+": "+entryLabel(e), e.Findings)
+			} else {
+				set, err := subagentHarnesses(agent)
+				if err != nil {
+					return err
 				}
-				_, _ = fmt.Fprintf(out, "%s:\n", entryLabel(e))
-				printFindings(out, "  ", e.Findings)
-				if subagents.HasErrors(e.Findings) {
-					errs++
+				if agent == "" {
+					set = subagents.Harnesses()
+				}
+				checked := 0
+				for _, h := range set {
+					entries, err := h.ListStore(ws)
+					if err != nil {
+						return err
+					}
+					for _, e := range entries {
+						stored[h]++
+						report(h.Agent+": "+entryLabel(e), e.Findings)
+					}
+					checked += len(entries)
+					if h.MasterSkillExists(ws) {
+						fs, err := h.MasterSkillFindings(ws)
+						if err != nil {
+							return err
+						}
+						report(h.Agent+": master skill", fs)
+						checked++
+					}
+				}
+				if checked == 0 {
+					_, _ = fmt.Fprintf(out, "No subagents in workspace '%s'.\n", ws)
 				}
 			}
-			if wsFindings := workspaceEnvFindings(ws); len(wsFindings) > 0 {
+			wsFindings, notes := workspaceNotes(ws, stored)
+			if len(wsFindings) > 0 {
 				_, _ = fmt.Fprintf(out, "workspace '%s':\n", ws)
 				printFindings(out, "  ", wsFindings)
 			}
+			printWorkspaceNotes(out, nil, notes)
 			if errs > 0 {
-				return fmt.Errorf("%d subagent file(s) have errors", errs)
+				return fmt.Errorf("%d file(s) have errors", errs)
 			}
 			return nil
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSubagents)
 	return cmd
 }
 
@@ -731,17 +882,27 @@ func completeSubagentNames(cmd *cobra.Command, args []string, toComplete string)
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	flag, _ := cmd.Flags().GetString("workspace")
-	ws, err := resolveSubagentsWorkspace(flag)
+	wsFlag, _ := cmd.Flags().GetString("workspace")
+	agentFlag, _ := cmd.Flags().GetString("agent")
+	ws, err := resolveSubagentsWorkspace(wsFlag)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	set, err := subagentHarnesses(agentFlag)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	seen := map[string]bool{}
 	var out []string
-	for _, n := range subagents.Names(ws) {
-		if strings.HasPrefix(n, toComplete) {
-			out = append(out, n)
+	for _, h := range set {
+		for _, n := range h.Names(ws) {
+			if strings.HasPrefix(n, toComplete) && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
 		}
 	}
+	sort.Strings(out)
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 

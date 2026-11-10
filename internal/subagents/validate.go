@@ -110,13 +110,13 @@ func HasErrors(fs []Finding) bool {
 	return false
 }
 
-// Definition is the parsed frontmatter of a subagent file.
+// Definition is what ExitBox reads from a subagent file.
 type Definition struct {
 	Name        string
 	Description string
 	Model       string
 	Tools       []string
-	// Fields holds every top-level frontmatter key, in file order.
+	// Fields holds every top-level key, in file order.
 	Fields []string
 }
 
@@ -144,9 +144,9 @@ func ClassifyModel(model string) ModelClass {
 	}
 }
 
-// Parse reads a subagent file and validates it on its own. A nil Definition
-// means Claude Code reads no fields from the file.
-func Parse(data []byte) (*Definition, []Finding) {
+// parseClaude validates a Claude Code subagent file. A nil Definition means
+// Claude Code reads no fields from the file.
+func parseClaude(_ *Harness, _ string, data []byte) (*Definition, []Finding) {
 	fm, ok, findings := splitFrontmatter(data)
 	if !ok {
 		return nil, findings
@@ -182,20 +182,38 @@ func Parse(data []byte) (*Definition, []Finding) {
 	return def, findings
 }
 
-// splitFrontmatter returns the YAML between the opening and closing ---.
-func splitFrontmatter(data []byte) (string, bool, []Finding) {
+const (
+	noOpeningFence = "the opening --- must be on line 1"
+	noClosingFence = "frontmatter has no closing ---"
+)
+
+// frontmatterBlock returns the YAML between the opening and closing ---
+// and the text after it, or the reason the file has no frontmatter.
+func frontmatterBlock(data []byte) (fm, body, problem string) {
 	content := strings.TrimPrefix(string(data), "\uFEFF")
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != "---" {
-		return "", false, []Finding{{Severity: Error, Message: "the opening --- must be on line 1; Claude Code treats the file as documentation"}}
+		return "", "", noOpeningFence
 	}
 	for i := 1; i < len(lines); i++ {
 		if strings.TrimRight(lines[i], " \t") == "---" {
-			return strings.Join(lines[1:i], "\n"), true, nil
+			return strings.Join(lines[1:i], "\n"), strings.Join(lines[i+1:], "\n"), ""
 		}
 	}
-	return "", false, []Finding{{Severity: Error, Message: "frontmatter has no closing ---"}}
+	return "", "", noClosingFence
+}
+
+// splitFrontmatter returns a Claude Code subagent file's frontmatter YAML.
+func splitFrontmatter(data []byte) (string, bool, []Finding) {
+	fm, _, problem := frontmatterBlock(data)
+	switch problem {
+	case "":
+		return fm, true, nil
+	case noOpeningFence:
+		problem += "; Claude Code treats the file as documentation"
+	}
+	return "", false, []Finding{{Severity: Error, Message: problem}}
 }
 
 func checkName(def *Definition, n *yaml.Node) []Finding {
@@ -335,8 +353,8 @@ func suggestField(f string) string {
 	return ""
 }
 
-// CheckDuplicates adds an error to every entry whose name another entry also uses.
-func CheckDuplicates(entries []Entry) {
+// checkDuplicates adds an error to every entry whose name another entry also uses.
+func checkDuplicates(h *Harness, entries []Entry) {
 	byName := map[string][]int{}
 	for i, e := range entries {
 		if e.Def != nil && e.Def.Name != "" {
@@ -362,7 +380,7 @@ func CheckDuplicates(entries []Entry) {
 			}
 			entries[i].Findings = append(entries[i].Findings, Finding{
 				Severity: Error, Field: "name",
-				Message: fmt.Sprintf("%q is also used by %s; Claude Code loads only one, by filesystem order", n, strings.Join(others, ", ")),
+				Message: fmt.Sprintf("%q is also used by %s; %s loads only one of them", n, strings.Join(others, ", "), h.Label),
 			})
 		}
 	}
