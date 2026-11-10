@@ -9,6 +9,8 @@ FROM docker.io/library/alpine:3.21
 # Build arguments
 ARG DELTA_VERSION=0.18.2
 ARG YQ_VERSION=4.52.2
+ARG TMUX_VERSION=3.8
+ARG TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
 ARG TARGETARCH=x86_64
 ARG EXITBOX_VERSION=3.2.0
 
@@ -39,10 +41,26 @@ RUN --mount=type=cache,target=/var/cache/apk \
     sed gawk gettext python3 \
     # Networking
     bind-tools netcat-openbsd socat \
-    # Terminal
-    tmux \
+    # Terminal (tmux runtime libs; tmux itself is built from source below.
+    # ncurses-terminfo-base carries tmux-256color)
+    libevent ncurses-libs ncurses-terminfo-base \
     # Native Claude Code dependencies (Alpine/musl)
     libgcc libstdc++ gcompat
+
+# Build tmux from source: Alpine's package lags upstream (3.21 ships 3.5a).
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add --no-cache --virtual .tmux-build \
+        build-base bison pkgconf libevent-dev ncurses-dev bsd-compat-headers && \
+    curl -fsSL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" -o /tmp/tmux.tar.gz && \
+    echo "${TMUX_SHA256}  /tmp/tmux.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/tmux.tar.gz -C /tmp && \
+    cd "/tmp/tmux-${TMUX_VERSION}" && \
+    ./configure --prefix=/usr/local && \
+    make -j"$(nproc)" && \
+    make install && \
+    cd / && rm -rf /tmp/tmux* && \
+    apk del .tmux-build && \
+    tmux -V
 
 # Install yq (architecture-aware, version-pinned, checksum-verified)
 RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
