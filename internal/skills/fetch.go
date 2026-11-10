@@ -328,15 +328,21 @@ func defaultHTTPGet(url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// FetchMarkdown retrieves every *.md file a source points at: a single file
-// (local path, raw URL, GitHub blob) or a directory (local or GitHub tree),
-// searched recursively. Keys are paths relative to the source.
+// FetchMarkdown retrieves every *.md file a source points at.
 func FetchMarkdown(source string) (map[string][]byte, error) {
+	return FetchFiles(source, ".md")
+}
+
+// FetchFiles retrieves every file with the given extension a source points
+// at: a single file (local path, raw URL, GitHub blob, taken whatever its
+// name) or a directory (local or GitHub tree), searched recursively. Keys
+// are paths relative to the source.
+func FetchFiles(source, ext string) (map[string][]byte, error) {
 	files := make(map[string][]byte)
 	switch DetectSource(source) {
 	case SourceGitHubTree:
 		m := githubTreeRE.FindStringSubmatch(source)
-		if err := githubFetchMarkdown(m[1], m[2], m[3], m[4], "", files); err != nil {
+		if err := githubFetchExt(m[1], m[2], m[3], m[4], "", ext, files); err != nil {
 			return nil, fmt.Errorf("fetching GitHub directory: %w", err)
 		}
 	case SourceGitHubBlob:
@@ -377,7 +383,7 @@ func FetchMarkdown(source string) (map[string][]byte, error) {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(d.Name(), ".md") {
+			if !strings.HasSuffix(d.Name(), ext) {
 				return nil
 			}
 			rel, relErr := filepath.Rel(source, p)
@@ -396,13 +402,14 @@ func FetchMarkdown(source string) (map[string][]byte, error) {
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no .md files found in %s", source)
+		return nil, fmt.Errorf("no %s files found in %s", ext, source)
 	}
 	return files, nil
 }
 
-// githubFetchMarkdown recursively fetches the *.md files of a GitHub directory.
-func githubFetchMarkdown(owner, repo, ref, dirPath, prefix string, files map[string][]byte) error {
+// githubFetchExt recursively fetches a GitHub directory's files with the
+// given extension.
+func githubFetchExt(owner, repo, ref, dirPath, prefix, ext string, files map[string][]byte) error {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", owner, repo, dirPath, ref)
 	entries, err := githubListDir(apiURL)
 	if err != nil {
@@ -415,7 +422,7 @@ func githubFetchMarkdown(owner, repo, ref, dirPath, prefix string, files map[str
 		}
 		switch entry.Type {
 		case "file":
-			if entry.DownloadURL == "" || !strings.HasSuffix(entry.Name, ".md") {
+			if entry.DownloadURL == "" || !strings.HasSuffix(entry.Name, ext) {
 				continue
 			}
 			content, err := httpGet(entry.DownloadURL)
@@ -427,7 +434,7 @@ func githubFetchMarkdown(owner, repo, ref, dirPath, prefix string, files map[str
 			if strings.HasPrefix(entry.Name, ".") {
 				continue
 			}
-			if err := githubFetchMarkdown(owner, repo, ref, dirPath+"/"+entry.Name, relPath, files); err != nil {
+			if err := githubFetchExt(owner, repo, ref, dirPath+"/"+entry.Name, relPath, ext, files); err != nil {
 				return err
 			}
 		}
