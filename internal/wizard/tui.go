@@ -605,6 +605,8 @@ func (m Model) View() string {
 		content = m.viewProfile()
 	case stepAgents:
 		content = m.viewAgents()
+	case stepPlugins:
+		content = m.viewPlugins()
 	case stepSettings:
 		content = m.viewSettings()
 	case stepKeybindings:

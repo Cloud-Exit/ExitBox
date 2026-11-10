@@ -64,6 +64,15 @@ func TestStepAfterAgents(t *testing.T) {
 	}
 }
 
+// A step missing from View shows a blank screen.
+func TestView_RendersPluginsStep(t *testing.T) {
+	m := modelWithAgents("codex")
+	m.step = stepPlugins
+	if view := m.View(); !strings.Contains(view, "Agent plugins") {
+		t.Errorf("View() at the plugins step = %q, want the plugin list", view)
+	}
+}
+
 func TestPluginRowsCoverSelectedAgents(t *testing.T) {
 	rows := modelWithAgents("codex", "claude").pluginRows()
 	seen := map[string]bool{}
