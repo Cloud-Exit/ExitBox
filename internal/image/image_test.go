@@ -479,7 +479,8 @@ func TestTemplateBaseDockerfile(t *testing.T) {
 func TestBaseDockerfiles_BuildTmuxFromSource(t *testing.T) {
 	cfg := config.DefaultConfig()
 	for _, d := range []*distro.Distro{distro.Default(), distro.Get(distro.GPU)} {
-		df := string(templateBaseDockerfile(cfg, d))
+		// Windows checkouts embed the Dockerfiles with CRLF.
+		df := strings.ReplaceAll(string(templateBaseDockerfile(cfg, d)), "\r\n", "\n")
 		for _, want := range []string{
 			"ARG TMUX_VERSION=3.8\n",
 			"ARG TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e\n",
