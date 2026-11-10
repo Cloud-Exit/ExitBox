@@ -473,6 +473,33 @@ func TestTemplateBaseDockerfile(t *testing.T) {
 	}
 }
 
+// TestBaseDockerfiles_BuildTmuxFromSource guards the tmux pin: both flavors
+// build the pinned release (checksum-verified) instead of the distro package,
+// which lags upstream (Alpine 3.21 = 3.5a, Ubuntu 24.04 = 3.4).
+func TestBaseDockerfiles_BuildTmuxFromSource(t *testing.T) {
+	cfg := config.DefaultConfig()
+	for _, d := range []*distro.Distro{distro.Default(), distro.Get(distro.GPU)} {
+		df := string(templateBaseDockerfile(cfg, d))
+		for _, want := range []string{
+			"ARG TMUX_VERSION=3.8\n",
+			"ARG TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e\n",
+			"https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz",
+			`echo "${TMUX_SHA256}  /tmp/tmux.tar.gz" | sha256sum -c -`,
+			"./configure --prefix=/usr/local",
+			"tmux -V",
+		} {
+			if !strings.Contains(df, want) {
+				t.Errorf("%s base Dockerfile missing %q", d.ID, want)
+			}
+		}
+		for _, line := range strings.Split(df, "\n") {
+			if strings.TrimSpace(line) == "tmux \\" || strings.Contains(line, " tmux ncurses") {
+				t.Errorf("%s base Dockerfile still installs the distro tmux package: %q", d.ID, line)
+			}
+		}
+	}
+}
+
 func TestWorkspaceHash_IncludesToolVersions(t *testing.T) {
 	dir := t.TempDir()
 	cfg1 := config.DefaultConfig()

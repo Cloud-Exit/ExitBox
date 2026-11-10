@@ -9,6 +9,7 @@
 package profile
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -257,5 +258,17 @@ func TestResolveActiveWorkspace_ActiveFallback(t *testing.T) {
 	}
 	if active.Workspace.Name != "second" {
 		t.Fatalf("expected second, got %s", active.Workspace.Name)
+	}
+}
+
+// The base image builds a pinned tmux from source; a profile installing the
+// distro package would add a second, older tmux to project images.
+func TestAllRoles_NoDistroTmux(t *testing.T) {
+	for _, r := range AllRoles() {
+		for _, pkg := range strings.Fields(r.Packages) {
+			if pkg == "tmux" {
+				t.Errorf("profile %q installs the distro tmux package", r.Name)
+			}
+		}
 	}
 }

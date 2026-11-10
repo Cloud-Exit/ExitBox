@@ -26,8 +26,8 @@ type Role struct {
 // AllRoles returns all available development roles.
 func AllRoles() []Role {
 	return []Role{
-		{"core", "Compatibility alias for base profile", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux"},
-		{"base", "Base development tools (git, vim, curl)", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux"},
+		{"core", "Compatibility alias for base profile", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev"},
+		{"base", "Base development tools (git, vim, curl)", "gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev"},
 		{"build-tools", "Build toolchain helpers (cmake, autoconf, libtool)", "cmake samurai autoconf automake libtool"},
 		{"shell", "Shell and file transfer utilities", "rsync openssh-client mandoc gnupg file"},
 		{"networking", "Network diagnostics and tooling", "iptables ipset iproute2 bind-tools"},

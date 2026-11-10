@@ -13,6 +13,8 @@ FROM docker.io/nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 # Build arguments
 ARG DELTA_VERSION=0.18.2
 ARG YQ_VERSION=4.52.2
+ARG TMUX_VERSION=3.8
+ARG TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
 ARG TARGETARCH=x86_64
 ARG EXITBOX_VERSION=3.2.0
 
@@ -50,12 +52,37 @@ RUN --mount=type=cache,target=/var/cache/apt \
     sed gawk gettext python3 python3-venv \
     # Networking
     dnsutils netcat-openbsd socat \
-    # Terminal (ncurses-term carries tmux-256color, the entrypoint's
-    # tmux default-terminal; ncurses-bin has infocmp/tput)
-    tmux ncurses-term ncurses-bin \
+    # Terminal (tmux is built from source below; ncurses-term carries
+    # tmux-256color, the entrypoint's tmux default-terminal; ncurses-bin
+    # has infocmp/tput)
+    ncurses-term ncurses-bin \
     # Runtime libraries
     libstdc++6 libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Build tmux from source: Ubuntu 24.04 ships 3.4, which lacks
+# extended-keys-format and the synchronized-output fixes.
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential bison pkg-config libevent-dev libncurses-dev && \
+    curl -fsSL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" -o /tmp/tmux.tar.gz && \
+    echo "${TMUX_SHA256}  /tmp/tmux.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/tmux.tar.gz -C /tmp && \
+    cd "/tmp/tmux-${TMUX_VERSION}" && \
+    ./configure --prefix=/usr/local && \
+    make -j"$(nproc)" && \
+    make install && \
+    cd / && rm -rf /tmp/tmux* && \
+    # Keep the shared libs tmux links (libevent, ncurses) through autoremove;
+    # resolving them via ldd avoids per-release package names.
+    ldd /usr/local/bin/tmux \
+        | awk '/=>/ { so = $(NF-1); gsub("^/(usr/)?", "", so); printf "*%s\n", so }' \
+        | sort -u | xargs -r dpkg-query --search | cut -d: -f1 | sort -u \
+        | xargs -r apt-mark manual && \
+    apt-get purge -y build-essential bison pkg-config libevent-dev libncurses-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/* && \
+    tmux -V
 
 # Ubuntu ships fd and bat under different command names; restore the usual ones
 # so the agents' instructions and user habits work unchanged.

@@ -327,7 +327,7 @@ ExitBox then runs Docker with `--gpus all`, or Podman with the CDI device `nvidi
 
 The CUDA release has to match the host driver (12.6 needs 560+). Point ExitBox at another one with `EXITBOX_GPU_BASE_IMAGE=docker.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04` and rebuild. Image references are fully qualified because Podman resolves no short names without a `containers-registries.conf`.
 
-Ubuntu 24.04 ships tmux 3.4, which predates the `extended-keys-format` option, so on the GPU flavor ExitBox leaves that option out (the config would error on every session start) and modified keys use tmux's xterm encoding. Kitty-protocol agents that need `Shift+Enter` there still work with `exitbox run <agent> --no-tmux`.
+Both flavors build tmux 3.8 from source (Alpine and Ubuntu packages lag upstream), so the GPU flavor gets the same `extended-keys-format csi-u` and synchronized-output behaviour as the default image. If an image carries a tmux older than 3.5, ExitBox leaves `extended-keys-format` out (the config would error on every session start) and modified keys fall back to tmux's xterm encoding; Kitty-protocol agents that need `Shift+Enter` there still work with `exitbox run <agent> --no-tmux`.
 
 Package names stay Alpine names everywhere (roles, tool categories, workspace packages); the flavor translates them (`postgresql16-client` becomes `postgresql-client-16`, `bind-tools` becomes `dnsutils`, and so on). Tools with no Ubuntu package (kubectl, helm, kustomize, k9s, opentofu) are installed from their official binaries instead, and anything else that has no equivalent is reported during the build rather than silently dropped.
 

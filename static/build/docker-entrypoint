@@ -64,9 +64,9 @@ update_tmux_status() {
 }
 
 # tmux_supports_extended_keys_format reports whether this tmux knows the
-# extended-keys-format option, which arrived in tmux 3.5. Older tmux (Ubuntu
-# 24.04, and therefore the GPU image flavor, ships 3.4) aborts the config
-# line with "invalid option" on every session start.
+# extended-keys-format option, which arrived in tmux 3.5. Both base images
+# build 3.8, but a custom or stale image may carry an older distro tmux, which
+# aborts the config line with "invalid option" on every session start.
 tmux_supports_extended_keys_format() {
     local version major minor
     version="$(tmux -V 2>/dev/null | awk '{print $2}')"
