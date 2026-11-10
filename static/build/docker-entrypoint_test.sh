@@ -1823,15 +1823,17 @@ test_link_subagents_claude() {
     base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
     home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
     other="$(mktemp -d "$TEST_TMPDIR/subother.XXXXXX")"
-    mkdir -p "$base/default/subagents" "$home/claude-real/agents"
-    printf -- '---\nname: reviewer\ndescription: d\n---\n' > "$base/default/subagents/reviewer.md"
-    printf -- '---\nname: mine\ndescription: managed\n---\n' > "$base/default/subagents/mine.md"
-    printf -- 'x' > "$base/default/subagents/notes.txt"
+    mkdir -p "$base/default/subagents/claude" "$home/claude-real/agents"
+    printf -- '---\nname: reviewer\ndescription: d\n---\n' > "$base/default/subagents/claude/reviewer.md"
+    printf -- '---\nname: mine\ndescription: managed\n---\n' > "$base/default/subagents/claude/mine.md"
+    printf -- 'x' > "$base/default/subagents/claude/notes.txt"
+    mkdir -p "$base/default/subagents/claude/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$base/default/subagents/claude/master-skill/SKILL.md"
     ln -s "$home/claude-real" "$home/.claude"
     # Real file created in the container with the same file name as a managed one.
     printf -- '---\nname: mine\ndescription: container\n---\n' > "$home/claude-real/agents/mine.md"
     # Stale link into the store (subagent removed on the host).
-    ln -s "$base/default/subagents/gone.md" "$home/claude-real/agents/gone.md"
+    ln -s "$base/default/subagents/claude/gone.md" "$home/claude-real/agents/gone.md"
     # Foreign files: a real file, a link elsewhere, a dangling link elsewhere.
     printf -- 'own' > "$home/claude-real/agents/own.md"
     printf -- 'x' > "$other/elsewhere.md"
@@ -1845,13 +1847,14 @@ test_link_subagents_claude() {
         eval "$(extract_func link_subagents)"
         link_subagents 2>&1
         a="$home/claude-real/agents"
-        [[ -L "$a/reviewer.md" && "$(readlink "$a/reviewer.md")" == "$base/default/subagents/reviewer.md" ]] && echo "LINKED"
+        [[ -L "$a/reviewer.md" && "$(readlink "$a/reviewer.md")" == "$base/default/subagents/claude/reviewer.md" ]] && echo "LINKED"
         [[ ! -L "$a/mine.md" ]] && grep -q container "$a/mine.md" && echo "REAL_KEPT"
         [[ ! -e "$a/gone.md" && ! -L "$a/gone.md" ]] && echo "DANGLING_REMOVED"
         [[ -f "$a/own.md" && ! -L "$a/own.md" ]] && echo "OWN_KEPT"
         [[ "$(readlink "$a/elsewhere.md")" == "$other/elsewhere.md" ]] && echo "FOREIGN_LINK_KEPT"
         [[ -L "$a/foreign-dangling.md" ]] && echo "FOREIGN_DANGLING_KEPT"
         [[ ! -e "$a/notes.txt" ]] && echo "NON_MD_SKIPPED"
+        [[ -z "$(find "$a" -iname '*master-skill*' -o -name 'SKILL.md')" ]] && echo "MASTER_SKILL_SKIPPED"
     )"
     assert_contains "link_subagents links store files" "$result" "LINKED"
     assert_contains "link_subagents keeps a real file with the same name" "$result" "REAL_KEPT"
@@ -1861,19 +1864,21 @@ test_link_subagents_claude() {
     assert_contains "link_subagents leaves foreign links" "$result" "FOREIGN_LINK_KEPT"
     assert_contains "link_subagents leaves dangling foreign links" "$result" "FOREIGN_DANGLING_KEPT"
     assert_contains "link_subagents only links .md files" "$result" "NON_MD_SKIPPED"
+    assert_contains "link_subagents does not link the master skill as a subagent" "$result" "MASTER_SKILL_SKIPPED"
 }
 
 test_link_subagents_claude
 
 # ============================================================================
-# Test: link_subagents is a no-op for other agents and without a store
+# Test: link_subagents does nothing for an agent without stored subagents:
+# another agent's store is not its own
 # ============================================================================
 test_link_subagents_other_agents() {
     local base home result
     base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
     home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
-    mkdir -p "$base/default/subagents" "$home/.claude" "$home/.codex"
-    printf -- '---\nname: r\ndescription: d\n---\n' > "$base/default/subagents/r.md"
+    mkdir -p "$base/default/subagents/claude" "$home/.claude" "$home/.codex"
+    printf -- '---\nname: r\ndescription: d\n---\n' > "$base/default/subagents/claude/r.md"
     result="$(
         export GLOBAL_WORKSPACE_ROOT="$base"
         export HOME="$home"
@@ -1890,10 +1895,124 @@ test_link_subagents_other_agents() {
         [[ -e "$home/.claude/agents" ]] && echo "CREATED_EMPTY_DIR"
         echo done
     )" 2>/dev/null
-    assert_eq "link_subagents does nothing for non-Claude agents or without a store" "done" "$result"
+    assert_eq "link_subagents does nothing for an agent without its own store" "done" "$result"
 }
 
 test_link_subagents_other_agents
+
+# ============================================================================
+# Test: link_subagents copies each other agent's store into that agent's own
+# agents directory, with the agent's own file extension
+# ============================================================================
+test_link_subagents_copy() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    mkdir -p "$home/.codex" "$home/.copilot" "$home/.cursor" "$home/.kimi-code" "$home/.config/opencode" "$home/.qwen" "$home/.pi"
+    for agent in codex copilot cursor kimi opencode qwen pi; do
+        mkdir -p "$base/default/subagents/$agent/master-skill"
+        printf -- 'skill' > "$base/default/subagents/$agent/master-skill/SKILL.md"
+        printf -- 'wrong extension' > "$base/default/subagents/$agent/notes.txt"
+    done
+    printf -- 'name = "x"\n' > "$base/default/subagents/codex/x.toml"
+    printf -- 'not toml' > "$base/default/subagents/codex/x.md"
+    printf -- 'copilot' > "$base/default/subagents/copilot/x.agent.md"
+    printf -- 'plain md is not a copilot agent' > "$base/default/subagents/copilot/y.md"
+    for agent in cursor kimi opencode qwen pi; do
+        printf -- '%s' "$agent" > "$base/default/subagents/$agent/x.md"
+    done
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        for AGENT in codex copilot cursor kimi opencode qwen pi; do
+            export AGENT
+            link_subagents 2>&1
+        done
+        check() { # agent dir file
+            local f="$home/$2/agents/$3"
+            [[ -f "$f" && ! -L "$f" ]] && cmp -s "$f" "$base/default/subagents/$1/$3" \
+                && [[ "$(cat "$home/$2/agents/.exitbox-subagents")" == "$3" ]] && echo "COPIED:$1"
+        }
+        check codex .codex x.toml
+        check copilot .copilot x.agent.md
+        check cursor .cursor x.md
+        check kimi .kimi-code x.md
+        check opencode .config/opencode x.md
+        check qwen .qwen x.md
+        [[ ! -e "$home/.codex/agents/x.md" && ! -e "$home/.copilot/agents/y.md" ]] && echo "OTHER_EXT_SKIPPED"
+        [[ -z "$(find "$home" -name 'notes.txt' -o -name 'SKILL.md' -o -name 'master-skill')" ]] && echo "ONLY_AGENT_FILES"
+        [[ ! -e "$home/.pi/agents" ]] && echo "PI_UNTOUCHED"
+    )"
+    for agent in codex copilot cursor kimi opencode qwen; do
+        assert_contains "link_subagents copies the $agent store into its agents directory" "$result" "COPIED:$agent"
+    done
+    assert_contains "link_subagents copies only files with the agent's extension" "$result" "OTHER_EXT_SKIPPED"
+    assert_contains "link_subagents copies no notes or master skill as subagents" "$result" "ONLY_AGENT_FILES"
+    assert_contains "link_subagents does nothing for Pi, which has no subagents" "$result" "PI_UNTOUCHED"
+}
+
+test_link_subagents_copy
+
+# ============================================================================
+# Test: copied subagents are refreshed and removed on the next start, and
+# the container's own files are never touched
+# ============================================================================
+test_link_subagents_copy_refresh() {
+    local base home result store a
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    store="$base/default/subagents/qwen"
+    a="$home/.qwen/agents"
+    mkdir -p "$store" "$a" "$home/outside"
+    printf -- 'v1' > "$store/keep.md"
+    printf -- 'v1' > "$store/gone.md"
+    printf -- 'managed' > "$store/mine.md"
+    # The container has its own file with a managed file's name, and one of its own.
+    printf -- 'container' > "$a/mine.md"
+    printf -- 'own' > "$a/own.md"
+    printf -- 'safe' > "$home/outside/victim.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="qwen"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        link_subagents 2>&1
+        [[ "$(cat "$a/mine.md")" == "container" ]] && echo "REAL_KEPT"
+        ! grep -qx 'mine.md' "$a/.exitbox-subagents" && echo "REAL_NOT_CLAIMED"
+
+        # Next start: the session edited a copy, one subagent was removed on
+        # the host, one changed, and the manifest was tampered with.
+        printf -- 'edited in the container' > "$a/keep.md"
+        rm "$store/gone.md"
+        printf -- 'v2' > "$store/keep.md"
+        printf -- '../../outside/victim.md\n' >> "$a/.exitbox-subagents"
+        link_subagents 2>/dev/null
+        [[ "$(cat "$a/keep.md")" == "v2" ]] && echo "REFRESHED"
+        [[ ! -e "$a/gone.md" ]] && echo "REMOVED"
+        [[ "$(cat "$a/own.md")" == "own" && "$(cat "$a/mine.md")" == "container" ]] && echo "OWN_KEPT"
+        [[ "$(cat "$home/outside/victim.md")" == "safe" ]] && echo "MANIFEST_CONFINED"
+        [[ "$(cat "$a/.exitbox-subagents")" == "keep.md" ]] && echo "MANIFEST_REWRITTEN"
+
+        # The whole store is removed on the host: the copies go, the rest stays.
+        rm -rf "$store"
+        link_subagents 2>/dev/null
+        [[ ! -e "$a/keep.md" && ! -e "$a/.exitbox-subagents" && -f "$a/own.md" ]] && echo "STORE_GONE_CLEANED"
+    )"
+    assert_contains "link_subagents keeps a container file with a managed name" "$result" "REAL_KEPT"
+    assert_contains "link_subagents warns about the skipped copy" "$result" "[WARN] Subagent mine.md"
+    assert_contains "link_subagents does not claim a file it did not copy" "$result" "REAL_NOT_CLAIMED"
+    assert_contains "link_subagents refreshes a copy from the store" "$result" "REFRESHED"
+    assert_contains "link_subagents removes the copy of a removed subagent" "$result" "REMOVED"
+    assert_contains "link_subagents leaves the container's own files" "$result" "OWN_KEPT"
+    assert_contains "link_subagents ignores manifest entries outside the agents directory" "$result" "MANIFEST_CONFINED"
+    assert_contains "link_subagents rewrites its manifest" "$result" "MANIFEST_REWRITTEN"
+    assert_contains "link_subagents removes its copies when the store is gone" "$result" "STORE_GONE_CLEANED"
+}
+
+test_link_subagents_copy_refresh
 
 # ============================================================================
 # Test: workspace_switch_menu signals the host and never writes config.yaml
@@ -1975,6 +2094,101 @@ test_link_skills_skips_real_dir() {
 }
 
 test_link_skills_skips_real_dir
+
+# ============================================================================
+# Test: link_skills links the master skill from the read-only subagent store
+# into every skill-capable agent, without needing a skills store
+# ============================================================================
+test_link_skills_master_skill() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/masterws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/masterhome.XXXXXX")"
+    mkdir -p "$home/.claude" "$home/.config/opencode" "$home/.pi" "$home/.kimi-code" "$home/.qwen"
+    for agent in claude codex opencode pi kimi qwen; do
+        mkdir -p "$base/default/subagents/$agent/master-skill"
+        printf -- '---\nname: master-skill\ndescription: routes for %s\n---\n' "$agent" > "$base/default/subagents/$agent/master-skill/SKILL.md"
+    done
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        check() { # agent dir
+            [[ "$(readlink "$home/$2/master-skill")" == "$base/default/subagents/$1/master-skill" ]] \
+                && grep -q "routes for $1" "$home/$2/master-skill/SKILL.md" && echo "LINKED:$1:$2"
+        }
+        for AGENT in claude codex opencode pi kimi qwen; do
+            export AGENT
+            link_skills
+            # Each agent gets its own master skill, also in the shared ~/.agents/skills.
+            [[ "$AGENT" != claude && "$AGENT" != qwen ]] && check "$AGENT" .agents/skills
+        done
+        check claude .claude/skills
+        check opencode .config/opencode/skills
+        check pi .pi/agent/skills
+        check kimi .kimi-code/skills
+        [[ ! -e "$home/.qwen/skills" ]] && echo "QWEN_UNTOUCHED"
+    )" 2>/dev/null
+    assert_contains "link_skills links Claude's master skill" "$result" "LINKED:claude:.claude/skills"
+    assert_contains "link_skills links Codex's master skill into ~/.agents/skills" "$result" "LINKED:codex:.agents/skills"
+    assert_contains "link_skills links OpenCode's master skill" "$result" "LINKED:opencode:.config/opencode/skills"
+    assert_contains "link_skills links Pi's master skill" "$result" "LINKED:pi:.pi/agent/skills"
+    assert_contains "link_skills links Kimi's master skill" "$result" "LINKED:kimi:.kimi-code/skills"
+    assert_contains "link_skills creates no skill dir for an agent without skill support" "$result" "QWEN_UNTOUCHED"
+}
+
+test_link_skills_master_skill
+
+# ============================================================================
+# Test: a removed master skill loses its link, and a skill of the same name
+# from another source is kept
+# ============================================================================
+test_link_skills_master_skill_conflicts() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/masterws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/masterhome.XXXXXX")"
+    mkdir -p "$base/default/subagents" "$home/.claude/skills" "$home/.kimi-code/skills/master-skill" "$home/.pi/agent/skills"
+    # Claude: a link left behind by a master skill that was removed on the host.
+    ln -s "$base/default/subagents/claude/master-skill" "$home/.claude/skills/master-skill"
+    # Pi: a link to somebody else's skill.
+    mkdir -p "$home/other-skill"
+    ln -s "$home/other-skill" "$home/.pi/agent/skills/master-skill"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        AGENT=claude link_skills 2>&1
+        [[ ! -e "$home/.claude/skills/master-skill" && ! -L "$home/.claude/skills/master-skill" ]] && echo "STALE_REMOVED"
+        AGENT=pi link_skills 2>&1
+        [[ "$(readlink "$home/.pi/agent/skills/master-skill")" == "$home/other-skill" ]] && echo "UNRELATED_LINK_UNTOUCHED"
+
+        for agent in claude kimi pi; do
+            mkdir -p "$base/default/subagents/$agent/master-skill"
+            printf -- '---\nname: master-skill\ndescription: routes\n---\n' > "$base/default/subagents/$agent/master-skill/SKILL.md"
+        done
+        AGENT=kimi link_skills 2>&1
+        [[ -d "$home/.kimi-code/skills/master-skill" && ! -L "$home/.kimi-code/skills/master-skill" ]] && echo "REAL_DIR_KEPT"
+        [[ ! -e "$home/.kimi-code/skills/master-skill/master-skill" ]] && echo "NOT_NESTED"
+        AGENT=pi link_skills 2>/dev/null
+        [[ "$(readlink "$home/.pi/agent/skills/master-skill")" == "$home/other-skill" ]] && echo "FOREIGN_LINK_KEPT"
+
+        # A skill installed with `exitbox skills install` under the same name wins.
+        mkdir -p "$base/default/skills/master-skill"
+        printf -- '---\nname: master-skill\n---\n' > "$base/default/skills/master-skill/SKILL.md"
+        AGENT=claude link_skills 2>/dev/null
+        [[ "$(readlink "$home/.claude/skills/master-skill")" == "$base/default/skills/master-skill/" ]] && echo "INSTALLED_SKILL_WINS"
+    )"
+    assert_contains "link_skills drops the link of a removed master skill" "$result" "STALE_REMOVED"
+    assert_contains "link_skills leaves a foreign link alone when there is no master skill" "$result" "UNRELATED_LINK_UNTOUCHED"
+    assert_contains "link_skills keeps a real skill dir named master-skill" "$result" "REAL_DIR_KEPT"
+    assert_contains "link_skills does not nest the master skill in a real dir" "$result" "NOT_NESTED"
+    assert_contains "link_skills warns when another master-skill is in the way" "$result" "[WARN] Master skill"
+    assert_contains "link_skills keeps a foreign link named master-skill" "$result" "FOREIGN_LINK_KEPT"
+    assert_contains "link_skills lets an installed skill of the same name win" "$result" "INSTALLED_SKILL_WINS"
+}
+
+test_link_skills_master_skill_conflicts
 
 # ============================================================================
 # Test: setup_graphify installs/removes the /graphify skill per agent

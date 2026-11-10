@@ -530,8 +530,34 @@ configure_codex_session_storage() {
 link_skills() {
     local ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     local skills_src="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/skills"
+    # The agent's master skill lives in the read-only subagent store, so a
+    # session cannot rewrite the rules the next one follows.
+    local master_src="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents/${AGENT}/master-skill"
+    local master_warned=""
 
-    [[ -d "$skills_src" ]] || return 0
+    # A skill of the same name from another source wins; the link of a
+    # removed master skill is dropped.
+    _link_master_skill_into() {
+        local link="$1/master-skill" managed=""
+        if [[ -L "$link" ]]; then
+            case "$(readlink "$link")" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*/master-skill) managed=1 ;;
+            esac
+        fi
+        if [[ ! -f "$master_src/SKILL.md" ]]; then
+            [[ -n "$managed" ]] && rm -f "$link"
+            return 0
+        fi
+        if [[ -z "$managed" && ( -e "$link" || -L "$link" ) ]]; then
+            if [[ -z "$master_warned" ]]; then
+                echo "[WARN] Master skill: another skill named master-skill is already installed; keeping it and skipping the workspace's master skill" >&2
+                master_warned=1
+            fi
+            return 0
+        fi
+        mkdir -p "$1"
+        ln -sfn "$master_src" "$link"
+    }
 
     # Create a real skills directory inside each agent's config path,
     # then symlink each individual skill into it. Using a real parent
@@ -539,17 +565,20 @@ link_skills() {
     # (whole-directory symlinks are not always followed by skill discovery).
     _link_skills_into() {
         local target_dir="$1"
-        mkdir -p "$target_dir"
         local skill link
-        for skill in "$skills_src"/*/; do
-            [[ -d "$skill" ]] || continue
-            link="${target_dir}/$(basename "$skill")"
-            # A real directory at that name belongs to another installer (e.g.
-            # graphify installs its own skill dir). `ln -sfn` would drop the
-            # link *inside* it, creating a self-referential loop, so skip it.
-            [[ -d "$link" && ! -L "$link" ]] && continue
-            ln -sfn "$skill" "$link"
-        done
+        if [[ -d "$skills_src" ]]; then
+            mkdir -p "$target_dir"
+            for skill in "$skills_src"/*/; do
+                [[ -d "$skill" ]] || continue
+                link="${target_dir}/$(basename "$skill")"
+                # A real directory at that name belongs to another installer (e.g.
+                # graphify installs its own skill dir). `ln -sfn` would drop the
+                # link *inside* it, creating a self-referential loop, so skip it.
+                [[ -d "$link" && ! -L "$link" ]] && continue
+                ln -sfn "$skill" "$link"
+            done
+        fi
+        _link_master_skill_into "$target_dir"
     }
 
     case "$AGENT" in
@@ -587,22 +616,59 @@ link_skills() {
     esac
 }
 
-# Link the workspace's Claude Code subagents (read-only store) into
-# ~/.claude/agents, one symlink per file. A real file with the same name
-# (created in the container or copied by `exitbox config import`) wins and is
-# left alone; only dangling links into the store are removed.
+# Put the workspace's subagents for this agent (read-only store) into the
+# agent's own agents directory. A real file with the same name (created in
+# the container or copied by `exitbox config import`) wins and is left alone.
+#
+# Claude Code is verified to load symlinked agent files, so it gets links.
+# For the other agents that is not verified, so they get copies, listed in
+# a manifest so the next start can refresh or remove them.
 link_subagents() {
-    [[ "$AGENT" == "claude" ]] || return 0
+    local home_dir ext mode="copy"
+    case "$AGENT" in
+        claude)   home_dir="$HOME/.claude";          ext=".md"; mode="link" ;;
+        codex)    home_dir="$HOME/.codex";           ext=".toml" ;;
+        copilot)  home_dir="$HOME/.copilot";         ext=".agent.md" ;;
+        cursor)   home_dir="$HOME/.cursor";          ext=".md" ;;
+        kimi)     home_dir="$HOME/.kimi-code";       ext=".md" ;;
+        opencode) home_dir="$HOME/.config/opencode"; ext=".md" ;;
+        qwen)     home_dir="$HOME/.qwen";            ext=".md" ;;
+        *) return 0 ;;
+    esac
     local ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
-    local store="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents"
-    local real_dir agents_dir src link target
-    real_dir="$(readlink -f "$HOME/.claude")"
+    local store="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents/${AGENT}"
+    local real_dir agents_dir src link target name
+    real_dir="$(readlink -f "$home_dir")"
     [[ -d "$real_dir" ]] || return 0
     agents_dir="$real_dir/agents"
 
+    if [[ "$mode" == "copy" ]]; then
+        local manifest="$agents_dir/.exitbox-subagents"
+        if [[ -f "$manifest" ]]; then
+            while IFS= read -r name; do
+                [[ -n "$name" && "$name" != */* ]] || continue
+                rm -f "$agents_dir/$name"
+            done < "$manifest"
+            rm -f "$manifest"
+        fi
+        [[ -d "$store" ]] || return 0
+        for src in "$store"/*"$ext"; do
+            [[ -f "$src" ]] || continue
+            name="$(basename "$src")"
+            mkdir -p "$agents_dir"
+            if [[ -e "$agents_dir/$name" || -L "$agents_dir/$name" ]]; then
+                echo "[WARN] Subagent $name: a file with that name already exists in the agent's agents directory; keeping it and skipping the managed one" >&2
+                continue
+            fi
+            cp "$src" "$agents_dir/$name"
+            printf '%s\n' "$name" >> "$manifest"
+        done
+        return 0
+    fi
+
     # Drop links into any workspace's store whose target is gone.
     if [[ -d "$agents_dir" ]]; then
-        for link in "$agents_dir"/*.md; do
+        for link in "$agents_dir"/*"$ext"; do
             [[ -L "$link" ]] || continue
             target="$(readlink "$link")"
             case "$target" in
@@ -614,7 +680,7 @@ link_subagents() {
     fi
 
     [[ -d "$store" ]] || return 0
-    for src in "$store"/*.md; do
+    for src in "$store"/*"$ext"; do
         [[ -f "$src" ]] || continue
         mkdir -p "$agents_dir"
         link="$agents_dir/$(basename "$src")"

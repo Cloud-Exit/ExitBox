@@ -137,8 +137,9 @@ func prepareConfigMount(cfg *config.Config, wsName string) (*configMount, error)
 	m.Args = []string{
 		"-v", tmp + ":" + containerConfigRoot + ":ro",
 		"-v", hostWsDir + ":" + containerWsDir,
-		// Subagent definitions are prompts Claude Code trusts on every start;
-		// a writable store would let one session plant instructions for the next.
+		// Subagent definitions and the master skill are prompts agents trust
+		// on every start; a writable store would let one session plant
+		// instructions for the next.
 		"-v", hostSubagentsDir + ":" + containerWsDir + "/subagents:ro",
 	}
 	return m, nil
