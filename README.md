@@ -287,6 +287,8 @@ Enabling or disabling a plugin, or pinning a different version, changes the imag
 
 `claude-router` keeps a Claude Code session on Claude models and sends chosen [subagents](#subagents) to a model you host yourself with llama.cpp or vLLM. A subagent with `model: qwen3.6-27b` then runs locally while the main session stays on Opus, and a claude.ai subscription login keeps working.
 
+The easiest way to set it up is `exitbox setup` → **Subagent Management** → Claude Code: check the subagents you want, keep **Enable claude-router** checked, and enter each local model's backend URL and API key. From the command line:
+
 ```bash
 exitbox plugins enable claude claude-router
 exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080"
@@ -476,7 +478,15 @@ All commands take `-w <workspace>` and `--agent <agent>`.
 - **Shadowing**: `list` flags a stored subagent when the container already has a file with the same file name or name, or when a project agent has the same name and the agent lets project agents win (Claude Code, Cursor, Kimi Code, Qwen Code).
 - **Cursor CLI**: Cursor staff report that the CLI (seen in 2026.07.23) loads only a project's `.cursor/agents`, not `~/.cursor/agents`. Until Cursor fixes that, subagents stored for Cursor may not load. `list` and `validate` say so.
 
-Every `exitbox subagents` command is also available as `exitbox agents subagents`. In `exitbox setup`, the main menu has a **Subagent Management** item: pick a coding agent, then import its host subagents or create and edit its master skill for a workspace.
+Every `exitbox subagents` command is also available as `exitbox agents subagents`.
+
+**In `exitbox setup`**, the main menu has a **Subagent Management** item. Pick a coding agent and a workspace (`w` switches it):
+
+- The subagents found in the agent's host directory (for example `~/.claude/agents`) are listed as checkboxes. Checking one copies it into the workspace store; unchecking removes the workspace copy and leaves the host file alone. `a` checks all of them.
+- For Claude Code, **Enable claude-router** is checked by default. Subagents on non-Claude models do not work without it. For every such model the page asks for the backend URL and, if the server needs one, its API key. The key is stored in the workspace vault (the page creates the vault if there is none) and only its vault key name goes into the config.
+- The master skill can be created and edited there too.
+
+Everything on that page is saved at once, not at the review step.
 
 ### Master Skill
 
@@ -1056,7 +1066,7 @@ The recommended way to configure ExitBox is through the setup wizard:
 exitbox setup
 ```
 
-The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through roles, languages, tools, per-tool versions, packages, workspace name, credentials, agents, plugins, settings, firewall (domain allowlist), and review. When you re-run it, the main menu also offers **Subagent Management**: per coding agent, import the host's subagents into a workspace and create or edit its [master skill](#master-skill). What you do there is saved at once, not at the review step. The settings step includes an **Auto-update tools to latest** option that sets unpinned managed tools to `latest`, and the tool-versions step lets you pin Go, Node.js, Bun, etc. individually. Some steps are shown conditionally (e.g., credentials only when other workspaces exist). Re-run it at any time to reconfigure.
+The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through roles, languages, tools, per-tool versions, packages, workspace name, credentials, agents, plugins, settings, firewall (domain allowlist), and review. When you re-run it, the main menu also offers **Subagent Management**: per coding agent, check the host's subagents to use in a workspace, set up [claude-router](#claude-router-experimental) backends and their API keys for Claude Code, and create or edit the agent's [master skill](#master-skill). What you do there is saved at once, not at the review step. The settings step includes an **Auto-update tools to latest** option that sets unpinned managed tools to `latest`, and the tool-versions step lets you pin Go, Node.js, Bun, etc. individually. Some steps are shown conditionally (e.g., credentials only when other workspaces exist). Re-run it at any time to reconfigure.
 
 ### config.yaml
 
