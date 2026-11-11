@@ -170,6 +170,7 @@ type Model struct {
 	// Plugins step
 	pluginCursor int         // highlighted plugin row
 	pluginForm   *PluginForm // open plugin configuration menu, nil when closed
+	pluginNote   string      // why the last change in the plugins step was refused
 
 	// Subagent Management pages
 	sub subagentMenu

@@ -18,6 +18,7 @@ package run
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -35,6 +36,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/ipc"
 	"github.com/cloud-exit/exitbox/internal/network"
 	"github.com/cloud-exit/exitbox/internal/platform"
+	"github.com/cloud-exit/exitbox/internal/plugin"
 	"github.com/cloud-exit/exitbox/internal/plugins"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
@@ -111,9 +113,21 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	var pluginEnv []string
 	if activeWorkspace != nil {
 		ws := &activeWorkspace.Workspace
+		// A plugin that cannot work in this session (two routers, a base
+		// URL set elsewhere) stops the run here, before anything starts.
+		if err := plugins.CheckRun(ws, opts.Agent, plugin.RunInput{
+			Firewall:    !opts.NoFirewall,
+			Ollama:      opts.Ollama,
+			BaseURLFrom: baseURLSource(opts, ws.Name),
+		}); err != nil {
+			return 1, err
+		}
 		pluginEnv = plugins.EnvVars(ws, opts.Agent)
 		if !opts.NoFirewall {
 			opts.AllowURLs = append(opts.AllowURLs, plugins.Domains(ws, opts.Agent)...)
+			// Backends on the host's loopback are relayed into the
+			// container like the Ollama port.
+			opts.HostPorts = append(opts.HostPorts, plugins.HostPorts(ws, opts.Agent)...)
 		}
 	}
 
@@ -604,6 +618,48 @@ func isReservedEnvVar(key string) bool {
 		return true
 	}
 	return reserved[key]
+}
+
+// baseURLSource says where Claude Code's API base URL is set for this
+// session, or "" when nothing sets it. A router plugin that has to set the
+// base URL itself cannot run next to another setting of it.
+func baseURLSource(opts Options, workspace string) string {
+	if opts.Agent != "claude" {
+		return ""
+	}
+	const name = "ANTHROPIC_BASE_URL"
+	for _, ev := range opts.EnvVars {
+		if k, v, ok := strings.Cut(ev, "="); ok && k == name && v != "" {
+			if opts.EnvProfile != "" {
+				return fmt.Sprintf("this session's environment (env profile '%s' or -e)", opts.EnvProfile)
+			}
+			return "-e " + name
+		}
+	}
+	// With an env profile the agent config is scoped to the profile's
+	// directory, once that exists.
+	dir := profile.WorkspaceAgentDir(workspace, opts.Agent)
+	if opts.EnvProfile != "" {
+		scoped := filepath.Join(dir, "profiles", opts.EnvProfile)
+		if info, err := os.Stat(scoped); err == nil && info.IsDir() {
+			dir = scoped
+		}
+	}
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	data, err := os.ReadFile(settings)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Env map[string]interface{} `json:"env"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if v, ok := cfg.Env[name].(string); ok && v != "" {
+		return settings
+	}
+	return ""
 }
 
 // isOllamaEnvVar returns true for env vars that are set by --ollama mode.

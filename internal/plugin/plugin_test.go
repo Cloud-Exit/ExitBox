@@ -17,6 +17,7 @@
 package plugin
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -216,5 +217,63 @@ func TestPluginSettingLookup(t *testing.T) {
 	}
 	if s := p.Setting("nope"); s != nil {
 		t.Errorf("Setting(nope) = %v, want nil", s)
+	}
+}
+
+func TestSettingCheckRunsAfterTheTypeCheck(t *testing.T) {
+	calls := 0
+	s := Setting{Key: "routes", Type: TypeString, Check: func(v string) error {
+		calls++
+		if v == "bad" {
+			return fmt.Errorf("no such route")
+		}
+		return nil
+	}}
+	if err := s.Validate("good"); err != nil {
+		t.Errorf("Validate(good): %v", err)
+	}
+	err := s.Validate("bad")
+	if err == nil || err.Error() != "routes: no such route" {
+		t.Errorf("Validate(bad) = %v, want the check's error with the setting name", err)
+	}
+	// An empty value clears the setting and is never checked.
+	if err := s.Validate(""); err != nil || calls != 2 {
+		t.Errorf("Validate(\"\") = %v after %d checks, want nil and no extra check", err, calls)
+	}
+	// The type check comes first.
+	n := Setting{Key: "port", Type: TypeInt, Check: func(string) error { t.Error("checked a value of the wrong type"); return nil }}
+	if err := n.Validate("abc"); err == nil {
+		t.Error("a non-number passed an int setting")
+	}
+}
+
+func TestConflictsWith(t *testing.T) {
+	a := &Plugin{Name: "a", Conflicts: []string{"b"}}
+	b := &Plugin{Name: "b"}
+	c := &Plugin{Name: "c"}
+	if !a.ConflictsWith(b) || !b.ConflictsWith(a) {
+		t.Error("a conflict declared by one side must hold for both")
+	}
+	if a.ConflictsWith(c) || c.ConflictsWith(b) || a.ConflictsWith(a) || a.ConflictsWith(nil) {
+		t.Error("unexpected conflict")
+	}
+}
+
+func TestSecretKeys(t *testing.T) {
+	p := testPlugin()
+	p.VaultKeys = func(settings map[string]string) []string {
+		return []string{"FROM_ROUTES", "ANTHROPIC", ""}
+	}
+	got := p.SecretKeys(map[string]string{
+		"providers":         "anthropic-api",
+		"anthropic_api_key": "vault:ANTHROPIC",
+	})
+	if want := []string{"ANTHROPIC", "FROM_ROUTES"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretKeys = %v, want %v", got, want)
+	}
+	// A secret whose setting is hidden is not expected in the vault.
+	p.VaultKeys = nil
+	if got := p.SecretKeys(map[string]string{"providers": "deepseek", "anthropic_api_key": "vault:ANTHROPIC"}); len(got) != 0 {
+		t.Errorf("SecretKeys with the setting hidden = %v, want none", got)
 	}
 }

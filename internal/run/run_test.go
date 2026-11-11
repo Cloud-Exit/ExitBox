@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -179,5 +180,72 @@ func TestIsReservedEnvVar_PluginSettings(t *testing.T) {
 	}
 	if isReservedEnvVar("MY_PLUGIN_SETTING") {
 		t.Error("only EXITBOX_PLUGIN_* names are reserved")
+	}
+}
+
+func TestBaseURLSource(t *testing.T) {
+	home := withConfigHome(t)
+	claudeDir := filepath.Join(home, "profiles", "global", "work", "claude")
+	writeSettings := func(dir, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".claude", "settings.json"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Nothing sets it.
+	if got := baseURLSource(Options{Agent: "claude"}, "work"); got != "" {
+		t.Errorf("no settings: %q", got)
+	}
+	// Passed with -e.
+	if got := baseURLSource(Options{Agent: "claude", EnvVars: []string{"FOO=1", "ANTHROPIC_BASE_URL=https://openrouter.ai/api"}}, "work"); got != "-e ANTHROPIC_BASE_URL" {
+		t.Errorf("-e: %q", got)
+	}
+	// From an env profile (its variables arrive merged with -e).
+	got := baseURLSource(Options{Agent: "claude", EnvProfile: "openrouter", EnvVars: []string{"ANTHROPIC_BASE_URL=https://openrouter.ai/api"}}, "work")
+	if !strings.Contains(got, "env profile 'openrouter'") {
+		t.Errorf("env profile: %q", got)
+	}
+	// An empty value unsets the variable, a similar name is another one.
+	if got := baseURLSource(Options{Agent: "claude", EnvVars: []string{"ANTHROPIC_BASE_URL=", "MY_ANTHROPIC_BASE_URL=x"}}, "work"); got != "" {
+		t.Errorf("empty value: %q", got)
+	}
+	// Other agents do not read the variable.
+	if got := baseURLSource(Options{Agent: "codex", EnvVars: []string{"ANTHROPIC_BASE_URL=x"}}, "work"); got != "" {
+		t.Errorf("codex: %q", got)
+	}
+
+	// The legacy key older ExitBox versions wrote is not read by Claude Code.
+	writeSettings(claudeDir, `{"apiBaseUrl":"http://10.0.0.5:8080","env":{"OTHER":"x"}}`)
+	if got := baseURLSource(Options{Agent: "claude"}, "work"); got != "" {
+		t.Errorf("legacy key: %q", got)
+	}
+	// The env block of settings.json is.
+	writeSettings(claudeDir, `{"env":{"ANTHROPIC_BASE_URL":"http://10.0.0.5:8080"}}`)
+	want := filepath.Join(claudeDir, ".claude", "settings.json")
+	if got := baseURLSource(Options{Agent: "claude"}, "work"); got != want {
+		t.Errorf("settings.json: %q, want %q", got, want)
+	}
+	// Another workspace has its own settings.
+	if got := baseURLSource(Options{Agent: "claude"}, "personal"); got != "" {
+		t.Errorf("other workspace: %q", got)
+	}
+
+	// With an env profile the config is scoped to the profile's directory
+	// once it exists; before that the workspace's own settings are copied.
+	if got := baseURLSource(Options{Agent: "claude", EnvProfile: "local"}, "work"); got != want {
+		t.Errorf("profile without a directory: %q, want %q", got, want)
+	}
+	scoped := filepath.Join(claudeDir, "profiles", "local")
+	writeSettings(scoped, `{"env":{}}`)
+	if got := baseURLSource(Options{Agent: "claude", EnvProfile: "local"}, "work"); got != "" {
+		t.Errorf("profile directory without the variable: %q", got)
+	}
+	writeSettings(scoped, `not json`)
+	if got := baseURLSource(Options{Agent: "claude", EnvProfile: "local"}, "work"); got != "" {
+		t.Errorf("settings that do not parse: %q", got)
 	}
 }
