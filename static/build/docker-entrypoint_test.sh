@@ -2516,6 +2516,228 @@ test_codex_router_state_dir_per_agent() {
         "/home/user/.codex/codex-router /home/user/.claude/codex-router /home/user/.cursor/codex-router" "$out"
 }
 
+# ---- claude-router ----------------------------------------------------------
+
+SETUP_CLAUDE_ROUTER_FUNC="$(extract_func setup_claude_router)"
+CLAUDE_ROUTER_DIR_FUNC="$(extract_func claude_router_dir)"
+
+# make_router_stub writes a stand-in for exitbox-router and exitbox-vault
+# into a bin dir and prints that dir. The stand-in records what it was
+# started with in $ROUTER_STUB_DIR and reports healthy once "up" exists.
+make_router_stub() {
+    local bin
+    bin="$(mktemp -d "$TEST_TMPDIR/crbin.XXXXXX")"
+    cat > "$bin/exitbox-router" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-serve}" in
+    vault-keys)
+        if [[ "$EXITBOX_ROUTER_ROUTES" == *not-a-route* ]]; then
+            echo "exitbox-router: bad route" >&2
+            exit 2
+        fi
+        for k in $ROUTER_STUB_KEYS; do echo "$k"; done
+        ;;
+    health)
+        echo "${2:-}" >> "$ROUTER_STUB_DIR/health-ports"
+        [[ -f "$ROUTER_STUB_DIR/up" ]]
+        ;;
+    serve)
+        env | grep '^EXITBOX_ROUTER_' | sort > "$ROUTER_STUB_DIR/env"
+        if [[ -n "${ROUTER_STUB_FAIL:-}" ]]; then
+            echo "listen tcp 127.0.0.1: address already in use" >&2
+            exit 1
+        fi
+        touch "$ROUTER_STUB_DIR/up"
+        ;;
+esac
+STUB
+    cat > "$bin/exitbox-vault" <<'STUB'
+#!/usr/bin/env bash
+# get <KEY>: one key is missing from the vault.
+[[ "$1" == "get" ]] || exit 1
+[[ "$2" == "KEY_MISSING" ]] && exit 1
+echo "secret-for-$2"
+STUB
+    chmod +x "$bin/exitbox-router" "$bin/exitbox-vault"
+    echo "$bin"
+}
+
+# run_claude_router runs setup_claude_router in a clean shell and prints its
+# output followed by what the calling shell ends up with.
+#   $1 home dir, $2 stub state dir, further args: VAR=value settings
+run_claude_router() {
+    local home="$1" state="$2" bin
+    shift 2
+    bin="$(make_router_stub)"
+    (
+        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY
+        unset EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES EXITBOX_PLUGIN_CLAUDE_ROUTER_PORT
+        unset EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE
+        unset ROUTER_STUB_KEYS ROUTER_STUB_FAIL
+        export HOME="$home" AGENT="claude" ROUTER_STUB_DIR="$state"
+        export PATH="$bin:$PATH"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START="true"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE="true"
+        local kv
+        for kv in "$@"; do export "$kv"; done
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+        echo "AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-unset}"
+        echo "API_KEY=${ANTHROPIC_API_KEY:-unset}"
+        echo "LEAKED=$(env | grep -c 'secret-for-')"
+    ) 2>&1
+}
+
+assert_not_contains() {
+    local desc="$1" haystack="$2" needle="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: $desc: output must not contain '$needle'")
+    fi
+}
+
+test_setup_claude_router_starts_and_points_claude_at_it() {
+    local home state out env
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A,gemma=http://10.0.0.22:8000=vault:KEY_MISSING,phi=http://10.0.0.23:8000=vault:KEY_C" \
+        "ROUTER_STUB_KEYS=KEY_A KEY_MISSING KEY_C")"
+    env="$(cat "$state/env" 2>/dev/null)"
+
+    assert_contains "setup_claude_router exports the base URL on the default port" "$out" "BASE_URL=http://127.0.0.1:4203"
+    assert_contains "setup_claude_router leaves ANTHROPIC_AUTH_TOKEN alone" "$out" "AUTH_TOKEN=unset"
+    assert_contains "setup_claude_router leaves ANTHROPIC_API_KEY alone" "$out" "API_KEY=unset"
+    assert_contains "setup_claude_router keeps tokens out of the agent's environment" "$out" "LEAKED=0"
+    assert_contains "setup_claude_router passes the routes to the router" "$env" \
+        "EXITBOX_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A,gemma=http://10.0.0.22:8000=vault:KEY_MISSING,phi=http://10.0.0.23:8000=vault:KEY_C"
+    assert_contains "setup_claude_router passes the port" "$env" "EXITBOX_ROUTER_PORT=4203"
+    assert_contains "setup_claude_router passes sanitize" "$env" "EXITBOX_ROUTER_SANITIZE=true"
+    assert_contains "setup_claude_router logs into the Claude config dir" "$env" "EXITBOX_ROUTER_LOG=$home/.claude/exitbox-router/router.log"
+    # Tokens go by position, so a missing key must leave its slot empty and
+    # not shift the next token onto it.
+    assert_contains "setup_claude_router hands over the first token" "$env" "EXITBOX_ROUTER_SECRET_0=secret-for-KEY_A"
+    assert_not_contains "setup_claude_router leaves the slot of a missing key empty" "$env" "EXITBOX_ROUTER_SECRET_1="
+    assert_contains "setup_claude_router keeps the third token in its slot" "$env" "EXITBOX_ROUTER_SECRET_2=secret-for-KEY_C"
+    assert_contains "setup_claude_router warns about a missing vault key" "$out" "vault key 'KEY_MISSING' is not available"
+    assert_not_contains "setup_claude_router never prints a token" "$out" "secret-for-"
+}
+
+test_setup_claude_router_uses_the_configured_port() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_PORT=4999" "EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE=false")"
+    assert_contains "setup_claude_router exports the configured port" "$out" "BASE_URL=http://127.0.0.1:4999"
+    assert_contains "setup_claude_router starts the router on the configured port" "$(cat "$state/env")" "EXITBOX_ROUTER_PORT=4999"
+    assert_contains "setup_claude_router passes sanitize=false on" "$(cat "$state/env")" "EXITBOX_ROUTER_SANITIZE=false"
+    assert_contains "setup_claude_router checks health on the configured port" "$(cat "$state/health-ports")" "4999"
+}
+
+test_setup_claude_router_without_routes() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state")"
+    assert_contains "setup_claude_router asks for routes when none are configured" "$out" "no routes configured"
+    assert_contains "setup_claude_router sets no base URL without routes" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing without routes" "$state/env"
+}
+
+test_setup_claude_router_auto_start_off() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START=false")"
+    assert_contains "setup_claude_router sets no base URL with auto_start off" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing with auto_start off" "$state/env"
+}
+
+test_setup_claude_router_failed_start_leaves_claude_alone() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "ROUTER_STUB_FAIL=1")"
+    assert_contains "setup_claude_router leaves the base URL unset when the router fails" "$out" "BASE_URL=unset"
+    assert_contains "setup_claude_router says the router did not start" "$out" "did not start"
+    assert_contains "setup_claude_router names the log file" "$out" "$home/.claude/exitbox-router/start.log"
+    assert_contains "setup_claude_router keeps the router's own error in that log" \
+        "$(cat "$home/.claude/exitbox-router/start.log" 2>/dev/null)" "address already in use"
+}
+
+test_setup_claude_router_respects_an_existing_base_url() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "ANTHROPIC_BASE_URL=https://gateway.example.com")"
+    assert_contains "setup_claude_router keeps a base URL that is already set" "$out" "BASE_URL=https://gateway.example.com"
+    assert_contains "setup_claude_router says why it did not start" "$out" "ANTHROPIC_BASE_URL is already set"
+    assert_file_missing "setup_claude_router starts nothing next to another base URL" "$state/env"
+}
+
+test_setup_claude_router_rejects_invalid_routes() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=not-a-route")"
+    assert_contains "setup_claude_router reports routes that do not parse" "$out" "routes setting is not valid"
+    assert_contains "setup_claude_router sets no base URL for invalid routes" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing for invalid routes" "$state/env"
+}
+
+test_setup_claude_router_reuses_a_running_router() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    touch "$state/up"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A" "ROUTER_STUB_KEYS=KEY_A")"
+    assert_contains "setup_claude_router points at a router that already runs" "$out" "BASE_URL=http://127.0.0.1:4203"
+    assert_file_missing "setup_claude_router does not start a second router" "$state/env"
+}
+
+test_setup_claude_router_only_for_claude() {
+    local out
+    out="$(
+        unset ANTHROPIC_BASE_URL
+        export AGENT="codex" EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES="qwen=http://10.0.0.21:8080"
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+    )" 2>&1
+    assert_eq "setup_claude_router leaves other agents alone" "BASE_URL=unset" "$out"
+}
+
+test_setup_claude_router_requires_installed_binary() {
+    local out
+    out="$(
+        unset ANTHROPIC_BASE_URL
+        export AGENT="claude" PATH="/nonexistent-dir"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES="qwen=http://10.0.0.21:8080"
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router 2>&1
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+    )"
+    assert_contains "setup_claude_router reports a missing install" "$out" "not installed in this image"
+    assert_contains "setup_claude_router sets no base URL without the binary" "$out" "BASE_URL=unset"
+}
+
+test_setup_plugins_dispatches_claude_router() {
+    local out
+    out="$(
+        export EXITBOX_PLUGINS="codex-router,claude-router"
+        eval "$SETUP_PLUGINS_FUNC"
+        setup_codex_router() { echo "CODEX"; }
+        setup_claude_router() { echo "CLAUDE"; }
+        setup_plugins
+    )"
+    assert_eq "setup_plugins dispatches claude-router" "CODEX
+CLAUDE" "$out"
+}
+
 test_codex_router_state_dir_per_agent
 test_plugin_env_var_naming
 test_plugin_setting_plain_value
@@ -2528,6 +2750,17 @@ test_setup_codex_router_requires_installed_binary
 test_setup_codex_router_skips_unsupported_agent
 test_setup_codex_router_configures_and_starts
 test_setup_codex_router_without_providers
+test_setup_claude_router_starts_and_points_claude_at_it
+test_setup_claude_router_uses_the_configured_port
+test_setup_claude_router_without_routes
+test_setup_claude_router_auto_start_off
+test_setup_claude_router_failed_start_leaves_claude_alone
+test_setup_claude_router_respects_an_existing_base_url
+test_setup_claude_router_rejects_invalid_routes
+test_setup_claude_router_reuses_a_running_router
+test_setup_claude_router_only_for_claude
+test_setup_claude_router_requires_installed_binary
+test_setup_plugins_dispatches_claude_router
 
 # ============================================================================
 # Results

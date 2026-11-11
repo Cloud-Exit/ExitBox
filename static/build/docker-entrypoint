@@ -1525,6 +1525,7 @@ setup_plugins() {
     for name in ${EXITBOX_PLUGINS//,/ }; do
         case "$name" in
             codex-router) setup_codex_router ;;
+            claude-router) setup_claude_router ;;
             *) echo "[WARN] Unknown plugin '$name' - skipped" >&2 ;;
         esac
     done
@@ -1615,6 +1616,117 @@ setup_codex_router() {
     # and let it die with the container.
     nohup model-router "$target" start --foreground >"${state_dir}/exitbox-router.log" 2>&1 &
     disown 2>/dev/null || true
+}
+
+# claude_router_dir returns where the router keeps its logs. It is inside
+# the Claude Code config dir, which is mounted per workspace, so the logs
+# can be read on the host after the session.
+claude_router_dir() {
+    echo "$HOME/.claude/exitbox-router"
+}
+
+# setup_claude_router starts exitbox-router and points Claude Code at it.
+# Requests for Claude models pass through to Anthropic untouched; requests
+# for a routed model ID go to the local backend of that route.
+#
+# Only ANTHROPIC_BASE_URL is set. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY
+# stay as they are, so a claude.ai subscription login keeps being the active
+# credential. The variable is exported into this shell only, never written
+# to settings.json: disabling the plugin fully reverts it.
+setup_claude_router() {
+    local routes port auto_start sanitize dir keys key token i tries
+    [[ "$AGENT" == "claude" ]] || return 0
+    if ! command -v exitbox-router >/dev/null 2>&1; then
+        echo "[WARN] claude-router is enabled but not installed in this image." >&2
+        echo "[WARN] Rebuild it with: exitbox rebuild ${AGENT}" >&2
+        return 0
+    fi
+
+    auto_start="$(plugin_setting claude-router auto_start)" || auto_start=""
+    [[ "$auto_start" == "false" ]] && return 0
+
+    routes="$(plugin_setting claude-router routes)" || routes=""
+    if [[ -z "$routes" ]]; then
+        echo "[INFO] claude-router: no routes configured. Run: exitbox plugins edit claude claude-router" >&2
+        return 0
+    fi
+
+    # ExitBox refuses this combination before the container starts; this
+    # catches a base URL that appeared some other way.
+    if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+        echo "[WARN] claude-router: ANTHROPIC_BASE_URL is already set, so the router is not started." >&2
+        return 0
+    fi
+
+    port="$(plugin_setting claude-router port)" || port=""
+    [[ "$port" =~ ^[0-9]+$ ]] || port="4203"
+    sanitize="$(plugin_setting claude-router sanitize)" || sanitize=""
+    dir="$(claude_router_dir)"
+    mkdir -p "$dir" 2>/dev/null || true
+
+    # Already running, because the agent loop was entered again.
+    if exitbox-router health "$port" 2>/dev/null; then
+        export ANTHROPIC_BASE_URL="http://127.0.0.1:${port}"
+        return 0
+    fi
+
+    if ! keys="$(EXITBOX_ROUTER_ROUTES="$routes" exitbox-router vault-keys 2>"$dir/start.log")"; then
+        echo "[WARN] claude-router: the routes setting is not valid, so the router is not started. See $dir/start.log" >&2
+        return 0
+    fi
+
+    # Backend tokens come from the vault here, in the foreground, because
+    # each read waits for approval on the host. They are held in a local
+    # array and exported only inside the subshell that becomes the router:
+    # they never reach Claude Code's environment or the disk. The router
+    # takes them by position, in the order vault-keys printed the keys.
+    local -a tokens=()
+    i=0
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        token=""
+        if command -v exitbox-vault >/dev/null 2>&1; then
+            token="$(exitbox-vault get "$key" 2>/dev/null)" || token=""
+        fi
+        if [[ -z "$token" ]]; then
+            echo "[WARN] claude-router: vault key '$key' is not available; its routes are sent without a token." >&2
+        fi
+        tokens[i]="$token"
+        i=$((i + 1))
+    done <<< "$keys"
+    token=""
+
+    (
+        for i in "${!tokens[@]}"; do
+            if [[ -n "${tokens[$i]}" ]]; then
+                export "EXITBOX_ROUTER_SECRET_${i}=${tokens[$i]}"
+            fi
+        done
+        export EXITBOX_ROUTER_ROUTES="$routes"
+        export EXITBOX_ROUTER_PORT="$port"
+        export EXITBOX_ROUTER_SANITIZE="$sanitize"
+        export EXITBOX_ROUTER_LOG="$dir/router.log"
+        # No service manager inside the container: the router runs detached
+        # and dies with the container.
+        exec nohup exitbox-router >>"$dir/start.log" 2>&1
+    ) &
+    disown 2>/dev/null || true
+    tokens=()
+
+    tries=0
+    while (( tries < 50 )); do
+        if exitbox-router health "$port" 2>/dev/null; then
+            export ANTHROPIC_BASE_URL="http://127.0.0.1:${port}"
+            return 0
+        fi
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+
+    # Claude Code still works on Claude models; a routed subagent now fails
+    # with an error from Anthropic instead of silently using another model.
+    echo "[WARN] claude-router: the router did not start within 5 seconds. Claude Code runs without it and routed subagents will fail." >&2
+    echo "[WARN] See $dir/start.log" >&2
 }
 
 # ============================================================================
