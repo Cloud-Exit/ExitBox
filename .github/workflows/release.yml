@@ -92,6 +92,11 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o static/build/exitbox-kv-amd64 ./cmd/exitbox-kv/
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o static/build/exitbox-kv-arm64 ./cmd/exitbox-kv/
 
+      - name: Build exitbox-router (embedded in main binary)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags "-s -w" -o static/build/exitbox-router-amd64 ./cmd/exitbox-router/
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags "-s -w" -o static/build/exitbox-router-arm64 ./cmd/exitbox-router/
+
       - name: Build binaries
         run: |
           if [ -n "${{ inputs.version }}" ]; then
