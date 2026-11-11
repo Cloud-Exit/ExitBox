@@ -35,6 +35,7 @@ const (
 	itemKey
 	itemMasterSkill
 	itemReviewer
+	itemMoveRoute
 )
 
 // The master skill's Reviewer line, replaced in tests.
@@ -51,7 +52,8 @@ var (
 type pageItem struct {
 	kind  int
 	row   int    // index into rows, for itemSubagent
-	model string // for itemBackend and itemKey
+	model string // for itemBackend, itemKey, and the target of itemMoveRoute
+	from  string // for itemMoveRoute: the route whose backend moves
 }
 
 // isClaudePage reports whether the open page is Claude Code's, the only
@@ -102,6 +104,61 @@ func (m Model) routedModels() []string {
 	return out
 }
 
+// routeMoves offers to hand an unused route's backend (URL and key) to a
+// model that needs one, as happens when a subagent's model is renamed.
+func (m Model) routeMoves() []pageItem {
+	var unused []string
+	for _, r := range m.sub.router.Routes {
+		if !m.modelInUse(r.ID) {
+			unused = append(unused, r.ID)
+		}
+	}
+	if len(unused) == 0 {
+		return nil
+	}
+	var out []pageItem
+	for _, model := range m.routedModels() {
+		if _, ok := m.route(model); ok || !m.modelInUse(model) {
+			continue
+		}
+		for _, from := range unused {
+			out = append(out, pageItem{kind: itemMoveRoute, model: model, from: from})
+		}
+	}
+	return out
+}
+
+// moveRoute renames a route to another model, keeping its backend URL,
+// served name and vault key.
+func (m Model) moveRoute(from, to string) Model {
+	routes := append([]router.Route(nil), m.sub.router.Routes...)
+	var moved router.Route
+	found := false
+	for i := range routes {
+		if routes[i].ID == from {
+			routes[i].ID = to
+			moved, found = routes[i], true
+		}
+	}
+	if !found {
+		return m
+	}
+	if _, err := router.ParseRoutes(moved.String()); err != nil {
+		m.sub.msg, m.sub.msgIsError = err.Error(), true
+		return m
+	}
+	m = m.saveRouter(m.sub.routerOn, routes, false)
+	if m.sub.msgIsError {
+		return m
+	}
+	m.sub.msg = fmt.Sprintf("%s now runs on %s", to, moved.URL)
+	if moved.VaultKey != "" {
+		m.sub.msg += " with the key in the vault as " + moved.VaultKey
+	}
+	m.sub.msg += ". The route for " + from + " is gone."
+	return m.reloadPage()
+}
+
 // modelInUse reports whether a subagent used in the workspace runs on model.
 func (m Model) modelInUse(model string) bool {
 	for _, r := range m.sub.rows {
@@ -126,6 +183,9 @@ func (m Model) pageItems() []pageItem {
 		items = append(items, pageItem{kind: itemSubagent, row: i})
 	}
 	if m.isClaudePage() && m.sub.routerOn {
+		for _, mv := range m.routeMoves() {
+			items = append(items, mv)
+		}
 		for _, model := range m.routedModels() {
 			items = append(items, pageItem{kind: itemBackend, model: model}, pageItem{kind: itemKey, model: model})
 		}
@@ -218,6 +278,8 @@ func (m Model) activateItem(it pageItem) (tea.Model, tea.Cmd) {
 		return m.reloadSubagentInfos(), nil
 	case itemReviewer:
 		return m.nextReviewer(), nil
+	case itemMoveRoute:
+		return m.moveRoute(it.from, it.model), nil
 	}
 	return m, nil
 }
@@ -606,6 +668,14 @@ func (m Model) viewSubagentManage() string {
 		return s
 	}
 
+	// Backend labels are as wide as the longest model name needs.
+	backendWidth := 28
+	for _, model := range m.routedModels() {
+		if w := len(model) + len(" API key") + 2; w > backendWidth {
+			backendWidth = w
+		}
+	}
+
 	unrouted := 0
 	for _, r := range m.sub.rows {
 		if r.Stored && needsRoute(r.Model) {
@@ -653,6 +723,13 @@ func (m Model) viewSubagentManage() string {
 				note = dimStyle.Render(note)
 			}
 			line(idx, fmt.Sprintf("%s %s %s", checkbox(r.Stored), label(idx, r.Name, 24, r.Problem != ""), note))
+		case itemMoveRoute:
+			if idx == 0 || items[idx-1].kind != itemMoveRoute {
+				b.WriteString("\n" + dimStyle.Render("  A subagent's model changed") + "\n")
+			}
+			src, _ := m.route(it.from)
+			line(idx, fmt.Sprintf("%s %s", label(idx, "Use backend of "+it.from+" for "+it.model, 0, false),
+				dimStyle.Render("("+src.URL+", key kept; press Enter)")))
 		case itemBackend:
 			if idx == 0 || items[idx-1].kind != itemKey {
 				b.WriteString("\n" + dimStyle.Render("  Backends (llama.cpp or vLLM serving the Anthropic Messages API)") + "\n")
@@ -664,13 +741,13 @@ func (m Model) viewSubagentManage() string {
 					value += dimStyle.Render("   (no subagent here uses this model; Enter, Ctrl+U, Enter removes it)")
 				}
 			}
-			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" URL", 28, false), value))
+			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" URL", backendWidth, false), value))
 		case itemKey:
 			value := dimStyle.Render("none (press Enter if the server needs one)")
 			if r, ok := m.route(it.model); ok && r.VaultKey != "" {
 				value = selectedStyle.Render("in vault") + dimStyle.Render(" as "+r.VaultKey)
 			}
-			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" API key", 28, false), value))
+			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" API key", backendWidth, false), value))
 		case itemMasterSkill:
 			b.WriteString("\n" + dimStyle.Render("  Master skill") + "\n")
 			text, desc := "Create master skill", "The main agent coordinates: it hands tasks to subagents and reviews their work"

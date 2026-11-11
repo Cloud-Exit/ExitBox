@@ -767,3 +767,39 @@ func TestSubagentManage_Reviewer(t *testing.T) {
 		t.Errorf("no line: set = %v\n%s", set, m.View())
 	}
 }
+
+// The model of a subagent was renamed after its backend was set up: the
+// page offers to hand the old route's URL and key to the new name.
+func TestSubagentManage_MoveRouteAfterModelRename(t *testing.T) {
+	st := stubSubagents(t)
+	const oldID, newID = "cloud-exit/mesh-ai-coder-v1[1m]", "cloud-exit/mesh-ai-coder-v1"
+	old, _ := router.ParseRoutes(oldID + "=https://ai.exitmesh.com=vault:CLAUDE_ROUTER_CLOUD_EXIT_MESH_AI_CODER_V1_1M_KEY")
+	st.router = routerState{Known: true, Enabled: true, Routes: old}
+	st.rows["claude"] = []subagentRow{{Name: "meshai", Model: newID, Path: "/h/m.md", File: "m.md", Stored: true, Source: subagents.SourceImported}}
+
+	m := openAgentPage(t, rerunModel("default"), "claude")
+	view := m.View()
+	if !strings.Contains(view, "Use backend of "+oldID+" for "+newID) || !strings.Contains(view, "(https://ai.exitmesh.com, key kept; press Enter)") {
+		t.Fatalf("no move offered:\n%s", view)
+	}
+	// Long model names keep the value column apart from the label.
+	if !strings.Contains(view, oldID+" API key ") {
+		t.Errorf("label runs into its value:\n%s", view)
+	}
+
+	m = press(t, at(t, m, itemMoveRoute, newID), "enter")
+	want := "true|" + newID + "=https://ai.exitmesh.com=vault:CLAUDE_ROUTER_CLOUD_EXIT_MESH_AI_CODER_V1_1M_KEY|false@default"
+	if len(st.saved) != 1 || st.saved[0] != want {
+		t.Fatalf("saved = %v, want %s", st.saved, want)
+	}
+	view = m.View()
+	if strings.Contains(view, "Use backend of") || strings.Contains(view, oldID+" URL") || !strings.Contains(view, newID+" on https://ai.exitmesh.com") {
+		t.Errorf("after the move:\n%s", view)
+	}
+	if !strings.Contains(view, "with the key in the vault as CLAUDE_ROUTER_CLOUD_EXIT_MESH_AI_CODER_V1_1M_KEY") {
+		t.Errorf("message does not say the key was kept:\n%s", view)
+	}
+	if itemCount(m, itemMoveRoute) != 0 {
+		t.Error("move still offered")
+	}
+}
