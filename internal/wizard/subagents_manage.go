@@ -183,9 +183,7 @@ func (m Model) pageItems() []pageItem {
 		items = append(items, pageItem{kind: itemSubagent, row: i})
 	}
 	if m.isClaudePage() && m.sub.routerOn {
-		for _, mv := range m.routeMoves() {
-			items = append(items, mv)
-		}
+		items = append(items, m.routeMoves()...)
 		for _, model := range m.routedModels() {
 			items = append(items, pageItem{kind: itemBackend, model: model}, pageItem{kind: itemKey, model: model})
 		}
