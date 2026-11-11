@@ -260,7 +260,7 @@ Compatible agents: **Claude, Codex, OpenCode, Copilot, Pi**. (Cursor's graphify 
 
 Plugins extend an agent inside its ExitBox image. They are enabled **per workspace**, installed into a dedicated plugins image layer, and configured through a menu whose settings are applied when the container starts.
 
-The first plugin is [codex-router](https://github.com/duolahypercho/codex-router): a local model router that lets **Codex**, **Claude Code**, and **Cursor** talk to Anthropic, DeepSeek, Kimi, Grok, OpenRouter, and other providers through one gateway running inside the container.
+There are two plugins. [claude-router](#claude-router-experimental) runs Claude Code subagents on local models and is described below. The other is [codex-router](https://github.com/duolahypercho/codex-router): a local model router that lets **Codex**, **Claude Code**, and **Cursor** talk to Anthropic, DeepSeek, Kimi, Grok, OpenRouter, and other providers through one gateway running inside the container.
 
 ```bash
 exitbox plugins list                       # Every plugin, per agent, with status
@@ -282,6 +282,54 @@ exitbox vault set CODEX_ROUTER_ANTHROPIC_KEY <your-api-key>
 At container start the entrypoint resolves the reference through the vault, exports it as the variable the router expects, publishes the routes to the agent, and starts the router service. The provider API hosts a plugin needs are added to the firewall allowlist for that session automatically.
 
 Enabling or disabling a plugin, or pinning a different version, changes the image: apply it with `exitbox rebuild <agent>` or the next `exitbox run <agent>`. Editing settings does not rebuild anything.
+
+#### Claude Router (Experimental)
+
+`claude-router` keeps a Claude Code session on Claude models and sends chosen [subagents](#subagents) to a model you host yourself with llama.cpp or vLLM. A subagent with `model: qwen3.6-27b` then runs locally while the main session stays on Opus, and a claude.ai subscription login keeps working.
+
+```bash
+exitbox plugins enable claude claude-router
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080"
+exitbox run claude
+```
+
+A route is `model-id=backend-url[=served-name][=vault:KEY]`. Several routes are separated by commas.
+
+| Part | Meaning |
+|:-----|:--------|
+| `model-id` | The value subagents put in `model:`. It must not start with `claude` or be `sonnet`, `opus`, `haiku`, `fable` or `inherit`. |
+| `backend-url` | Base URL of a server that speaks the Anthropic Messages API (`/v1/messages`), such as `llama-server` or vLLM. A trailing `/v1` is dropped. |
+| `served-name` | The model name the backend knows, when it differs from `model-id`. |
+| `vault:KEY` | Vault key that holds the backend's API key. |
+
+**Backend authentication.** A backend that was started with an API key (`llama-server --api-key`, `vllm serve --api-key`) gets it from the vault:
+
+```bash
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080=vault:LOCAL_LLM_KEY"
+exitbox vault set LOCAL_LLM_KEY
+```
+
+At container start ExitBox reads each key from the vault, with one approval per key, and hands it to the router process only. The router sends it to that backend as `Authorization: Bearer` and as `x-api-key`. The key never reaches Claude Code's environment, a file, or the Anthropic API, and Claude Code's own credentials never reach a backend.
+
+How it works:
+
+- **Router**: `exitbox-router`, a small Go program that is part of ExitBox and is copied into the plugins image layer. No third-party code is installed. At container start it listens on `127.0.0.1:4203` and ExitBox exports `ANTHROPIC_BASE_URL` for Claude Code. Nothing is written to `settings.json`, so disabling the plugin reverts everything.
+- **Claude models**: a request whose model has no route goes to `api.anthropic.com` with its original body bytes and headers.
+- **Routed models**: the request goes to the route's backend. With `sanitize` on, only the Messages API fields a local server understands are kept, server tools such as web search are dropped and named in the log, and `system` entries inside the conversation become `<system-reminder>` blocks in the neighbouring user turn. `cache_control` is kept until a backend rejects it.
+- **Firewall**: backend hosts are allowed for the session, including LAN backends addressed by IP. A backend on the host's loopback (`http://127.0.0.1:8080` or `http://localhost:8080`) is relayed into the container the same way `--ollama` reaches Ollama. Behind the firewall an `https` backend has to listen on port 443; plain `http` works on any port.
+- **Log**: one line per request in `~/.claude/exitbox-router/router.log` inside the container, with model, route, status, duration and token counts, never bodies or headers. Responses from Anthropic arrive compressed, so their lines carry no token counts. Start-up messages are in `start.log` next to it. On the host both files are under the workspace's `claude/.claude/exitbox-router/`.
+- **Validation**: while the plugin is enabled, `exitbox subagents validate` reports a subagent whose model has no route as an error. `exitbox subagents validate --probe` also asks each backend for its context size (llama.cpp `/props`, vLLM `/v1/models`) and warns when `autoCompactWindow` is missing or larger than that.
+
+Settings: `routes`, `port` (default `4203`), `auto_start` (default `true`), `sanitize` (default `true`).
+
+Limits:
+
+- **Experimental.** Anthropic does not support routing Claude Code to non-Claude models through a gateway. A new Claude Code release can add request fields that break local subagents until the sanitizer is updated.
+- **One owner of the base URL.** It cannot be enabled together with `codex-router` for Claude Code. A run is refused with `--ollama`, and when `ANTHROPIC_BASE_URL` is already set by an env profile, by `-e`, or in the workspace's Claude Code `settings.json`.
+- **Messages API only.** OpenAI-format endpoints are not translated.
+- **Router not running.** If the router fails to start, Claude Code runs without it: the main session works and routed subagents fail with an error.
+- **Fallback models.** If you configure a fallback model in Claude Code, a backend outage can move a subagent onto a paid Claude model. The router log shows the switch.
+- **Context size.** A local model usually has less context than a Claude model. Set `autoCompactWindow` in the subagent; Claude Code accepts 100000 to 1000000.
 
 ### GPU Support (Experimental)
 
@@ -418,7 +466,7 @@ All commands take `-w <workspace>` and `--agent <agent>`.
 - **Installing**: for Claude Code each file becomes a symlink in `~/.claude/agents/`, which Claude Code is verified to load. For the other agents that is not verified, so each file is copied and the copies are refreshed, or removed, at every start. A file with the same name that is already there (created inside the container, or copied by `exitbox config import`) is kept, and the managed one is skipped with a warning. A project's own agents directory is never touched.
 - **Changes** made on the host reach a running session at the next container start.
 - **Validation**: most agents skip a broken agent file without telling you. `validate`, `new`, `edit`, and `add` report as errors what makes the agent skip the file, and as warnings what it ignores:
-  - *Claude Code*: errors for an opening `---` that is not on line 1, YAML that does not parse, a missing `name` or `description`, a `name` that starts with `-`, contains `:`, or is longer than 256 characters, and two files with the same `name`. Warnings for unknown fields (with the closest known one), a `model` that is not `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a `claude-*` ID, an `autoCompactWindow` that is not a plain integer from 100000 to 1000000 (`200k` is read as 200), and an env profile that sets `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, which makes Claude Code ignore every `model` field.
+  - *Claude Code*: errors for an opening `---` that is not on line 1, YAML that does not parse, a missing `name` or `description`, a `name` that starts with `-`, contains `:`, or is longer than 256 characters, and two files with the same `name`. Warnings for unknown fields (with the closest known one), a `model` that is not `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a `claude-*` ID (no finding when [claude-router](#claude-router-experimental) has a route for it, an error when that plugin is enabled without one), an `autoCompactWindow` that is not a plain integer from 100000 to 1000000 (`200k` is read as 200), and an env profile that sets `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, which makes Claude Code ignore every `model` field.
   - *OpenAI Codex*: errors for TOML that does not parse and a missing `name`, `description` or `developer_instructions`. Warnings for `sandbox_mode`, `approval_policy`, `model_provider` and `mcp_servers`, which an agent file cannot override.
   - *GitHub Copilot CLI*: errors for a missing `description` and a prompt over 30,000 characters. Warnings for the retired `infer` and for undocumented properties.
   - *Cursor CLI*: warnings only: a missing `description`, a `name` that is not lowercase letters and hyphens, undocumented fields.
@@ -458,7 +506,7 @@ From then on the file is yours: reorder the routes, add rules for third-party ag
 - **Storage**: `~/.config/exitbox/profiles/global/<workspace>/subagents/<agent>/master-skill/SKILL.md`. It sits in the read-only subagent store, so a session cannot change the rules the next session follows.
 - **Linking**: at container start it is linked as `master-skill` into the agent's skill directory. A skill with the same name that you installed with `exitbox skills install`, or that already exists in the agent's skill directory, is kept and the master skill is skipped with a warning.
 - **Validation**: `edit` and `exitbox subagents validate` report missing frontmatter, a missing `name`, or a missing `description` as errors, because agents skip such a skill.
-- **Third-party models**: for Claude Code, a route to a subagent whose `model` is not a Claude model only works once claude-router is available; `exitbox subagents validate` flags those subagents.
+- **Third-party models**: for Claude Code, a route to a subagent whose `model` is not a Claude model needs the [claude-router](#claude-router-experimental) plugin with a route for that model; `exitbox subagents validate` flags subagents that have none.
 
 ### Named Resumable Sessions
 
@@ -725,6 +773,7 @@ exitbox subagents edit <name>      # Edit a subagent in $EDITOR and validate it
 exitbox subagents show <name>      # Print a subagent file
 exitbox subagents rm <name>        # Remove a subagent
 exitbox subagents validate [name]  # Check subagents against their agent's loading rules
+exitbox subagents validate --probe # Also compare autoCompactWindow with each claude-router backend's context
 exitbox env create <profile>       # Create a new env profile
 exitbox env edit <profile>         # Edit env profile in $EDITOR
 exitbox env list                   # List env profiles
@@ -747,6 +796,8 @@ exitbox plugins show codex codex-router       # Stored configuration
 exitbox plugins set codex codex-router port 4300      # Set one setting
 exitbox plugins set codex codex-router port           # Clear it (back to default)
 exitbox plugins enable codex codex-router -w work     # Target another workspace
+exitbox plugins enable claude claude-router           # Local models for Claude Code subagents
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080=vault:LOCAL_LLM_KEY"
 
 # Project-scoped marketplace plugins (Codex)
 exitbox plugins install codex https://github.com/org/plugin-repo
