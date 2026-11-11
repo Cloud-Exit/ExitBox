@@ -110,7 +110,7 @@ func (h *Harness) StoreFiles(workspace string, files map[string][]byte, origin f
 		case err != nil:
 			o.Reason = err.Error()
 		default:
-			o.Status, o.File, o.Findings = Added, filepath.Base(path), findings
+			o.Status, o.File, o.Findings = Added, filepath.Base(path), h.withRoutes(workspace, def, findings)
 		}
 		out = append(out, o)
 	}

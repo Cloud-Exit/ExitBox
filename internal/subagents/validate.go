@@ -58,6 +58,9 @@ var KnownFields = []string{
 // ModelAliases are the non-ID values the model field accepts.
 var ModelAliases = []string{"sonnet", "opus", "haiku", "fable", "inherit"}
 
+// MinAutoCompactWindow is the smallest autoCompactWindow Claude Code accepts.
+const MinAutoCompactWindow = minAutoCompactWindow
+
 const (
 	maxNameLen           = 256
 	minAutoCompactWindow = 100000
@@ -91,6 +94,58 @@ type Finding struct {
 	Severity Severity `json:"severity"`
 	Field    string   `json:"field,omitempty"`
 	Message  string   `json:"message"`
+	// code marks a finding that depends on more than the file, so it can
+	// be settled once the workspace is known.
+	code string
+}
+
+// codeNeedsRoute marks the finding for a model that is not a Claude model.
+// Whether that is a problem depends on the workspace's claude-router routes.
+const codeNeedsRoute = "model-needs-route"
+
+// Routes is what validation needs to know about the claude-router plugin
+// of a workspace.
+type Routes struct {
+	Enabled bool     // the plugin is enabled for Claude Code
+	IDs     []string // model IDs that have a route
+}
+
+// RoutesFor reports the claude-router routes of a workspace. The command
+// layer sets it from the plugin configuration; by default no workspace has
+// routes, which keeps this package free of configuration loading.
+var RoutesFor = func(workspace string) Routes { return Routes{} }
+
+// withRoutes settles the findings that depend on the workspace's routes: a
+// model that is not a Claude model is fine when a route serves it, and an
+// error when the router is on but has no route for it, because Anthropic
+// rejects the model and the subagent fails on its first request.
+func (h *Harness) withRoutes(workspace string, def *Definition, fs []Finding) []Finding {
+	if h != Claude || def == nil {
+		return fs
+	}
+	out := fs[:0:0]
+	for _, f := range fs {
+		if f.code != codeNeedsRoute {
+			out = append(out, f)
+			continue
+		}
+		r := RoutesFor(workspace)
+		switch {
+		case !r.Enabled:
+			out = append(out, f)
+		case contains(r.IDs, def.Model):
+			// Routed: nothing to report.
+		default:
+			have := "none configured"
+			if len(r.IDs) > 0 {
+				have = strings.Join(r.IDs, ", ")
+			}
+			out = append(out, Finding{Severity: Error, Field: "model", Message: fmt.Sprintf(
+				"%q has no claude-router route (routes: %s), so the subagent fails on its first request; add one with: exitbox plugins edit claude claude-router",
+				def.Model, have)})
+		}
+	}
+	return out
 }
 
 func (f Finding) String() string {
@@ -116,6 +171,9 @@ type Definition struct {
 	Description string
 	Model       string
 	Tools       []string
+	// AutoCompactWindow is the autoCompactWindow field when Claude Code
+	// accepts it, and 0 when the file has none or an ignored one.
+	AutoCompactWindow int
 	// Fields holds every top-level key, in file order.
 	Fields []string
 }
@@ -177,7 +235,7 @@ func parseClaude(_ *Harness, _ string, data []byte) (*Definition, []Finding) {
 	findings = append(findings, checkModel(def, values["model"])...)
 	findings = append(findings, checkTools(def, "tools", values["tools"])...)
 	findings = append(findings, checkTools(nil, "disallowedTools", values["disallowedTools"])...)
-	findings = append(findings, checkAutoCompactWindow(values["autoCompactWindow"])...)
+	findings = append(findings, checkAutoCompactWindow(def, values["autoCompactWindow"])...)
 	findings = append(findings, checkUnknownFields(def.Fields)...)
 	return def, findings
 }
@@ -265,8 +323,8 @@ func checkModel(def *Definition, n *yaml.Node) []Finding {
 	if lower := strings.ToLower(n.Value); ClassifyModel(lower) != ModelOther {
 		return []Finding{{Severity: Warning, Field: "model", Message: fmt.Sprintf("%q is not recognized; did you mean %q?", n.Value, lower)}}
 	}
-	return []Finding{{Severity: Warning, Field: "model", Message: fmt.Sprintf(
-		"%q is not a Claude model (%s, or a claude-* ID); it needs claude-router (not yet available)",
+	return []Finding{{Severity: Warning, Field: "model", code: codeNeedsRoute, Message: fmt.Sprintf(
+		"%q is not a Claude model (%s, or a claude-* ID); it needs a claude-router route: exitbox plugins enable claude claude-router",
 		n.Value, strings.Join(ModelAliases, ", "))}}
 }
 
@@ -298,7 +356,7 @@ func checkTools(def *Definition, field string, n *yaml.Node) []Finding {
 	return nil
 }
 
-func checkAutoCompactWindow(n *yaml.Node) []Finding {
+func checkAutoCompactWindow(def *Definition, n *yaml.Node) []Finding {
 	if n == nil {
 		return nil
 	}
@@ -314,6 +372,7 @@ func checkAutoCompactWindow(n *yaml.Node) []Finding {
 		return []Finding{{Severity: Warning, Field: "autoCompactWindow", Message: fmt.Sprintf(
 			"%d is outside %d to %d and Claude Code ignores it", v, minAutoCompactWindow, maxAutoCompactWindow)}}
 	}
+	def.AutoCompactWindow = int(v)
 	return nil
 }
 

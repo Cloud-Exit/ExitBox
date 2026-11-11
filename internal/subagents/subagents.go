@@ -114,6 +114,7 @@ func (h *Harness) ListStore(workspace string) ([]Entry, error) {
 			continue
 		}
 		e := h.loadEntry(filepath.Join(dir, de.Name()), de.Name(), SourceManaged)
+		e.Findings = h.withRoutes(workspace, e.Def, e.Findings)
 		if m, ok := man[de.Name()]; ok {
 			e.Source, e.Origin = m.Source, m.Origin
 		}
@@ -185,6 +186,13 @@ func (h *Harness) Inventory(workspace, projectDir string) ([]Entry, error) {
 	}
 	for i := range store {
 		store[i].Shadow = h.shadowOf(store[i], container, project)
+	}
+	// Container and project files run in the same session as the store's,
+	// so the same routes decide whether their model can be served.
+	for _, list := range [][]Entry{container, project} {
+		for i := range list {
+			list[i].Findings = h.withRoutes(workspace, list[i].Def, list[i].Findings)
+		}
 	}
 	out := append(store, container...)
 	return append(out, project...), nil

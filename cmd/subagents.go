@@ -776,6 +776,12 @@ expect.
 Without a name, every agent's subagents and master skill are checked. Exits
 non-zero when any error is found.
 
+A Claude Code subagent whose model is not a Claude model needs a route in
+the claude-router plugin. While that plugin is enabled, a model without a
+route is an error. With --probe, each routed backend is also asked for its
+context size (llama.cpp: /props, vLLM: /v1/models) and a missing or larger
+autoCompactWindow is reported; that contacts the backends from this machine.
+
 Where the rules come from:
 `)
 	for _, h := range subagents.WithSubagents() {
@@ -786,6 +792,7 @@ Where the rules come from:
 
 func newSubagentsValidateCmd() *cobra.Command {
 	var workspace, agent string
+	var probe bool
 	cmd := &cobra.Command{
 		Use:               "validate [name]",
 		Short:             "Check subagents against their agent's loading rules",
@@ -811,6 +818,19 @@ func newSubagentsValidateCmd() *cobra.Command {
 				}
 			}
 
+			// With --probe, a Claude Code subagent on a routed model is also
+			// checked against the context its backend serves.
+			var prober *routeProber
+			if probe {
+				prober = newRouteProber(ws)
+			}
+			checked := func(h *subagents.Harness, e subagents.Entry) []subagents.Finding {
+				if prober == nil || h != subagents.Claude {
+					return e.Findings
+				}
+				return append(append([]subagents.Finding(nil), e.Findings...), prober.findings(e.Def)...)
+			}
+
 			stored := map[*subagents.Harness]int{}
 			if len(args) == 1 {
 				h, e, err := findStored(ws, agent, args[0])
@@ -828,7 +848,7 @@ func newSubagentsValidateCmd() *cobra.Command {
 					}
 				}
 				stored[h]++
-				report(h.Agent+": "+entryLabel(e), e.Findings)
+				report(h.Agent+": "+entryLabel(e), checked(h, e))
 			} else {
 				set, err := subagentHarnesses(agent)
 				if err != nil {
@@ -837,7 +857,7 @@ func newSubagentsValidateCmd() *cobra.Command {
 				if agent == "" {
 					set = subagents.Harnesses()
 				}
-				checked := 0
+				count := 0
 				for _, h := range set {
 					entries, err := h.ListStore(ws)
 					if err != nil {
@@ -845,19 +865,19 @@ func newSubagentsValidateCmd() *cobra.Command {
 					}
 					for _, e := range entries {
 						stored[h]++
-						report(h.Agent+": "+entryLabel(e), e.Findings)
+						report(h.Agent+": "+entryLabel(e), checked(h, e))
 					}
-					checked += len(entries)
+					count += len(entries)
 					if h.MasterSkillExists(ws) {
 						fs, err := h.MasterSkillFindings(ws)
 						if err != nil {
 							return err
 						}
 						report(h.Agent+": master skill", fs)
-						checked++
+						count++
 					}
 				}
-				if checked == 0 {
+				if count == 0 {
 					_, _ = fmt.Fprintf(out, "No subagents in workspace '%s'.\n", ws)
 				}
 			}
@@ -875,6 +895,7 @@ func newSubagentsValidateCmd() *cobra.Command {
 	}
 	addWorkspaceFlag(cmd, &workspace)
 	addAgentFlag(cmd, &agent, hasSubagents)
+	cmd.Flags().BoolVar(&probe, "probe", false, "Ask each claude-router backend for its context size and compare it with autoCompactWindow")
 	return cmd
 }
 

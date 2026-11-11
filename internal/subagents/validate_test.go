@@ -19,6 +19,8 @@ package subagents
 import (
 	"strings"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/router"
 )
 
 func fm(body string) []byte {
@@ -218,7 +220,7 @@ func TestParse_ModelFindings(t *testing.T) {
 		{"sonnet", ""},
 		{"inherit", ""},
 		{"claude-sonnet-5", ""},
-		{"qwen3.6-27b", "needs claude-router"},
+		{"qwen3.6-27b", "needs a claude-router route"},
 		{"Opus", `did you mean "opus"`},
 	}
 	for _, tc := range cases {
@@ -264,5 +266,130 @@ func TestEnvFindings(t *testing.T) {
 	})
 	if len(findings) != 1 || !strings.Contains(findings[0].Message, "'on'") {
 		t.Errorf("findings = %v, want one for profile 'on'", findings)
+	}
+}
+
+// withRoutesFor stubs the workspace's claude-router routes for one test.
+func withRoutesFor(t *testing.T, r Routes) {
+	t.Helper()
+	old := RoutesFor
+	RoutesFor = func(string) Routes { return r }
+	t.Cleanup(func() { RoutesFor = old })
+}
+
+func TestListStore_ModelNeedsARoute(t *testing.T) {
+	withHome(t)
+	save := func(name, model string) {
+		t.Helper()
+		data := fm("name: " + name + "\ndescription: d\nmodel: " + model)
+		if _, err := Claude.Save("default", name+".md", data, SourceManaged, "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("local", "qwen3.6-27b")
+	save("cloud", "sonnet")
+	save("typo", "Opus")
+
+	modelFinding := func(name string) (Finding, bool) {
+		t.Helper()
+		entries, err := Claude.ListStore("default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Name() == name {
+				return findingFor(e.Findings, "model")
+			}
+		}
+		t.Fatalf("no entry %q", name)
+		return Finding{}, false
+	}
+
+	// Plugin off: a hint, as before.
+	withRoutesFor(t, Routes{})
+	if f, ok := modelFinding("local"); !ok || f.Severity != Warning || !strings.Contains(f.Message, "needs a claude-router route") {
+		t.Errorf("plugin off: %v %v", f, ok)
+	}
+
+	// Plugin on with a route for the model: nothing to report.
+	withRoutesFor(t, Routes{Enabled: true, IDs: []string{"gemma", "qwen3.6-27b"}})
+	if f, ok := modelFinding("local"); ok {
+		t.Errorf("routed model: unexpected finding %v", f)
+	}
+
+	// Plugin on, other routes: the subagent cannot work.
+	withRoutesFor(t, Routes{Enabled: true, IDs: []string{"gemma"}})
+	f, ok := modelFinding("local")
+	if !ok || f.Severity != Error || !strings.Contains(f.Message, "no claude-router route") || !strings.Contains(f.Message, "routes: gemma") {
+		t.Errorf("unrouted model: %v %v", f, ok)
+	}
+
+	// Plugin on without any route.
+	withRoutesFor(t, Routes{Enabled: true})
+	if f, ok := modelFinding("local"); !ok || f.Severity != Error || !strings.Contains(f.Message, "none configured") {
+		t.Errorf("no routes: %v %v", f, ok)
+	}
+	// Claude models never need a route, and a misspelt alias stays a hint
+	// about the spelling.
+	if f, ok := modelFinding("cloud"); ok {
+		t.Errorf("claude model: unexpected finding %v", f)
+	}
+	if f, ok := modelFinding("typo"); !ok || f.Severity != Warning || !strings.Contains(f.Message, "did you mean") {
+		t.Errorf("misspelt alias: %v %v", f, ok)
+	}
+}
+
+// A model without a route must not keep a file out of the store: the route
+// can be added afterwards.
+func TestSave_UnroutedModelIsStored(t *testing.T) {
+	withHome(t)
+	withRoutesFor(t, Routes{Enabled: true})
+	data := fm("name: local\ndescription: d\nmodel: qwen3.6-27b")
+	if _, err := Claude.Save("default", "local.md", data, SourceManaged, "", false); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+}
+
+func TestRoutesOnlyApplyToClaudeCode(t *testing.T) {
+	withHome(t)
+	withRoutesFor(t, Routes{Enabled: true})
+	// OpenCode names models provider/model; claude-router has no say there.
+	data := []byte("---\ndescription: d\nmode: subagent\nmodel: local/qwen3.6-27b\n---\nbody\n")
+	if _, err := OpenCode.Save("default", "helper.md", data, SourceManaged, "", false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := OpenCode.ListStore("default")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ListStore = %v, %v", entries, err)
+	}
+	if HasErrors(entries[0].Findings) {
+		t.Errorf("claude-router routes were applied to OpenCode: %v", entries[0].Findings)
+	}
+}
+
+func TestParse_AutoCompactWindowValue(t *testing.T) {
+	cases := map[string]int{
+		"autoCompactWindow: 200000":  200000,
+		"autoCompactWindow: 100000":  100000,
+		"autoCompactWindow: 200k":    0, // not an integer: ignored
+		"autoCompactWindow: 50000":   0, // below the range: ignored
+		"autoCompactWindow: 2000000": 0, // above the range: ignored
+		"color: blue":                0, // not set
+	}
+	for field, want := range cases {
+		def, _ := Claude.Parse("", fm("name: r\ndescription: d\n"+field))
+		if def == nil || def.AutoCompactWindow != want {
+			t.Errorf("%s: AutoCompactWindow = %+v, want %d", field, def, want)
+		}
+	}
+}
+
+// The router refuses a route named like a Claude Code alias; its list has
+// to cover every alias this package knows.
+func TestRouterRefusesEveryModelAlias(t *testing.T) {
+	for _, alias := range ModelAliases {
+		if _, err := router.ParseRoutes(alias + "=http://10.0.0.1:8080"); err == nil {
+			t.Errorf("a route named %q was accepted", alias)
+		}
 	}
 }
