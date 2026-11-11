@@ -34,6 +34,17 @@ const (
 	itemBackend
 	itemKey
 	itemMasterSkill
+	itemReviewer
+)
+
+// The master skill's Reviewer line, replaced in tests.
+var (
+	masterSkillReviewer = func(h *subagents.Harness, workspace string) (string, error) {
+		return h.MasterSkillReviewer(workspace)
+	}
+	setMasterSkillReviewer = func(h *subagents.Harness, workspace, reviewer string) error {
+		return h.SetMasterSkillReviewer(workspace, reviewer)
+	}
 )
 
 // pageItem is one selectable line of an agent's page.
@@ -111,6 +122,9 @@ func (m Model) pageItems() []pageItem {
 	}
 	if m.sub.agent.Skills {
 		items = append(items, pageItem{kind: itemMasterSkill})
+		if m.sub.infos[m.sub.agent.Agent].MasterSkill {
+			items = append(items, pageItem{kind: itemReviewer})
+		}
 	}
 	return items
 }
@@ -192,8 +206,49 @@ func (m Model) activateItem(it pageItem) (tea.Model, tea.Cmd) {
 			m.sub.msg = "Master skill created, with a route for every stored subagent."
 		}
 		return m.reloadSubagentInfos(), nil
+	case itemReviewer:
+		return m.nextReviewer(), nil
 	}
 	return m, nil
+}
+
+// reviewerChoices lists who can review: the main agent, then every stored
+// subagent the agent loads.
+func (m Model) reviewerChoices() []string {
+	out := []string{subagents.ReviewerSelf}
+	for _, r := range m.sub.rows {
+		if r.Stored && r.Problem == "" {
+			out = append(out, r.Name)
+		}
+	}
+	return out
+}
+
+// nextReviewer moves the master skill's Reviewer line to the next choice.
+func (m Model) nextReviewer() Model {
+	h, ws := m.sub.agent, m.sub.workspace
+	current, err := masterSkillReviewer(h, ws)
+	if err != nil {
+		m.sub.msg, m.sub.msgIsError = fmt.Sprintf("%v. Edit the master skill to add the line \"Reviewer: %s\".", err, subagents.ReviewerSelf), true
+		return m
+	}
+	choices := m.reviewerChoices()
+	next := choices[0]
+	for i, c := range choices {
+		if c == current {
+			next = choices[(i+1)%len(choices)]
+		}
+	}
+	if err := setMasterSkillReviewer(h, ws, next); err != nil {
+		m.sub.msg, m.sub.msgIsError = fmt.Sprintf("Could not set the reviewer: %v", err), true
+		return m
+	}
+	if next == subagents.ReviewerSelf {
+		m.sub.msg, m.sub.msgIsError = "The main agent reviews the work of its subagents.", false
+	} else {
+		m.sub.msg, m.sub.msgIsError = fmt.Sprintf("%s reviews the work of the other subagents; the main agent reviews %s's own work.", next, next), false
+	}
+	return m
 }
 
 // toggleRouter flips the claude-router checkbox and saves it.
@@ -605,11 +660,17 @@ func (m Model) viewSubagentManage() string {
 			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" API key", 28, false), value))
 		case itemMasterSkill:
 			b.WriteString("\n" + dimStyle.Render("  Master skill") + "\n")
-			text, desc := "Create master skill", "The editable skill that routes tasks to subagents and third-party agents"
+			text, desc := "Create master skill", "The main agent coordinates: it hands tasks to subagents and reviews their work"
 			if info.MasterSkill {
-				text, desc = "Edit master skill", "Open the task routing rules in $EDITOR"
+				text, desc = "Edit master skill", "Open the coordination rules in $EDITOR"
 			}
 			line(idx, fmt.Sprintf("%s %s", label(idx, text, 28, false), dimStyle.Render(desc)))
+		case itemReviewer:
+			value := dimStyle.Render("no Reviewer line in the file")
+			if r, err := masterSkillReviewer(h, ws); err == nil {
+				value = selectedStyle.Render(r) + dimStyle.Render("   (Enter: next choice)")
+			}
+			line(idx, fmt.Sprintf("%s %s", label(idx, "Reviewer", 28, false), value))
 		}
 	}
 

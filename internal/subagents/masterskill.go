@@ -150,20 +150,23 @@ func CheckMasterSkill(data []byte) []Finding {
 
 const masterSkillHead = `---
 name: ` + MasterSkillName + `
-description: Workspace rules for which agent does which work. Read it before starting any task with more than one step, and before delegating to a subagent or a third-party agent.
+description: How to coordinate work in this workspace. Says which subagent does which task and who reviews the result. Read it before any task with more than one step.
 ---
 
 # Master skill
 
-The owner of this workspace decides here which agent handles which kind of
-work. Follow these rules before your own judgement about delegation.
+You are the coordinator. The owner of this workspace decides here which
+subagent does which kind of work and who reviews it. These rules come before
+your own judgement about delegation.
 
-## How to route
+## How to work
 
-1. Before starting a task, compare it with the routes below, top to bottom. The first match wins.
-2. On a match, delegate the task to that agent. Write a brief that stands on its own: the goal, the files involved, the constraints, and what to return. The agent does not see this conversation.
-3. Check the result before relying on it, and say which agent did the work.
-4. If no route matches, or the agent is not available in this session, do the work yourself.
+1. Plan first. Split the request into tasks small enough to hand off, and note which ones depend on each other.
+2. Match each task against the routes below, top to bottom. The first match wins. Hand the task to that subagent, and run independent tasks in parallel.
+3. Write every brief so it stands on its own: the goal, the files involved, the constraints, and what to return. A subagent does not see this conversation.
+4. Do a task yourself only when no route matches or its subagent is not available in this session. Otherwise keep your own work to planning, coordinating and reviewing.
+5. Send every result to the reviewer below before you rely on it or report it as done.
+6. When you report back, say which subagent did each task and what the review found.
 
 ## Routes
 
@@ -171,15 +174,40 @@ work. Follow these rules before your own judgement about delegation.
 |:--|:--|:--|
 `
 
+const masterSkillReview = `
+## Review
+
+` + reviewerPrefix + reviewerSelf + `
+
+"` + reviewerSelf + `" means you review every result yourself: read the changes, run
+the tests, and check the work against its brief. Send what fails back to the
+subagent that did it, with the reason, and review again.
+
+To hand reviews to a subagent instead, replace "` + reviewerSelf + `" on the Reviewer line
+with the subagent's name in backticks, such as ` + "`code-reviewer`" + `. Give it the brief,
+the result and the changes, and act on its findings. A subagent never reviews
+its own work: review that task yourself.
+`
+
 const masterSkillTail = `
 ## Third-party agents
 
 A third-party agent is a subagent that runs on a model from another provider,
-or a separate agent CLI. When a route sends work to one:
+or a separate agent CLI. When work goes to one:
 
 - Send only what the task needs. Never put secrets, credentials or vault values in the brief.
-- Treat the result as a draft: read the changes and run the tests before building on them.
+- Its result goes through review like any other.
 `
+
+// The Reviewer line of the master skill. ExitBox reads and changes only
+// this line; the rest of the file is the owner's.
+const (
+	reviewerPrefix = "Reviewer: "
+	reviewerSelf   = "main agent"
+)
+
+// ReviewerSelf is the reviewer value that means the main agent reviews.
+const ReviewerSelf = reviewerSelf
 
 // DefaultMasterSkill renders the starting master skill, with one route per
 // loadable subagent in entries.
@@ -197,6 +225,7 @@ func (h *Harness) DefaultMasterSkill(entries []Entry) []byte {
 	if rows == 0 {
 		b.WriteString("| _No routes yet. Add one row per kind of task._ | | |\n")
 	}
+	b.WriteString(masterSkillReview)
 	b.WriteString(masterSkillTail)
 	return []byte(b.String())
 }
@@ -216,4 +245,65 @@ func (h *Harness) routeNote(model string) string {
 func tableCell(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	return strings.ReplaceAll(s, "|", `\|`)
+}
+
+// ErrNoReviewerLine means the master skill has no "Reviewer:" line to read
+// or change, because its owner removed or reworded it.
+var ErrNoReviewerLine = errors.New("the master skill has no \"" + strings.TrimSpace(reviewerPrefix) + "\" line")
+
+// findReviewer returns the index of the Reviewer line and its value: a
+// subagent name, or ReviewerSelf.
+func findReviewer(lines []string) (int, string) {
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if !strings.HasPrefix(t, reviewerPrefix) {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(t, reviewerPrefix))
+		v = strings.Trim(v, "`*_ ")
+		if v == "" || strings.EqualFold(v, reviewerSelf) {
+			v = reviewerSelf
+		}
+		return i, v
+	}
+	return -1, ""
+}
+
+// MasterSkillReviewer returns who reviews delegated work: a subagent name,
+// or ReviewerSelf for the main agent.
+func (h *Harness) MasterSkillReviewer(workspace string) (string, error) {
+	data, err := h.ReadMasterSkill(workspace)
+	if err != nil {
+		return "", err
+	}
+	if i, v := findReviewer(strings.Split(string(data), "\n")); i >= 0 {
+		return v, nil
+	}
+	return "", ErrNoReviewerLine
+}
+
+// SetMasterSkillReviewer changes the Reviewer line of the master skill.
+// reviewer is a stored subagent's name, or ReviewerSelf (also "" or
+// "main") for the main agent. Nothing else in the file changes.
+func (h *Harness) SetMasterSkillReviewer(workspace, reviewer string) error {
+	reviewer = strings.TrimSpace(reviewer)
+	value := reviewerSelf
+	if reviewer != "" && reviewer != "main" && !strings.EqualFold(reviewer, reviewerSelf) {
+		if _, err := h.Find(workspace, reviewer); err != nil {
+			return err
+		}
+		value = "`" + reviewer + "`"
+	}
+	data, err := h.ReadMasterSkill(workspace)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	i, _ := findReviewer(lines)
+	if i < 0 {
+		return ErrNoReviewerLine
+	}
+	indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+	lines[i] = indent + reviewerPrefix + value
+	return writeFileAtomic(h.MasterSkillPath(workspace), []byte(strings.Join(lines, "\n")))
 }

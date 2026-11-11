@@ -159,3 +159,123 @@ func TestCheckMasterSkill(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultMasterSkill_IsACoordinatorThatReviews(t *testing.T) {
+	text := string(Claude.DefaultMasterSkill(nil))
+	for _, want := range []string{
+		"You are the coordinator.",
+		"Plan first.",
+		"run independent tasks in parallel",
+		"Send every result to the reviewer below",
+		"\nReviewer: main agent\n",
+		"A subagent never reviews\nits own work",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("default skill lacks %q:\n%s", want, text)
+		}
+	}
+	// The Review section sits between the routes and the third-party rules.
+	if r, rv, tp := strings.Index(text, "## Routes"), strings.Index(text, "## Review"), strings.Index(text, "## Third-party agents"); !(r < rv && rv < tp) {
+		t.Errorf("section order: routes %d, review %d, third-party %d", r, rv, tp)
+	}
+	// Exactly one line the reviewer setting reads.
+	if n := strings.Count(text, "\n"+reviewerPrefix); n != 1 {
+		t.Errorf("%d Reviewer lines, want 1", n)
+	}
+	if strings.ContainsAny(text, "\u2013\u2014") {
+		t.Error("the skill contains a long dash")
+	}
+}
+
+func TestMasterSkillReviewer(t *testing.T) {
+	withHome(t)
+	if _, err := Claude.MasterSkillReviewer("w"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no skill: %v, want ErrNotFound", err)
+	}
+	if _, err := Claude.Save("w", "", agentFile("code-reviewer", "Reviews diffs"), SourceManaged, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Claude.EnsureMasterSkill("w"); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Claude.MasterSkillReviewer("w"); err != nil || r != ReviewerSelf {
+		t.Fatalf("default reviewer = %q, %v; want the main agent", r, err)
+	}
+
+	before, _ := Claude.ReadMasterSkill("w")
+	if err := Claude.SetMasterSkillReviewer("w", "code-reviewer"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := Claude.ReadMasterSkill("w")
+	if r, _ := Claude.MasterSkillReviewer("w"); r != "code-reviewer" {
+		t.Errorf("reviewer = %q, want code-reviewer", r)
+	}
+	if !strings.Contains(string(after), "\nReviewer: `code-reviewer`\n") {
+		t.Errorf("line not written as expected:\n%s", after)
+	}
+	// Only that line changed.
+	bl, al := strings.Split(string(before), "\n"), strings.Split(string(after), "\n")
+	if len(bl) != len(al) {
+		t.Fatalf("line count changed: %d -> %d", len(bl), len(al))
+	}
+	changed := 0
+	for i := range bl {
+		if bl[i] != al[i] {
+			changed++
+		}
+	}
+	if changed != 1 {
+		t.Errorf("%d lines changed, want 1", changed)
+	}
+	if fs := CheckMasterSkill(after); len(fs) != 0 {
+		t.Errorf("findings after setting the reviewer: %v", fs)
+	}
+
+	// Back to the main agent, by any of its spellings.
+	for _, v := range []string{"main", "", "Main Agent"} {
+		if err := Claude.SetMasterSkillReviewer("w", "code-reviewer"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Claude.SetMasterSkillReviewer("w", v); err != nil {
+			t.Fatal(err)
+		}
+		if r, _ := Claude.MasterSkillReviewer("w"); r != ReviewerSelf {
+			t.Errorf("Set(%q): reviewer = %q", v, r)
+		}
+	}
+	if got, _ := Claude.ReadMasterSkill("w"); string(got) != string(before) {
+		t.Error("setting the reviewer back did not restore the file")
+	}
+
+	// A name that is not stored is refused.
+	if err := Claude.SetMasterSkillReviewer("w", "nobody"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown subagent: %v, want ErrNotFound", err)
+	}
+
+	// The owner's own spelling of the line is read too, and a file
+	// without the line says so.
+	path := Claude.MasterSkillPath("w")
+	edited := strings.Replace(string(before), "Reviewer: main agent", "  Reviewer: **`code-reviewer`**", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := Claude.MasterSkillReviewer("w"); r != "code-reviewer" {
+		t.Errorf("owner's spelling: reviewer = %q", r)
+	}
+	if err := Claude.SetMasterSkillReviewer("w", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); !strings.Contains(string(got), "\n  Reviewer: main agent\n") {
+		t.Errorf("indentation not kept:\n%s", got)
+	}
+	without := strings.Replace(string(before), "Reviewer: main agent\n", "", 1)
+	if err := os.WriteFile(path, []byte(without), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Claude.MasterSkillReviewer("w"); !errors.Is(err, ErrNoReviewerLine) {
+		t.Errorf("no line: %v", err)
+	}
+	if err := Claude.SetMasterSkillReviewer("w", "main"); !errors.Is(err, ErrNoReviewerLine) {
+		t.Errorf("set without a line: %v", err)
+	}
+}

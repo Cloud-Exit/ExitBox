@@ -719,3 +719,51 @@ func TestRouteVaultKey(t *testing.T) {
 		}
 	}
 }
+
+func TestSubagentManage_Reviewer(t *testing.T) {
+	st := stubSubagents(t)
+	st.rows["claude"] = []subagentRow{
+		{Name: "code-reviewer", Path: "/h/r.md", File: "r.md", Stored: true, Source: subagents.SourceImported},
+		{Name: "unused", Path: "/h/u.md", File: "u.md"},
+		{Name: "coder", Path: "/h/c.md", File: "c.md", Stored: true, Source: subagents.SourceImported},
+	}
+	reviewer, set := subagents.ReviewerSelf, []string{}
+	oldGet, oldSet := masterSkillReviewer, setMasterSkillReviewer
+	t.Cleanup(func() { masterSkillReviewer, setMasterSkillReviewer = oldGet, oldSet })
+	masterSkillReviewer = func(*subagents.Harness, string) (string, error) { return reviewer, nil }
+	setMasterSkillReviewer = func(_ *subagents.Harness, ws, r string) error {
+		reviewer, set = r, append(set, r+"@"+ws)
+		return nil
+	}
+
+	// No master skill yet: no reviewer to set.
+	m := openAgentPage(t, rerunModel("work"), "claude")
+	if itemCount(m, itemReviewer) != 0 {
+		t.Fatal("reviewer offered without a master skill")
+	}
+	m = press(t, at(t, m, itemMasterSkill, ""), "enter")
+	if !strings.Contains(m.View(), "Reviewer") || !strings.Contains(m.View(), "main agent") {
+		t.Fatalf("no reviewer row after creating the skill:\n%s", m.View())
+	}
+	// Enter cycles: main agent, then each subagent in use, then back.
+	m = at(t, m, itemReviewer, "")
+	for _, want := range []string{"code-reviewer", "coder", subagents.ReviewerSelf} {
+		m = press(t, m, "enter")
+		if reviewer != want {
+			t.Fatalf("reviewer = %q, want %q (unused subagents are not offered)", reviewer, want)
+		}
+	}
+	if strings.Join(set, ",") != "code-reviewer@work,coder@work,main agent@work" {
+		t.Errorf("set = %v", set)
+	}
+	if !strings.Contains(m.View(), "The main agent reviews the work of its subagents") {
+		t.Errorf("view:\n%s", m.View())
+	}
+
+	// A file without the line: say how to fix it, change nothing.
+	masterSkillReviewer = func(*subagents.Harness, string) (string, error) { return "", subagents.ErrNoReviewerLine }
+	m = press(t, m, "enter")
+	if len(set) != 3 || !strings.Contains(m.View(), `add the line "Reviewer: main agent"`) {
+		t.Errorf("no line: set = %v\n%s", set, m.View())
+	}
+}

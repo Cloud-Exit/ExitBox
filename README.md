@@ -484,22 +484,25 @@ Every `exitbox subagents` command is also available as `exitbox agents subagents
 
 - The subagents found in the agent's host directory (for example `~/.claude/agents`) are listed as checkboxes. Checking one copies it into the workspace store; unchecking removes the workspace copy and leaves the host file alone. `a` checks all of them.
 - For Claude Code, **Enable claude-router** is checked by default. Subagents on non-Claude models do not work without it. For every such model the page asks for the backend URL and, if the server needs one, its API key. The key is stored in the workspace vault (the page creates the vault if there is none) and only its vault key name goes into the config.
-- The master skill can be created and edited there too.
+- The master skill can be created and edited there too, and its **Reviewer** row switches between the main agent and each subagent in use.
 
 Everything on that page is saved at once, not at the review step.
 
 ### Master Skill
 
-The master skill is one editable `SKILL.md` per coding agent and workspace that tells the agent which tasks to hand to which subagent or third-party agent.
+The master skill is one editable `SKILL.md` per coding agent and workspace. By default it makes the main agent a **coordinator**: it plans the work, hands each task to the subagent its route names (independent tasks in parallel), and then **reviews every result itself** before it relies on it or reports it as done. You can hand reviews to a subagent instead.
 
 ```bash
 exitbox agents skill edit --agent claude   # create it on first use, then edit it in $EDITOR
 exitbox agents skill show --agent claude
 exitbox agents skill path --agent claude
+exitbox agents skill reviewer --agent claude                 # who reviews: "main agent" or a subagent
+exitbox agents skill reviewer code-reviewer --agent claude   # hand reviews to a subagent
+exitbox agents skill reviewer main --agent claude            # back to the main agent
 exitbox agents skill rm --agent claude
 ```
 
-`edit` writes a starting file with routing instructions and one route per subagent stored for that agent:
+`edit` writes a starting file with the coordination rules, one route per subagent stored for that agent, and a Review section:
 
 ```markdown
 ## Routes
@@ -508,9 +511,13 @@ exitbox agents skill rm --agent claude
 |:--|:--|:--|
 | Reads long log files and reports the errors it finds | `log-reader` | model haiku |
 | Mechanical edits across many files | `bulk-editor` | third-party model qwen3-coder |
+
+## Review
+
+Reviewer: main agent
 ```
 
-From then on the file is yours: reorder the routes, add rules for third-party agents, or rewrite it. ExitBox never rewrites it, so a subagent you add later needs its own row. All commands take `-w <workspace>`; `--agent` can be left out when only one enabled agent can have a master skill.
+From then on the file is yours: reorder the routes, add rules for third-party agents, or rewrite it. ExitBox never rewrites it, except the `Reviewer:` line when you change it with `exitbox agents skill reviewer` or in `exitbox setup`; a subagent you add later needs its own row. A subagent set as reviewer never reviews its own work: the main agent reviews that task. All commands take `-w <workspace>`; `--agent` can be left out when only one enabled agent can have a master skill.
 
 - **Agents**: Claude Code, OpenAI Codex, OpenCode, Pi and Kimi Code, the agents ExitBox links skills for (see [Agent Skills](#agent-skills)). Each has its own master skill, because each has its own subagents.
 - **Storage**: `~/.config/exitbox/profiles/global/<workspace>/subagents/<agent>/master-skill/SKILL.md`. It sits in the read-only subagent store, so a session cannot change the rules the next session follows.
@@ -763,6 +770,7 @@ exitbox agents path       # Print the path to agents.md
 exitbox agents skill edit --agent <agent>  # Create or edit an agent's master skill (task routing rules)
 exitbox agents skill show --agent <agent>  # Print the master skill
 exitbox agents skill path --agent <agent>  # Print the path to the master skill
+exitbox agents skill reviewer [name|main] --agent <agent>  # Show or set who reviews delegated work
 exitbox agents skill rm --agent <agent>    # Remove the master skill
 exitbox agents subagents <command>  # Same as 'exitbox subagents <command>'
 exitbox codex accounts list     # List saved Codex accounts

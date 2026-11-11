@@ -146,3 +146,38 @@ func TestSubagentsValidate_ChecksMasterSkill(t *testing.T) {
 		t.Errorf("validate with a broken master skill = %q, err %v; want an error naming description", out, err)
 	}
 }
+
+func TestAgentsSkillReviewer(t *testing.T) {
+	withSubagentsHome(t)
+	if _, _, err := runAgents(t, "skill", "reviewer", "-w", "work"); err == nil || !strings.Contains(err.Error(), "skill edit") {
+		t.Fatalf("no skill: err = %v, want a hint to create one", err)
+	}
+	writeAgent(t, filepath.Join(subagents.Claude.StoreDir("work"), "code-reviewer.md"), "code-reviewer", "Reviews diffs")
+	if _, _, err := runAgents(t, "skill", "edit", "-w", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, err := runAgents(t, "skill", "reviewer", "-w", "work"); err != nil || strings.TrimSpace(out) != "main agent" {
+		t.Fatalf("default: out %q, err %v", out, err)
+	}
+	if out, _, err := runAgents(t, "skill", "reviewer", "code-reviewer", "-w", "work"); err != nil || !strings.Contains(out, "code-reviewer reviews delegated work") {
+		t.Fatalf("set: out %q, err %v", out, err)
+	}
+	if out, _, _ := runAgents(t, "skill", "reviewer", "-w", "work"); strings.TrimSpace(out) != "code-reviewer" {
+		t.Errorf("after set: %q", out)
+	}
+	if _, _, err := runAgents(t, "skill", "reviewer", "nobody", "-w", "work"); err == nil {
+		t.Error("an unknown subagent was accepted")
+	}
+	if out, _, err := runAgents(t, "skill", "reviewer", "main", "-w", "work"); err != nil || !strings.Contains(out, "The main agent reviews") {
+		t.Errorf("back to main: out %q, err %v", out, err)
+	}
+	// Without the line, the error says how to add it back.
+	path := subagents.Claude.MasterSkillPath("work")
+	data, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, []byte(strings.Replace(string(data), "Reviewer: main agent\n", "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runAgents(t, "skill", "reviewer", "main", "-w", "work"); err == nil || !strings.Contains(err.Error(), `add a line "Reviewer: main agent"`) {
+		t.Errorf("no line: err = %v", err)
+	}
+}

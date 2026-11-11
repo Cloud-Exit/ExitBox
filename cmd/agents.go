@@ -81,6 +81,7 @@ mounted read-only, so a session cannot change the rules the next one follows.`,
 		newAgentsSkillShowCmd(),
 		newAgentsSkillPathCmd(),
 		newAgentsSkillRmCmd(),
+		newAgentsSkillReviewerCmd(),
 	)
 	for _, c := range cmd.Commands() {
 		c.SilenceUsage = true
@@ -161,6 +162,58 @@ func newAgentsSkillShowCmd() *cobra.Command {
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
+	return cmd
+}
+
+func newAgentsSkillReviewerCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:   "reviewer [subagent|main]",
+		Short: "Show or set who reviews delegated work",
+		Long: `Show or set the Reviewer line of the master skill.
+
+By default the main agent reviews every result its subagents return. Name a
+stored subagent to hand reviews to it instead, or 'main' to take them back.
+Only the Reviewer line changes; the rest of the file stays as you wrote it.`,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSubagentNames,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(args) == 0 {
+				r, err := h.MasterSkillReviewer(ws)
+				if errors.Is(err, subagents.ErrNotFound) {
+					return fmt.Errorf("no %s master skill in workspace '%s'; create one with: exitbox agents skill edit --agent %s -w %s", h.Label, ws, h.Agent, ws)
+				}
+				if err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintln(out, r)
+				return nil
+			}
+			if err := h.SetMasterSkillReviewer(ws, args[0]); err != nil {
+				if errors.Is(err, subagents.ErrNoReviewerLine) {
+					return fmt.Errorf("%w; add a line \"Reviewer: main agent\" with: exitbox agents skill edit --agent %s -w %s", err, h.Agent, ws)
+				}
+				return err
+			}
+			r, err := h.MasterSkillReviewer(ws)
+			if err != nil {
+				return err
+			}
+			if r == subagents.ReviewerSelf {
+				_, _ = fmt.Fprintf(out, "The main agent reviews delegated work. %s\n", nextStartNote)
+			} else {
+				_, _ = fmt.Fprintf(out, "%s reviews delegated work. %s\n", r, nextStartNote)
+			}
+			return nil
 		},
 	}
 	addWorkspaceFlag(cmd, &workspace)
