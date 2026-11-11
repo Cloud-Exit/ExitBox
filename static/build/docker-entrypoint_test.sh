@@ -2738,6 +2738,83 @@ test_setup_plugins_dispatches_claude_router() {
 CLAUDE" "$out"
 }
 
+# ---- coordination block -----------------------------------------------------
+
+SUBAGENT_FIELD_FUNC="$(extract_func subagent_field)"
+COORDINATION_FUNC="$(extract_func coordination_instructions)"
+
+test_coordination_instructions() {
+    local root out
+    root="$(mktemp -d "$TEST_TMPDIR/coord.XXXXXX")"
+    local store="$root/work/subagents/claude"
+    mkdir -p "$store/master-skill" "$root/work/subagents/codex"
+    printf -- '---\nname: meshai\ndescription: "Coding agent on ExitMesh. Use for implementation."\nmodel: x\n---\nBody mentions description: nothing\n' > "$store/meshai.md"
+    printf -- '---\ndescription: no name field\n---\n' > "$store/nameless.md"
+    printf 'not frontmatter\nname: fake\n' > "$store/plain.md"
+
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_eq "coordination block is empty without a master skill" "" "$out"
+
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$store/master-skill/SKILL.md"
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_contains "coordination block has markers" "$out" "<!-- BEGIN-EXITBOX-COORDINATION -->"
+    assert_contains "coordination block tells the agent to load the skill" "$out" 'load
+the `master-skill` skill and follow it'
+    assert_contains "coordination block forbids doing routed work itself" "$out" "do not make those changes yourself"
+    assert_contains "coordination block lists a subagent with its description" "$out" '- `meshai`: Coding agent on ExitMesh. Use for implementation.'
+    assert_contains "coordination block names a file without a name field by file" "$out" '- `nameless`: no name field'
+    assert_contains "coordination block does not read past the frontmatter" "$out" '- `plain`'
+    assert_not_contains "coordination block reads frontmatter only" "$out" 'fake'
+
+    # Codex: TOML agent files and its own store.
+    mkdir -p "$root/work/subagents/codex/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$root/work/subagents/codex/master-skill/SKILL.md"
+    printf 'name = "pr_explorer"\ndescription = "Read-only explorer"\ndeveloper_instructions = "x"\n' > "$root/work/subagents/codex/pr.toml"
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=codex
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_contains "coordination block reads Codex TOML" "$out" '- `pr_explorer`: Read-only explorer'
+    assert_not_contains "coordination block lists only the agent's own subagents" "$out" "meshai"
+}
+
+test_inject_sandbox_instructions_adds_coordination() {
+    local root home out
+    root="$(mktemp -d "$TEST_TMPDIR/coord2.XXXXXX")"; home="$(mktemp -d "$TEST_TMPDIR/coordhome.XXXXXX")"
+    mkdir -p "$root/work/subagents/claude/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$root/work/subagents/claude/master-skill/SKILL.md"
+    printf 'User rules.\n' > "$root/work/agents.md"
+    (
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude HOME="$home"
+        SANDBOX_INSTRUCTIONS="<!-- BEGIN-EXITBOX-SANDBOX -->sandbox<!-- END-EXITBOX-SANDBOX -->"
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        eval "$(extract_func inject_sandbox_instructions)"
+        inject_sandbox_instructions
+    )
+    out="$(cat "$home/.claude/CLAUDE.md" 2>/dev/null)"
+    assert_contains "CLAUDE.md keeps the user's rules" "$out" "User rules."
+    assert_contains "CLAUDE.md keeps the sandbox block" "$out" "END-EXITBOX-SANDBOX"
+    assert_contains "CLAUDE.md gets the coordination block" "$out" "BEGIN-EXITBOX-COORDINATION"
+    rm -rf "$root/work/subagents/claude/master-skill"
+    (
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude HOME="$home"
+        SANDBOX_INSTRUCTIONS="sandbox"
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        eval "$(extract_func inject_sandbox_instructions)"
+        inject_sandbox_instructions
+    )
+    assert_not_contains "CLAUDE.md drops the block once the master skill is removed" "$(cat "$home/.claude/CLAUDE.md")" "COORDINATION"
+}
+
 test_codex_router_state_dir_per_agent
 test_plugin_env_var_naming
 test_plugin_setting_plain_value
@@ -2761,6 +2838,8 @@ test_setup_claude_router_reuses_a_running_router
 test_setup_claude_router_only_for_claude
 test_setup_claude_router_requires_installed_binary
 test_setup_plugins_dispatches_claude_router
+test_coordination_instructions
+test_inject_sandbox_instructions_adds_coordination
 
 # ============================================================================
 # Results

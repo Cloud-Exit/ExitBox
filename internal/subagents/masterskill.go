@@ -162,9 +162,9 @@ your own judgement about delegation.
 ## How to work
 
 1. Plan first. Split the request into tasks small enough to hand off, and note which ones depend on each other.
-2. Match each task against the routes below, top to bottom. The first match wins. Hand the task to that subagent, and run independent tasks in parallel.
+2. Match each task against the routes below, top to bottom. The first match wins. When no route matches, hand the task to the subagent whose description fits it best. Run independent tasks in parallel.
 3. Write every brief so it stands on its own: the goal, the files involved, the constraints, and what to return. A subagent does not see this conversation.
-4. Do a task yourself only when no route matches or its subagent is not available in this session. Otherwise keep your own work to planning, coordinating and reviewing.
+4. Do a task yourself only when no route matches and no subagent fits it, or when its subagent is not available in this session. Otherwise keep your own work to planning, coordinating and reviewing.
 5. Send every result to the reviewer below before you rely on it or report it as done.
 6. When you report back, say which subagent did each task and what the review found.
 
@@ -223,7 +223,7 @@ func (h *Harness) DefaultMasterSkill(entries []Entry) []byte {
 		rows++
 	}
 	if rows == 0 {
-		b.WriteString("| _No routes yet. Add one row per kind of task._ | | |\n")
+		b.WriteString("| _No routes yet: tasks go to the subagent whose description fits best. Add rows to decide yourself._ | | |\n")
 	}
 	b.WriteString(masterSkillReview)
 	b.WriteString(masterSkillTail)

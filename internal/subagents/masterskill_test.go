@@ -79,7 +79,7 @@ func TestEnsureMasterSkill_CreatesOnceWithRoutes(t *testing.T) {
 
 func TestDefaultMasterSkill_NoSubagents(t *testing.T) {
 	text := string(Claude.DefaultMasterSkill(nil))
-	if !strings.Contains(text, "No routes yet") {
+	if !strings.Contains(text, "No routes yet: tasks go to the subagent whose description fits best") {
 		t.Errorf("empty store should say there are no routes:\n%s", text)
 	}
 	if fs := CheckMasterSkill([]byte(text)); len(fs) != 0 {
@@ -165,7 +165,8 @@ func TestDefaultMasterSkill_IsACoordinatorThatReviews(t *testing.T) {
 	for _, want := range []string{
 		"You are the coordinator.",
 		"Plan first.",
-		"run independent tasks in parallel",
+		"Run independent tasks in parallel",
+		"When no route matches, hand the task to the subagent whose description fits it best.",
 		"Send every result to the reviewer below",
 		"\nReviewer: main agent\n",
 		"A subagent never reviews\nits own work",

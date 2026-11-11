@@ -2163,6 +2163,63 @@ Overall average: **60-90% token reduction** on common development operations.
 "
 fi
 
+# subagent_field prints one top-level field of a subagent file: YAML
+# frontmatter for Markdown agents, a top-level key for TOML (Codex).
+subagent_field() {
+    local file="$1" field="$2"
+    case "$file" in
+        *.toml)
+            sed -n "s/^${field}[[:space:]]*=[[:space:]]*[\"']\\(.*\\)[\"'][[:space:]]*\$/\\1/p" "$file" 2>/dev/null | head -1
+            ;;
+        *)
+            awk -v f="$field" '
+                NR == 1 && $0 != "---" { exit }
+                NR > 1 && $0 == "---" { exit }
+                NR > 1 && index($0, f ":") == 1 {
+                    v = substr($0, length(f) + 2)
+                    sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v)
+                    if (v ~ /^".*"$/ || v ~ /^\x27.*\x27$/) v = substr(v, 2, length(v) - 2)
+                    print v; exit
+                }' "$file" 2>/dev/null
+            ;;
+    esac
+}
+
+# coordination_instructions prints the block that makes the agent use its
+# master skill. A skill is only read when the model decides to open it, so
+# without this pointer in the always-loaded instructions the coordinator
+# rules may never be seen. Prints nothing when the agent has no master skill.
+coordination_instructions() {
+    local ws_root="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}"
+    local store="${ws_root}/subagents/${AGENT}"
+    [[ -f "${store}/master-skill/SKILL.md" ]] || return 0
+
+    local file name desc list=""
+    for file in "$store"/*.md "$store"/*.toml; do
+        [[ -f "$file" ]] || continue
+        name="$(subagent_field "$file" name)"
+        [[ -n "$name" ]] || name="$(basename "${file%.*}")"
+        name="${name%.agent}"
+        desc="$(subagent_field "$file" description)"
+        list="${list}- \`${name}\`${desc:+: ${desc}}
+"
+    done
+    [[ -n "$list" ]] || list="- none stored yet
+"
+    printf '%s' "<!-- BEGIN-EXITBOX-COORDINATION -->
+# Coordinating subagents
+
+This workspace has a master skill named \`master-skill\`. You are the coordinator.
+Before you start any task that changes files or takes more than one step, load
+the \`master-skill\` skill and follow it: it says which subagent does which work
+and who reviews the result. When it hands a task to a subagent, delegate it;
+do not make those changes yourself.
+
+Subagents installed for this session:
+${list}<!-- END-EXITBOX-COORDINATION -->
+"
+}
+
 inject_sandbox_instructions() {
     local target=""
     case "$AGENT" in
@@ -2204,6 +2261,11 @@ inject_sandbox_instructions() {
             printf '\n\n'
         fi
         printf '%s' "$SANDBOX_INSTRUCTIONS"
+        local coordination
+        coordination="$(coordination_instructions)"
+        if [[ -n "$coordination" ]]; then
+            printf '\n\n%s\n' "$coordination"
+        fi
     } > "$target"
 }
 
