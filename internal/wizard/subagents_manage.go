@@ -102,6 +102,16 @@ func (m Model) routedModels() []string {
 	return out
 }
 
+// modelInUse reports whether a subagent used in the workspace runs on model.
+func (m Model) modelInUse(model string) bool {
+	for _, r := range m.sub.rows {
+		if r.Stored && r.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Model) route(model string) (router.Route, bool) {
 	return router.Find(m.sub.router.Routes, model)
 }
@@ -650,6 +660,9 @@ func (m Model) viewSubagentManage() string {
 			value := warnStyle.Render("not set: press Enter")
 			if r, ok := m.route(it.model); ok {
 				value = r.URL
+				if !m.modelInUse(it.model) {
+					value += dimStyle.Render("   (no subagent here uses this model; Enter, Ctrl+U, Enter removes it)")
+				}
 			}
 			line(idx, fmt.Sprintf("    %s %s", label(idx, it.model+" URL", 28, false), value))
 		case itemKey:

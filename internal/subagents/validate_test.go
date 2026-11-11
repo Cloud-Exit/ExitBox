@@ -393,3 +393,22 @@ func TestRouterRefusesEveryModelAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipErrorsLeavesOutRouteErrors(t *testing.T) {
+	withHome(t)
+	withRoutesFor(t, Routes{Enabled: true, IDs: []string{"other"}})
+	if _, err := Claude.Save("default", "m.md", fm("name: m\ndescription: d\nmodel: local-x"), SourceManaged, "", false); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := Claude.ListStore("default")
+	if len(entries) != 1 || !HasErrors(entries[0].Findings) || SkipErrors(entries[0].Findings) {
+		t.Fatalf("findings = %v", entries[0].Findings)
+	}
+	f, _ := findingFor(entries[0].Findings, "model")
+	if !f.NeedsRoute() {
+		t.Error("the route error is not marked as one")
+	}
+	if !SkipErrors([]Finding{{Severity: Error, Field: "name", Message: "missing"}}) {
+		t.Error("a missing name is a skip error")
+	}
+}

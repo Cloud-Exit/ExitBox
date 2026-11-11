@@ -292,3 +292,34 @@ func TestClaudeRouterRoutes(t *testing.T) {
 		t.Errorf("disabled: %v %v", routes, enabled)
 	}
 }
+
+// A subagent whose model has no route still loads in Claude Code; the
+// message must not say Claude Code skips it.
+func TestSubagentsEdit_UnroutedModelMessage(t *testing.T) {
+	withSubagentsHome(t)
+	setClaudeRouter(t, "work", true, "cloud-exit/mesh-ai-coder-v1[1m]=http://10.0.0.21:8080")
+	writeModelAgent(t, "work", "meshai", "cloud-exit/mesh-ai-coder-v1", "")
+	_, _, err := runSubagents(t, "edit", "meshai", "-w", "work")
+	if err == nil {
+		t.Fatal("edit of an unrouted subagent succeeded")
+	}
+	if strings.Contains(err.Error(), "will skip it") || !strings.Contains(err.Error(), `"cloud-exit/mesh-ai-coder-v1" has no claude-router route`) || !strings.Contains(err.Error(), "is saved") {
+		t.Errorf("err = %v", err)
+	}
+	// It is still offered as a route in a new master skill.
+	if _, _, err := runAgents(t, "skill", "edit", "-w", "work"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := subagents.Claude.ReadMasterSkill("work")
+	if !strings.Contains(string(data), "`meshai`") {
+		t.Errorf("the unrouted subagent got no route row:\n%s", data)
+	}
+	// A real skip error keeps the old message.
+	dir := subagents.Claude.StoreDir("work")
+	if err := os.WriteFile(filepath.Join(dir, "broken.md"), []byte("---\nname: broken\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runSubagents(t, "edit", "broken", "-w", "work"); err == nil || !strings.Contains(err.Error(), "will skip it") {
+		t.Errorf("broken: err = %v", err)
+	}
+}

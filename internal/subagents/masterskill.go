@@ -216,7 +216,7 @@ func (h *Harness) DefaultMasterSkill(entries []Entry) []byte {
 	b.WriteString(masterSkillHead)
 	rows := 0
 	for _, e := range entries {
-		if e.Def == nil || e.Def.Name == "" || HasErrors(e.Findings) {
+		if e.Def == nil || e.Def.Name == "" || SkipErrors(e.Findings) {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("| %s | `%s` | %s |\n", tableCell(e.Def.Description), tableCell(e.Def.Name), h.routeNote(e.Def.Model)))

@@ -175,7 +175,7 @@ func mergeSubagentRows(host, stored []subagents.Entry) []subagentRow {
 		if e.Def != nil {
 			row.Model = e.Def.Model
 		}
-		if subagents.HasErrors(e.Findings) {
+		if subagents.SkipErrors(e.Findings) {
 			row.Problem = firstError(e.Findings)
 		}
 		if s, ok := byName[name]; ok {

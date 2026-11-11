@@ -532,9 +532,17 @@ func reportStoreFile(cmd *cobra.Command, h *subagents.Harness, ws, path string) 
 			continue
 		}
 		printFindings(cmd.ErrOrStderr(), "  ", e.Findings)
-		if subagents.HasErrors(e.Findings) {
+		switch {
+		case subagents.SkipErrors(e.Findings):
 			return fmt.Errorf("%s has errors; %s will skip it. Fix with: exitbox subagents edit %s --agent %s -w %s",
 				e.File, h.Label, strings.TrimSuffix(e.File, h.Ext), h.Agent, ws)
+		case subagents.HasErrors(e.Findings):
+			model := ""
+			if e.Def != nil {
+				model = e.Def.Model
+			}
+			return fmt.Errorf("%s is saved and %s loads it, but %q has no claude-router route, so the subagent fails when it is used. Add the route in exitbox setup (Subagent Management, Claude Code) or with: exitbox plugins edit claude claude-router -w %s",
+				e.File, h.Label, model, ws)
 		}
 		return nil
 	}

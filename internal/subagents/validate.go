@@ -140,7 +140,7 @@ func (h *Harness) withRoutes(workspace string, def *Definition, fs []Finding) []
 			if len(r.IDs) > 0 {
 				have = strings.Join(r.IDs, ", ")
 			}
-			out = append(out, Finding{Severity: Error, Field: "model", Message: fmt.Sprintf(
+			out = append(out, Finding{Severity: Error, Field: "model", code: codeNeedsRoute, Message: fmt.Sprintf(
 				"%q has no claude-router route (routes: %s), so the subagent fails on its first request; add one with: exitbox plugins edit claude claude-router",
 				def.Model, have)})
 		}
@@ -153,6 +153,21 @@ func (f Finding) String() string {
 		return fmt.Sprintf("%s: %s: %s", f.Severity, f.Field, f.Message)
 	}
 	return fmt.Sprintf("%s: %s", f.Severity, f.Message)
+}
+
+// NeedsRoute reports whether the finding is about a model that has no
+// claude-router route. Claude Code loads such a file; the subagent fails
+// only when it is used.
+func (f Finding) NeedsRoute() bool { return f.code == codeNeedsRoute }
+
+// SkipErrors reports whether any finding makes the agent skip the file.
+func SkipErrors(fs []Finding) bool {
+	for _, f := range fs {
+		if f.Severity == Error && !f.NeedsRoute() {
+			return true
+		}
+	}
+	return false
 }
 
 // HasErrors reports whether any finding is an error.

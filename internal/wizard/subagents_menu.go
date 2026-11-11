@@ -98,7 +98,7 @@ var (
 		}
 		if entries, err := h.ListStore(workspace); err == nil {
 			for _, e := range entries {
-				if subagents.HasErrors(e.Findings) {
+				if subagents.SkipErrors(e.Findings) {
 					info.Broken++
 					continue
 				}
