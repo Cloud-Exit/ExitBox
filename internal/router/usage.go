@@ -36,6 +36,9 @@ type usageMeter struct {
 	buf     []byte
 	in, out int
 	seen    bool
+	parsed  bool // a JSON body has been read into the fields
+	errType string
+	errMsg  string
 }
 
 // newUsageMeter picks how to read a response from its headers. A compressed
@@ -123,18 +126,39 @@ func (m *usageMeter) add(u *usage) {
 
 // Result returns the token counts, and false when the response had none.
 func (m *usageMeter) Result() (in, out int, ok bool) {
-	if !m.off && !m.sse && len(m.buf) > 0 {
-		var body struct {
-			Usage       *usage `json:"usage"`
-			InputTokens *int   `json:"input_tokens"` // count_tokens response
-		}
-		if err := json.Unmarshal(m.buf, &body); err == nil {
-			m.add(body.Usage)
-			if body.InputTokens != nil {
-				m.in, m.seen = *body.InputTokens, true
-			}
-		}
-		m.buf = nil
-	}
+	m.parseBody()
 	return m.in, m.out, m.seen
+}
+
+// Error returns the type and message of an Anthropic-shaped error body,
+// or "" when the response was not one or could not be read.
+func (m *usageMeter) Error() (typ, msg string) {
+	m.parseBody()
+	return m.errType, m.errMsg
+}
+
+// parseBody reads a buffered JSON body once: token counts, or the error.
+func (m *usageMeter) parseBody() {
+	if m.parsed || m.off || m.sse || len(m.buf) == 0 {
+		return
+	}
+	m.parsed = true
+	var body struct {
+		Usage       *usage `json:"usage"`
+		InputTokens *int   `json:"input_tokens"` // count_tokens response
+		Error       *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(m.buf, &body); err == nil {
+		m.add(body.Usage)
+		if body.InputTokens != nil {
+			m.in, m.seen = *body.InputTokens, true
+		}
+		if body.Error != nil {
+			m.errType, m.errMsg = body.Error.Type, body.Error.Message
+		}
+	}
+	m.buf = nil
 }

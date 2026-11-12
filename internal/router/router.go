@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -101,6 +102,9 @@ type entry struct {
 	model   string
 	route   string
 	dropped []string
+	// failure is what a refused request's response headers say about why;
+	// empty on success.
+	failure string
 }
 
 // New builds a Router.
@@ -144,6 +148,7 @@ func New(cfg Config) (*Router, error) {
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
 			if e, ok := resp.Request.Context().Value(contextKey{}).(*entry); ok {
+				e.failure = failureHeaders(resp)
 				resp.Body = &meteredBody{ReadCloser: resp.Body, meter: newUsageMeter(resp.Header), done: func(m *usageMeter) {
 					rt.write(e, resp.StatusCode, m)
 				}}
@@ -271,6 +276,7 @@ func (rt *Router) serveLocal(w http.ResponseWriter, r *http.Request, b *backend,
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	meter := newUsageMeter(resp.Header)
+	e.failure = failureHeaders(resp)
 	relay(w, io.MultiReader(bytes.NewReader(held), resp.Body), meter)
 	rt.write(e, resp.StatusCode, meter)
 }
@@ -365,7 +371,9 @@ func (b *meteredBody) Close() error {
 }
 
 // write appends one line to the request log: time, request, model, route,
-// status, duration and token counts. Bodies and headers are never logged.
+// status, duration and token counts. A refused request also gets the error
+// type and message of the response and its request ID, retry and rate limit
+// headers. Request bodies, answers and credentials are never logged.
 func (rt *Router) write(e *entry, status int, meter *usageMeter) {
 	if rt.log == nil {
 		return
@@ -383,10 +391,69 @@ func (rt *Router) write(e *entry, status int, meter *usageMeter) {
 	if len(e.dropped) > 0 {
 		fmt.Fprintf(&b, " dropped_tools=%s", strings.Join(e.dropped, ","))
 	}
+	if status >= http.StatusBadRequest {
+		if meter != nil {
+			if typ, msg := meter.Error(); typ != "" || msg != "" {
+				fmt.Fprintf(&b, " error=%s msg=%q", orDash(typ), clip(msg, maxLoggedMessage))
+			}
+		}
+		b.WriteString(e.failure)
+	}
 	b.WriteByte('\n')
 	rt.logMu.Lock()
 	defer rt.logMu.Unlock()
 	_, _ = io.WriteString(rt.log, b.String())
+}
+
+// maxLoggedMessage bounds the error message a log line carries.
+const maxLoggedMessage = 300
+
+// failureHeaders returns, for a refused request, the response headers that
+// say why: the request ID, when to retry, and the subscription limit state.
+// None of them carries a credential. Success returns "".
+func failureHeaders(resp *http.Response) string {
+	if resp.StatusCode < http.StatusBadRequest {
+		return ""
+	}
+	var b strings.Builder
+	for _, h := range []string{"Request-Id", "Retry-After", "X-Should-Retry"} {
+		if v := resp.Header.Get(h); v != "" {
+			fmt.Fprintf(&b, " %s=%s", strings.ToLower(h), logValue(v))
+		}
+	}
+	var limits []string
+	for name, vs := range resp.Header {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, ratelimitPrefix) && len(vs) > 0 {
+			limits = append(limits, strings.TrimPrefix(lower, ratelimitPrefix)+":"+logValue(vs[0]))
+		}
+	}
+	sort.Strings(limits)
+	if len(limits) > 0 {
+		fmt.Fprintf(&b, " ratelimit=%s", strings.Join(limits, ","))
+	}
+	return b.String()
+}
+
+// ratelimitPrefix starts the headers in which Anthropic reports the limits
+// of a subscription.
+const ratelimitPrefix = "anthropic-ratelimit-"
+
+// logValue keeps a header value on one log field.
+func logValue(v string) string {
+	return clip(strings.Map(func(r rune) rune {
+		if r <= ' ' || r == ',' || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, v), 80)
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func orDash(s string) string {

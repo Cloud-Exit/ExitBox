@@ -697,6 +697,57 @@ func TestLogHoldsNoBodiesHeadersOrTokens(t *testing.T) {
 	}
 }
 
+func TestLogSaysWhyARequestWasRefused(t *testing.T) {
+	refuse := func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Request-Id", "req_011ABC")
+		w.Header().Set("Retry-After", "17")
+		w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+		w.Header().Set("Anthropic-Ratelimit-Unified-Representative-Claim", "seven_day opus")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your limit"}}`)
+	}
+	backend := newRecorder(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"type":"overloaded","message":"model is loading"}}`)
+	})
+	f := start(t, "qwen="+backend.URL, nil, true, refuse)
+	f.do(t, http.MethodPost, "/v1/messages", claudeHeaders, strings.NewReader(claudeBody))
+	f.do(t, http.MethodPost, "/v1/messages", claudeHeaders, strings.NewReader(localBody))
+	lines := f.log.waitLines(t, 2)
+
+	want := ` status=429 `
+	for _, part := range []string{want, ` error=rate_limit_error msg="This request would exceed your limit"`, " request-id=req_011ABC", " retry-after=17",
+		" ratelimit=unified-representative-claim:seven_day_opus,unified-status:rejected"} {
+		if !strings.Contains(lines[0], part) {
+			t.Errorf("Anthropic line lacks %q:\n%s", part, lines[0])
+		}
+	}
+	if !strings.Contains(lines[1], ` status=503 `) || !strings.Contains(lines[1], ` error=overloaded msg="model is loading"`) {
+		t.Errorf("local line = %q", lines[1])
+	}
+	for _, secret := range []string{"SECRET-PROMPT-TEXT", "oauth-access-token", "sk-ant-api-key"} {
+		if strings.Contains(f.log.String(), secret) {
+			t.Errorf("the log contains %q", secret)
+		}
+	}
+}
+
+func TestLogKeepsSuccessLinesShort(t *testing.T) {
+	f := start(t, "", nil, true, func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Request-Id", "req_ok")
+		w.Header().Set("Anthropic-Ratelimit-Unified-Status", "allowed")
+		_, _ = io.WriteString(w, `{"usage":{"input_tokens":1,"output_tokens":2}}`)
+	})
+	f.do(t, http.MethodPost, "/v1/messages", claudeHeaders, strings.NewReader(claudeBody))
+	line := f.log.waitLines(t, 1)[0]
+	if strings.Contains(line, "request-id") || strings.Contains(line, "ratelimit") || strings.Contains(line, "error=") {
+		t.Errorf("a successful request logs failure details: %q", line)
+	}
+}
+
 func TestNewRejectsABadUpstream(t *testing.T) {
 	for _, up := range []string{"api.anthropic.com", "ftp://x", "http://"} {
 		if _, err := New(Config{Upstream: up}); err == nil {
@@ -749,5 +800,15 @@ func TestUsageMeter(t *testing.T) {
 	m.Write([]byte(`{"error":{"message":"no usage here"}}`))
 	if _, _, ok := m.Result(); ok {
 		t.Error("usage reported for a body without one")
+	}
+	if typ, msg := m.Error(); typ != "" || msg != "no usage here" {
+		t.Errorf("error = %q %q, want \"\" \"no usage here\"", typ, msg)
+	}
+
+	// A compressed error body cannot be read.
+	m = newUsageMeter(h("application/json", "br"))
+	m.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"x"}}`))
+	if typ, msg := m.Error(); typ != "" || msg != "" {
+		t.Errorf("compressed error read as %q %q", typ, msg)
 	}
 }
