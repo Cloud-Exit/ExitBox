@@ -117,12 +117,13 @@
 
 	function title(r: Row) {
 		if (r.kind === 'window') return r.win.title;
-		if (r.kind === 'terminal') return sessionLabel(r.run.session, r.run.agent, r.run.started);
+		if (r.kind === 'terminal') return r.run.renameTo || sessionLabel(r.run.session, r.run.agent, r.run.started);
 		return r.saved.name;
 	}
 
 	function renameAction(r: Row): ((name: string) => Promise<boolean>) | null {
-		if (r.kind === 'window' && !r.win.attached && r.named) return (n) => app.renameWindow(r.win, n);
+		if (r.kind === 'window' && r.named && !(r.win.attached && r.win.info.exited)) return (n) => app.renameWindow(r.win, n);
+		if (r.kind === 'terminal' && r.named) return (n) => app.renameRunning(r.run, n);
 		if (r.kind === 'saved') return (n) => app.renameSaved(r.saved, n);
 		return null;
 	}
@@ -208,7 +209,9 @@
 				type="button"
 				onclick={() => open(r)}
 				disabled={r.kind === 'terminal' && r.run.noTmux}
-				title={r.kind === 'terminal'
+				title={r.kind === 'terminal' && r.run.renameTo
+					? `Renames to "${r.run.renameTo}" when it ends`
+					: r.kind === 'terminal'
 					? r.run.noTmux
 						? 'Runs without tmux (--no-tmux): use it in the terminal that started it.'
 						: 'Started in a terminal. Click to open it here too.'

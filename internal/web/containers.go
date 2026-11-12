@@ -36,6 +36,8 @@ type containerDoc struct {
 	NoTmux bool `json:"noTmux"`
 	// WebSession is the id of the web session that started it, if any.
 	WebSession string `json:"-"`
+	// RenameTo is a queued rename, applied when the session ends.
+	RenameTo string `json:"renameTo,omitempty"`
 }
 
 // containerNameRe matches the agent container names of project.ContainerName.

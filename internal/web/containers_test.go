@@ -125,9 +125,9 @@ func TestStateListsTerminalSessionsAndAttach(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("second attach to the same session: %d", resp.StatusCode)
 	}
-	resp, _ = do(t, ts, "POST", "/api/sessions/"+id+"/rename", map[string]string{"name": "x"}, "")
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("rename of a terminal session: %d", resp.StatusCode)
+	resp, out = do(t, ts, "POST", "/api/sessions/"+id+"/rename", map[string]string{"name": "x"}, "")
+	if resp.StatusCode != 200 || out["renameTo"] != "x" {
+		t.Fatalf("rename of an attached terminal session: %d %v", resp.StatusCode, out)
 	}
 }
 
@@ -220,5 +220,47 @@ func TestTerminateStopsTheContainer(t *testing.T) {
 	}
 	if !reflect.DeepEqual(st.stopped, []string{"exitbox-claude-p-0a1b2c3d"}) || s.sessions.Get(id) != nil {
 		t.Fatalf("stopped %v, session kept: %v", st.stopped, s.sessions.Get(id) != nil)
+	}
+}
+
+func TestRenameTerminalSessionWhenItEnds(t *testing.T) {
+	s, st, ts := newTestServer(t, Options{})
+	dir := st.dirs[0]
+	key := "work/claude/" + dir
+	st.saved[key] = []string{"from-terminal"}
+	st.ctrs = []containerDoc{{Container: "exitbox-claude-p-0a1b2c3d", Agent: "claude", Dir: dir, Workspace: "work", Session: "from-terminal", Started: time.Now()}}
+	if resp, _ := do(t, ts, "PUT", "/api/folders", map[string]any{"folders": []map[string]any{{"id": "f1", "name": "F", "items": []string{sessionKey("work", "claude", dir, "from-terminal")}}}}, ""); resp.StatusCode != 200 {
+		t.Fatal("folders")
+	}
+
+	resp, out := do(t, ts, "POST", "/api/running/rename", map[string]string{"container": "exitbox-claude-p-0a1b2c3d", "name": "renamed"}, "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("rename running: %d %v", resp.StatusCode, out)
+	}
+	s.ctrAt = time.Time{}
+	_, state := do(t, ts, "GET", "/api/state", nil, "")
+	if r := state["running"].([]any)[0].(map[string]any); r["renameTo"] != "renamed" {
+		t.Fatalf("running row %v does not show the queued name", r)
+	}
+	if len(st.renames) != 0 {
+		t.Fatal("renamed while the session still runs")
+	}
+
+	// The session ends in its terminal: the next poll renames it.
+	st.mu.Lock()
+	st.ctrs = nil
+	st.mu.Unlock()
+	s.ctrAt = time.Time{}
+	do(t, ts, "GET", "/api/state", nil, "")
+	if !reflect.DeepEqual(st.renames, []string{"from-terminal->renamed"}) || st.saved[key][0] != "renamed" {
+		t.Fatalf("renames %v, saved %v", st.renames, st.saved[key])
+	}
+	if len(s.renames.list()) != 0 {
+		t.Fatal("the queued rename stayed queued")
+	}
+	_, state = do(t, ts, "GET", "/api/state", nil, "")
+	items := state["folders"].([]any)[0].(map[string]any)["items"].([]any)
+	if items[0] != sessionKey("work", "claude", dir, "renamed") {
+		t.Fatalf("folder item %v did not follow the rename", items[0])
 	}
 }

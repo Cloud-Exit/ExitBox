@@ -210,6 +210,7 @@ func newTestServer(t *testing.T, opts Options) (*Server, *fakeStore, *httptest.S
 	s.store = st
 	s.folders = &folderStore{path: filepath.Join(t.TempDir(), "folders.json")}
 	s.layout = &layoutStore{path: filepath.Join(t.TempDir(), "layout.json")}
+	s.renames = &renameQueue{path: filepath.Join(t.TempDir(), "renames.json")}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(func() {
 		ts.Close()
@@ -500,6 +501,9 @@ func dialSession(t *testing.T, ts *httptest.Server, id, origin string) (*websock
 }
 
 // readUntil reads output frames until want shows up.
+// sawLive records that a stream sent its end-of-replay marker.
+var sawLive bool
+
 func readUntil(t *testing.T, ws *websocket.Conn, want string) (string, map[string]any) {
 	t.Helper()
 	var got strings.Builder
@@ -514,6 +518,10 @@ func readUntil(t *testing.T, ws *websocket.Conn, want string) (string, map[strin
 		if bytes.HasPrefix(frame, []byte(`{"t":`)) {
 			var msg map[string]any
 			if err := json.Unmarshal(frame, &msg); err == nil {
+				if msg["t"] == "live" {
+					sawLive = true
+					continue
+				}
 				if want == "" {
 					return got.String(), msg
 				}
@@ -561,6 +569,7 @@ func TestSessionOverWebSocket(t *testing.T) {
 	}
 	defer func() { _ = ws.Close() }()
 
+	sawLive = false
 	readUntil(t, ws, "30 100")
 	if err := websocket.Message.Send(ws, `{"t":"r","c":90,"r":20}`); err != nil {
 		t.Fatal(err)
@@ -571,6 +580,9 @@ func TestSessionOverWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	readUntil(t, ws, "got:hello")
+	if !sawLive {
+		t.Fatal("no end-of-replay marker")
+	}
 	readUntil(t, ws, "20 90")
 	_, exit := readUntil(t, ws, "")
 	if exit["t"] != "exit" || exit["code"] != float64(3) {

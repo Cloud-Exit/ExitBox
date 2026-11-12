@@ -69,6 +69,8 @@ export interface RunningDoc {
 	session: string;
 	started: string;
 	noTmux: boolean;
+	/** A rename queued until the session ends. */
+	renameTo?: string;
 }
 
 export interface Defaults {

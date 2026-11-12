@@ -353,7 +353,19 @@ func (s *Server) liveSessions() ([]SessionInfo, []containerDoc) {
 	}
 	for i, c := range ctrs {
 		if !owned[i] {
+			c.RenameTo = s.pendingFor(c.Workspace, c.Agent, c.Dir, c.Session)
 			others = append(others, c)
+		}
+	}
+	s.applyPendingRenames(ctrs, s.sessions.List())
+	// Attached windows show a queued rename of the session they show.
+	for _, info := range s.sessions.List() {
+		if info.Kind != KindAttach || info.Exited {
+			continue
+		}
+		to := s.pendingFor(info.Workspace, info.Agent, info.Dir, info.Name)
+		if sess := s.sessions.Get(info.ID); sess != nil && info.RenameTo != to {
+			sess.update(func(i *SessionInfo) { i.RenameTo = to })
 		}
 	}
 	return s.sessions.List(), others
@@ -799,8 +811,24 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	}
 	info := sess.Info()
 	switch {
+	case info.Kind == KindAttach && !info.Exited:
+		// Started in a terminal: the rename waits until the session ends.
+		if info.Name == "" {
+			writeError(w, http.StatusConflict, errors.New("this session has no name to rename yet"))
+			return
+		}
+		if err := s.renames.add(pendingRename{Workspace: info.Workspace, Agent: info.Agent, Dir: info.Dir, Name: info.Name, To: newName}); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		sess.update(func(i *SessionInfo) {
+			i.RenameTo = newName
+			if newName == i.Name {
+				i.RenameTo = ""
+			}
+		})
 	case info.Kind == KindAttach:
-		writeError(w, http.StatusConflict, errors.New("this session was started in a terminal; rename it from the sidebar once it has ended"))
+		writeError(w, http.StatusConflict, errors.New("this window was detached; rename the session from the sidebar"))
 		return
 	case info.Name == "":
 		writeError(w, http.StatusConflict, errors.New("the session is still starting; try again in a moment"))

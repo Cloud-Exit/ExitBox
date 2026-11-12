@@ -117,6 +117,8 @@
 
 		let ws: WebSocket | null = null;
 		let disposed = false;
+		/** True while the replay of a (re)connect is being written. */
+		let replaying = true;
 		let retry = 0;
 		let lastSize = '';
 		let timer: ReturnType<typeof setTimeout> | null = null;
@@ -160,6 +162,12 @@
 			sock.binaryType = 'arraybuffer';
 			ws = sock;
 			let first = true;
+			// The replay holds old terminal queries (tmux asks for the cursor
+			// position and device attributes when it attaches). xterm answers
+			// queries as it parses them; answers to the replay must not reach
+			// the session, or they show up as typed text in the agent's prompt.
+			replaying = true;
+			let replayParsing = 0;
 			sock.onopen = () => {
 				retry = 0;
 				lastSize = '';
@@ -170,6 +178,11 @@
 				if (typeof ev.data === 'string') {
 					try {
 						const msg = JSON.parse(ev.data);
+						if (msg?.t === 'live') {
+							// Answer queries again once xterm has parsed the replay.
+							if (replayParsing === 0) replaying = false;
+							else t.write('', () => (replaying = false));
+						}
 						if (msg?.t === 'exit') app.ended(win, msg.code);
 					} catch {
 						// Not a control message.
@@ -181,7 +194,12 @@
 					t.reset();
 					first = false;
 				}
-				t.write(new Uint8Array(ev.data));
+				if (replaying) {
+					replayParsing++;
+					t.write(new Uint8Array(ev.data), () => replayParsing--);
+				} else {
+					t.write(new Uint8Array(ev.data));
+				}
 			};
 			sock.onclose = () => {
 				if (ws !== sock) return;
@@ -191,7 +209,9 @@
 			};
 		};
 
-		const dataSub = t.onData((d) => send({ t: 'i', d }));
+		const dataSub = t.onData((d) => {
+			if (!replaying) send({ t: 'i', d });
+		});
 		// xterm sends Shift+Enter as a plain carriage return, so the agent
 		// would submit. Send a line feed instead (what Ctrl+J sends): Claude
 		// Code, Codex and OpenCode read it as a newline in the prompt.
@@ -502,7 +522,7 @@
 			/>
 		{:else}
 			<span class="min-w-0 truncate text-[13px] font-semibold" title={info.renameTo ? `Renames to "${info.renameTo}" when it ends` : undefined}>{win.title}</span>
-			{#if !win.attached && info.name}
+			{#if info.name && !(win.attached && info.exited)}
 				<IconButton icon="pencil" label="Rename session" small onclick={() => startRename()} />
 			{/if}
 		{/if}

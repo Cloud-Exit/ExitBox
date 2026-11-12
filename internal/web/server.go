@@ -95,6 +95,7 @@ type Server struct {
 
 	folders *folderStore
 	layout  *layoutStore
+	renames *renameQueue
 
 	vault      vaultBackend
 	vaultGuard vaultGuard
@@ -129,6 +130,7 @@ func New(opts Options) (*Server, error) {
 		store:    configStore{},
 		folders:  &folderStore{path: foldersFile()},
 		layout:   &layoutStore{path: layoutFile()},
+		renames:  &renameQueue{path: renamesFile()},
 		vault:    diskVault{},
 		logf:     func(string, ...any) {},
 	}
@@ -210,6 +212,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/sessions/{id}/rename", s.handleRenameSession)
 	api.HandleFunc("POST /api/attach", s.handleAttach)
 	api.HandleFunc("POST /api/saved/rename", s.handleRenameSaved)
+	api.HandleFunc("POST /api/running/rename", s.handleRenameRunning)
 	api.HandleFunc("PUT /api/folders", s.handlePutFolders)
 	api.HandleFunc("GET /api/layout", s.handleGetLayout)
 	api.HandleFunc("PUT /api/layout", s.handlePutLayout)
@@ -327,7 +330,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // attachHandler streams a session over a WebSocket. Output goes out as
-// binary frames. The browser sends JSON text frames: {"t":"i","d":"..."}
+// binary frames: first the replay, then {"t":"live"}, then live output. The browser sends JSON text frames: {"t":"i","d":"..."}
 // for keys and {"t":"r","c":cols,"r":rows} for a resize. The server sends
 // {"t":"exit","code":N} when the process ends.
 func (s *Server) attachHandler() http.Handler {
@@ -379,6 +382,13 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 		if err := send(replay); err != nil {
 			return
 		}
+	}
+	// The replay is over. It holds terminal queries (tmux asks the terminal
+	// for its cursor position, device attributes and modes when it
+	// attaches); the browser answers queries only after this marker, or
+	// the old answers would arrive as keystrokes.
+	if err := send(`{"t":"live"}`); err != nil {
+		return
 	}
 
 	go func() {

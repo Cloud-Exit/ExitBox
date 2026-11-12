@@ -826,6 +826,19 @@ class App {
 		}
 	}
 
+	/** Renames a session started in a terminal; it takes the name when it ends. */
+	async renameRunning(r: RunningDoc, name: string) {
+		try {
+			await api('POST', '/api/running/rename', { container: r.container, name });
+			this.notify(`Renames to "${name}" when the session ends.`);
+			await this.refresh();
+			return true;
+		} catch (e) {
+			this.notify((e as Error).message, true);
+			return false;
+		}
+	}
+
 	async renameSaved(s: SavedDoc, newName: string) {
 		try {
 			await api('POST', '/api/saved/rename', { ...s, newName });
