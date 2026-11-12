@@ -89,6 +89,9 @@ type Server struct {
 	ctrAt   time.Time
 
 	folders *folderStore
+
+	vault      vaultBackend
+	vaultGuard vaultGuard
 }
 
 // New builds a server. It refuses to listen beyond this machine without a
@@ -112,6 +115,7 @@ func New(opts Options) (*Server, error) {
 		sessions: NewManager(opts.Command),
 		store:    configStore{},
 		folders:  &folderStore{path: foldersFile()},
+		vault:    diskVault{},
 		logf:     func(string, ...any) {},
 	}
 	if opts.Logger != nil {
@@ -188,6 +192,8 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/attach", s.handleAttach)
 	api.HandleFunc("POST /api/saved/rename", s.handleRenameSaved)
 	api.HandleFunc("PUT /api/folders", s.handlePutFolders)
+	api.HandleFunc("GET /api/vault", s.handleVaultList)
+	api.HandleFunc("POST /api/vault/{workspace}/{action}", s.handleVault)
 	api.Handle("GET /api/sessions/{id}/attach", s.attachHandler())
 	api.HandleFunc("POST /api/saved/remove", s.handleRemoveSaved)
 	api.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -236,9 +242,17 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authEnabled": s.auth.enabled(),
 		"signedIn":    !s.auth.enabled() || s.auth.valid(r),
-		"user":        s.auth.user(),
+		"user":        s.signedInUser(r),
 		"version":     s.opts.Version,
 	})
+}
+
+// signedInUser is the username, shown only to a signed-in browser.
+func (s *Server) signedInUser(r *http.Request) string {
+	if s.auth.enabled() && !s.auth.valid(r) {
+		return ""
+	}
+	return s.auth.user()
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -270,10 +284,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   int(cookieTTL / time.Second),
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// secureRequest reports whether the browser reached us over TLS, directly
+// or through a TLS reverse proxy. Trusting the header only ever makes the
+// cookie stricter.
+func secureRequest(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +329,9 @@ func (s *Server) attachHandler() http.Handler {
 	})
 }
 
+// writeTimeout bounds one WebSocket write to a browser.
+const writeTimeout = 30 * time.Second
+
 type clientMsg struct {
 	T string `json:"t"`
 	D string `json:"d,omitempty"`
@@ -322,8 +346,16 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 	replay, sub := sess.Attach()
 	defer sess.Detach(sub)
 
+	// A browser that stops reading (a laptop asleep) must not hold this
+	// goroutine forever: every send has a deadline.
+	send := func(v any) error {
+		if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return err
+		}
+		return websocket.Message.Send(conn, v)
+	}
 	if len(replay) > 0 {
-		if err := websocket.Message.Send(conn, replay); err != nil {
+		if err := send(replay); err != nil {
 			return
 		}
 	}
@@ -355,7 +387,7 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 	for {
 		select {
 		case chunk := <-sub.out:
-			if err := websocket.Message.Send(conn, chunk); err != nil {
+			if err := send(chunk); err != nil {
 				return
 			}
 		case <-sub.gone:
@@ -364,7 +396,7 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 			for {
 				select {
 				case chunk := <-sub.out:
-					if err := websocket.Message.Send(conn, chunk); err != nil {
+					if err := send(chunk); err != nil {
 						return
 					}
 					continue
@@ -380,7 +412,7 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 			if err != nil {
 				return
 			}
-			_ = websocket.Message.Send(conn, string(msg))
+			_ = send(string(msg))
 			return
 		}
 	}

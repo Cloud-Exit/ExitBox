@@ -157,7 +157,13 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 				return fmt.Errorf("saving the web settings: %w", err)
 			}
 		}
-		lines, err := web.InstallService(web.ServiceSpec{Exe: exe, Args: []string{"web"}, Path: os.Getenv("PATH"), Home: home})
+		env := map[string]string{}
+		for _, k := range web.ServiceEnvKeys {
+			if v := os.Getenv(k); v != "" {
+				env[k] = v
+			}
+		}
+		lines, err := web.InstallService(web.ServiceSpec{Exe: exe, Args: []string{"web"}, Path: os.Getenv("PATH"), Home: home, Env: env})
 		if err != nil {
 			return err
 		}

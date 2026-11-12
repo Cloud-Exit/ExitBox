@@ -132,8 +132,11 @@
 			});
 		};
 
+		let connectedOnce = false;
 		const connect = () => {
-			if (disposed || win.info.exited) return;
+			// An ended session still gets one connection, for its replay.
+			if (disposed || (win.info.exited && connectedOnce)) return;
+			connectedOnce = true;
 			const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 			const sock = new WebSocket(`${proto}//${location.host}/api/sessions/${encodeURIComponent(win.id)}/attach`);
 			sock.binaryType = 'arraybuffer';
@@ -171,6 +174,15 @@
 		};
 
 		const dataSub = t.onData((d) => send({ t: 'i', d }));
+		// xterm sends Shift+Enter as a plain carriage return, so the agent
+		// would submit. Send a line feed instead (what Ctrl+J sends): Claude
+		// Code, Codex and OpenCode read it as a newline in the prompt.
+		t.attachCustomKeyEventHandler((ev) => {
+			if (ev.key !== 'Enter' || !ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+			ev.preventDefault();
+			if (ev.type === 'keydown') send({ t: 'i', d: '\n' });
+			return false;
+		});
 		const ro = new ResizeObserver(fitSoon);
 		ro.observe(node);
 		const fontsDone = () => {

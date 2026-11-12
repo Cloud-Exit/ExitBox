@@ -501,8 +501,11 @@ func TestSessionOverWebSocket(t *testing.T) {
 		t.Fatalf("workspace %v, want the directory-scoped one", out["workspace"])
 	}
 	args, dir := rec.last()
-	if !reflect.DeepEqual(args, []string{"run", "claude", "--name", "x"}) || dir != st.dirs[0] {
+	if !reflect.DeepEqual(args, []string{"run", "claude", "--name", "x", "--env", WebSessionEnv + "=" + id}) || dir != st.dirs[0] {
 		t.Fatalf("ran %q in %s", args, dir)
+	}
+	if got := s.sessions.Get(id).Info().Args; !reflect.DeepEqual(got, []string{"run", "claude", "--name", "x"}) {
+		t.Fatalf("session args %q keep the id out", got)
 	}
 
 	if _, err := dialSession(t, ts, id, "http://evil.example"); err == nil {
@@ -551,7 +554,7 @@ func TestSessionOverWebSocket(t *testing.T) {
 	if out["id"] == id || s.sessions.Get(id) != nil {
 		t.Fatal("restart kept the old session")
 	}
-	if args, _ := rec.last(); !reflect.DeepEqual(args, []string{"run", "claude", "--name", "x"}) {
+	if args, _ := rec.last(); !reflect.DeepEqual(args, []string{"run", "claude", "--name", "x", "--env", WebSessionEnv + "=" + out["id"].(string)}) {
 		t.Fatalf("restart ran %q", args)
 	}
 }
@@ -649,5 +652,59 @@ func TestEnvProfilesOnDemand(t *testing.T) {
 	resp, _ = do(t, ts, "GET", "/api/env-profiles?workspace=nope", nil, "")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown workspace: %d", resp.StatusCode)
+	}
+}
+
+func TestRestartUnnamedForgetsName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(&recorder{}, "exit 0")})
+	resp, out := do(t, ts, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	sess := s.sessions.Get(out["id"].(string))
+	<-sess.Done()
+	// The name it learned from its container is not the next run's name.
+	sess.update(func(i *SessionInfo) { i.Name = "2026-11-12 10:00:00" })
+	resp, out = do(t, ts, "POST", "/api/sessions/"+sess.Info().ID+"/restart", map[string]int{}, "")
+	if resp.StatusCode != http.StatusCreated || out["name"] != "" {
+		t.Fatalf("restart: %d name %v", resp.StatusCode, out["name"])
+	}
+}
+
+func TestMeHidesUserBeforeLogin(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, ts := newTestServer(t, Options{Username: "me", PasswordHash: hash})
+	if _, me := do(t, ts, "GET", "/api/me", nil, ""); me["user"] != "" {
+		t.Fatalf("username before login: %v", me["user"])
+	}
+}
+
+func TestLoginCookieSecureBehindTLSProxy(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, ts := newTestServer(t, Options{Username: "me", PasswordHash: hash})
+	req, err := http.NewRequest("POST", ts.URL+"/api/login", strings.NewReader(`{"username":"me","password":"correct horse"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-ExitBox", "1")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName && !c.Secure {
+			t.Fatal("cookie not Secure behind a TLS proxy")
+		}
 	}
 }

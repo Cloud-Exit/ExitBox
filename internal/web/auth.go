@@ -95,6 +95,10 @@ func (a *auth) user() string {
 
 var errTooManyFailures = errors.New("too many failed logins; wait a few minutes")
 
+// bcryptSlots bounds how many password checks run at once: each costs
+// tens of milliseconds of CPU at cost 12.
+var bcryptSlots = make(chan struct{}, 2)
+
 // login checks the credentials and returns a new cookie value.
 func (a *auth) login(remote, username, password string) (string, error) {
 	a.mu.Lock()
@@ -105,21 +109,23 @@ func (a *auth) login(remote, username, password string) (string, error) {
 			recent = append(recent, t)
 		}
 	}
-	a.failures[remote] = recent
 	if len(recent) >= maxFailures {
+		a.failures[remote] = recent
 		a.mu.Unlock()
 		return "", errTooManyFailures
 	}
+	// Count the attempt before checking it, so parallel requests cannot
+	// all pass the limit; a success takes it back.
+	a.failures[remote] = append(recent, now)
 	wantUser, hash := a.username, a.hash
 	a.mu.Unlock()
 
+	bcryptSlots <- struct{}{}
 	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(wantUser)) == 1
 	// Always run bcrypt so a wrong username takes as long as a wrong password.
 	passErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	<-bcryptSlots
 	if !userOK || passErr != nil || wantUser == "" {
-		a.mu.Lock()
-		a.failures[remote] = append(a.failures[remote], now)
-		a.mu.Unlock()
 		return "", errors.New("wrong username or password")
 	}
 

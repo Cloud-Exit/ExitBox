@@ -122,6 +122,9 @@ func TestSaveConfigPrivateWithWebPassword(t *testing.T) {
 	if st.Mode().Perm() != 0644 {
 		t.Fatalf("mode %v without a password, want 0644", st.Mode().Perm())
 	}
+	if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".config-*")); len(leftovers) != 0 {
+		t.Fatalf("temp files left: %v", leftovers)
+	}
 	cfg.Web = WebConfig{Username: "me", PasswordHash: "$2a$12$x"}
 	if err := SaveConfigTo(cfg, path); err != nil {
 		t.Fatal(err)

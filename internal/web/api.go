@@ -330,10 +330,12 @@ func (s *Server) liveSessions() ([]SessionInfo, []containerDoc) {
 		if sess := s.sessions.Get(id); sess != nil {
 			sess.update(func(info *SessionInfo) {
 				info.Container = c.Container
-				if info.Name == "" {
+				// The container is the truth: a switch from the tmux menu
+				// relaunches it under another session or workspace.
+				if c.Session != "" {
 					info.Name = c.Session
 				}
-				if info.Workspace == "" {
+				if c.Workspace != "" {
 					info.Workspace = c.Workspace
 				}
 			})
@@ -641,6 +643,11 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := SessionInfo{Kind: info.Kind, Agent: info.Agent, Dir: info.Dir, Workspace: info.Workspace, Name: info.Name, Args: info.Args}
+	if info.Kind == KindRun && !hasFlag(info.Args, "--name") {
+		// Without --name the new run picks a new timestamp name; it is
+		// learned from the container again.
+		next.Name = ""
+	}
 	if info.Kind == KindAttach {
 		next.Container = info.Container
 	}
@@ -843,4 +850,13 @@ func (s *Server) handleRenameSaved(w http.ResponseWriter, r *http.Request) {
 	}
 	s.noteRename(req.Workspace, req.Agent, req.Dir, req.Name, newName)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }

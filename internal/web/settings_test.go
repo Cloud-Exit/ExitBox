@@ -97,7 +97,10 @@ func TestSettingsRejectsBadInput(t *testing.T) {
 		"agent":     func(d *settingsDoc) { d.Agents = []agentDoc{{Name: "nope"}} },
 		"dir":       func(d *settingsDoc) { d.Workspaces = []workspaceEdit{{Name: "default", Directory: "relative"}} },
 		"package":   func(d *settingsDoc) { d.Workspaces = []workspaceEdit{{Name: "default", Packages: []string{"a b"}}} },
-		"unknown":   func(d *settingsDoc) { d.Workspaces = []workspaceEdit{{Name: "nope"}} },
+		"flag-pkg": func(d *settingsDoc) {
+			d.Workspaces = []workspaceEdit{{Name: "default", Packages: []string{"--allow-untrusted"}}}
+		},
+		"unknown": func(d *settingsDoc) { d.Workspaces = []workspaceEdit{{Name: "nope"}} },
 	}
 	for name, mutate := range cases {
 		cfg := config.DefaultConfig()
@@ -179,5 +182,46 @@ func TestServiceFiles(t *testing.T) {
 		if !strings.Contains(plist, want) {
 			t.Errorf("plist lacks %q:\n%s", want, plist)
 		}
+	}
+}
+
+func TestSettingsKeepDefaultWorkspaceUnset(t *testing.T) {
+	_, st, ts := newTestServer(t, Options{})
+	st.cfg.Settings.DefaultWorkspace = ""
+	_, doc := do(t, ts, "GET", "/api/settings", nil, "")
+	if doc["defaultWorkspace"] != "" {
+		t.Fatalf("defaultWorkspace %v, want the unset value", doc["defaultWorkspace"])
+	}
+	doc["statusBar"] = false
+	if resp, out := do(t, ts, "PUT", "/api/settings", doc, ""); resp.StatusCode != 200 {
+		t.Fatalf("put: %d %v", resp.StatusCode, out)
+	}
+	if st.cfg.Settings.DefaultWorkspace != "" {
+		t.Fatalf("saving another setting pinned the default workspace to %q", st.cfg.Settings.DefaultWorkspace)
+	}
+}
+
+func TestWebSettingsListenOnly(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if err := applyWebSettings(cfg, webAuthRequest{Listen: "127.0.0.1:9000"}, "127.0.0.1:4848"); err != nil {
+		t.Fatalf("changing only the listen address: %v", err)
+	}
+	if cfg.Web.Listen != "127.0.0.1:9000" || cfg.Web.AuthEnabled() {
+		t.Fatalf("web %+v", cfg.Web)
+	}
+	if err := applyWebSettings(cfg, webAuthRequest{Listen: "0.0.0.0:9000"}, "127.0.0.1:4848"); err == nil {
+		t.Fatal("public listen without login accepted")
+	}
+}
+
+func TestServiceFilesCarryEnv(t *testing.T) {
+	spec := ServiceSpec{Exe: "/x/exitbox", Args: []string{"web"}, Env: map[string]string{"XDG_CONFIG_HOME": "/cfg", "DOCKER_HOST": "unix:///run/d.sock"}}
+	unit := SystemdUnit(spec)
+	if !strings.Contains(unit, "Environment=DOCKER_HOST=unix:///run/d.sock\n") || !strings.Contains(unit, "Environment=XDG_CONFIG_HOME=/cfg\n") {
+		t.Fatalf("unit env:\n%s", unit)
+	}
+	plist := LaunchdPlist(spec, "/l")
+	if !strings.Contains(plist, "<key>XDG_CONFIG_HOME</key>\n    <string>/cfg</string>") {
+		t.Fatalf("plist env:\n%s", plist)
 	}
 }

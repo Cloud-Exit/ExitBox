@@ -34,6 +34,8 @@ type containerDoc struct {
 	Started   time.Time `json:"started"`
 	// NoTmux sessions have no tmux to attach to.
 	NoTmux bool `json:"noTmux"`
+	// WebSession is the id of the web session that started it, if any.
+	WebSession string `json:"-"`
 }
 
 // containerNameRe matches the agent container names of project.ContainerName.
@@ -77,11 +79,12 @@ func parseInspect(data []byte) ([]containerDoc, error) {
 			continue
 		}
 		c := containerDoc{
-			Container: name,
-			Agent:     env["EXITBOX_AGENT"],
-			Workspace: env["EXITBOX_WORKSPACE_NAME"],
-			Session:   env["EXITBOX_SESSION_NAME"],
-			NoTmux:    env["EXITBOX_NO_TMUX"] == "1",
+			Container:  name,
+			Agent:      env["EXITBOX_AGENT"],
+			Workspace:  env["EXITBOX_WORKSPACE_NAME"],
+			Session:    env["EXITBOX_SESSION_NAME"],
+			NoTmux:     env["EXITBOX_NO_TMUX"] == "1",
+			WebSession: env[WebSessionEnv],
 		}
 		for _, m := range e.Mounts {
 			if m.Destination == "/workspace" {
@@ -97,51 +100,29 @@ func parseInspect(data []byte) ([]containerDoc, error) {
 	return out, nil
 }
 
-// matchContainers pairs the web sessions with their containers. An attach
-// session owns the container it attaches to. A run session owns the
-// container of the same agent and folder with its name, or, while the name
-// is not known yet, the first one that started after it.
+// matchContainers pairs the web sessions with their containers. A run
+// session owns the container that carries its id (WebSessionEnv), which
+// holds across relaunches on a workspace or session switch. An attach
+// session owns the container it attaches to. Containers without a web
+// session id were started in a terminal.
 func matchContainers(sessions []SessionInfo, ctrs []containerDoc) map[string]int {
 	owner := map[string]int{}
 	taken := map[int]bool{}
-	byName := map[string]int{}
-	for i, c := range ctrs {
-		byName[c.Container] = i
-	}
-	sorted := append([]SessionInfo(nil), sessions...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Started.Before(sorted[j].Started) })
-	for _, s := range sorted {
-		if s.Kind == KindAttach && !s.Exited {
-			if i, ok := byName[s.Container]; ok {
-				owner[s.ID] = i
-				taken[i] = true
-			}
-		}
-	}
-	for _, s := range sorted {
-		if s.Kind != KindRun || s.Exited {
-			continue
-		}
-		if s.Container != "" {
-			if i, ok := byName[s.Container]; ok && !taken[i] {
-				owner[s.ID] = i
-				taken[i] = true
-			}
+	for _, s := range sessions {
+		if s.Exited {
 			continue
 		}
 		for i, c := range ctrs {
-			if taken[i] || c.Agent != s.Agent || c.Dir != s.Dir {
+			if taken[i] {
 				continue
 			}
-			if s.Name != "" && c.Session != s.Name {
-				continue
+			mine := (s.Kind == KindRun && c.WebSession == s.ID) ||
+				(s.Kind == KindAttach && c.Container == s.Container)
+			if mine {
+				owner[s.ID] = i
+				taken[i] = true
+				break
 			}
-			if s.Name == "" && c.Started.Before(s.Started.Add(-2*time.Second)) {
-				continue
-			}
-			owner[s.ID] = i
-			taken[i] = true
-			break
 		}
 	}
 	return owner

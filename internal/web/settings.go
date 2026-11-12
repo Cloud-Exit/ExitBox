@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/agents"
@@ -98,7 +99,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 	kbDef := config.DefaultKeybindings()
 	doc := settingsDoc{
 		AutoUpdate: st.AutoUpdate, AutoUpdateTools: st.AutoUpdateTools, StatusBar: st.StatusBar, RTK: st.RTK,
-		DefaultWorkspace: defaultWorkspaceName(cfg),
+		// The configured value, "" when unset: sending the resolved one back
+		// would pin it over Workspaces.Active.
+		DefaultWorkspace: st.DefaultWorkspace,
 		NoFirewall:       df.NoFirewall, ReadOnly: df.ReadOnly, NoEnv: df.NoEnv, AutoResume: df.AutoResume, FullGit: df.FullGitSupport,
 		Memory: df.Memory, CPUs: df.CPUs,
 		WorkspaceMenu: orDefault(st.Keybindings.WorkspaceMenu, kbDef.WorkspaceMenu),
@@ -124,7 +127,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-var packageRe = keyRe
+// packageRe is an Alpine package name; never something that reads as a flag.
+var packageRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$`)
 
 // applySettings copies the editable fields onto the config and allowlist.
 func applySettings(cfg *config.Config, al *config.Allowlist, doc settingsDoc, home string) error {
@@ -204,7 +208,7 @@ func applySettings(cfg *config.Config, al *config.Allowlist, doc settingsDoc, ho
 			if p == "" {
 				continue
 			}
-			if !packageRe.MatchString(strings.ReplaceAll(strings.ReplaceAll(p, ".", "-"), "+", "-")) {
+			if !packageRe.MatchString(p) {
 				return fmt.Errorf("workspace %s: invalid package %q", we.Name, p)
 			}
 			pkgs = append(pkgs, p)
@@ -296,9 +300,12 @@ func applyWebSettings(cfg *config.Config, req webAuthRequest, active string) err
 	if listen == config.DefaultWebListen {
 		next.Listen = ""
 	}
-	if req.Disable {
+	switch {
+	case req.Disable:
 		next.Username, next.PasswordHash = "", ""
-	} else {
+	case strings.TrimSpace(req.Username) == "" && req.Password == "" && !next.AuthEnabled():
+		// Only the listen address changes; there was no login and is none.
+	default:
 		user := strings.TrimSpace(req.Username)
 		if user == "" || len(user) > 64 || strings.ContainsAny(user, ":\x00\n\r") {
 			return errors.New("a username is required (up to 64 characters, no colon)")

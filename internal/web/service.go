@@ -23,9 +23,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// serviceRetryDelay spaces launchctl bootstrap retries; tests shorten it.
+var serviceRetryDelay = 500 * time.Millisecond
 
 const (
 	systemdUnitName = "exitbox-web.service"
@@ -38,6 +43,21 @@ type ServiceSpec struct {
 	Args []string // e.g. ["web"]
 	Path string   // PATH for the service, so podman or docker is found
 	Home string
+	// Env holds more variables the service needs, such as XDG_CONFIG_HOME
+	// or DOCKER_HOST, as set in the shell that installed it.
+	Env map[string]string
+}
+
+// ServiceEnvKeys are the variables copied from the installing shell.
+var ServiceEnvKeys = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "DOCKER_HOST", "CONTAINER_HOST", "CONTAINER_CONNECTION"}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // runCommand runs a service manager command; tests replace it.
@@ -75,6 +95,9 @@ func SystemdUnit(spec ServiceSpec) string {
 	if spec.Path != "" {
 		b.WriteString("Environment=" + systemdQuote("PATH="+spec.Path) + "\n")
 	}
+	for _, k := range sortedKeys(spec.Env) {
+		b.WriteString("Environment=" + systemdQuote(k+"="+spec.Env[k]) + "\n")
+	}
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=3\n")
 	// Stopping the service hangs up the sessions; give their containers time.
@@ -104,8 +127,15 @@ func LaunchdPlist(spec ServiceSpec, logFile string) string {
 		b.WriteString("    <string>" + xmlEscape(a) + "</string>\n")
 	}
 	b.WriteString("  </array>\n")
-	if spec.Path != "" {
-		b.WriteString("  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>" + xmlEscape(spec.Path) + "</string>\n  </dict>\n")
+	if spec.Path != "" || len(spec.Env) > 0 {
+		b.WriteString("  <key>EnvironmentVariables</key>\n  <dict>\n")
+		if spec.Path != "" {
+			b.WriteString("    <key>PATH</key>\n    <string>" + xmlEscape(spec.Path) + "</string>\n")
+		}
+		for _, k := range sortedKeys(spec.Env) {
+			b.WriteString("    <key>" + xmlEscape(k) + "</key>\n    <string>" + xmlEscape(spec.Env[k]) + "</string>\n")
+		}
+		b.WriteString("  </dict>\n")
 	}
 	if spec.Home != "" {
 		b.WriteString("  <key>WorkingDirectory</key>\n  <string>" + xmlEscape(spec.Home) + "</string>\n")
@@ -181,7 +211,16 @@ func InstallService(spec ServiceSpec) ([]string, error) {
 		domain := "gui/" + strconv.Itoa(os.Getuid())
 		// Not loaded yet is fine.
 		_ = runCommand("launchctl", "bootout", domain+"/"+launchdLabel)
-		if err := runCommand("launchctl", "bootstrap", domain, plist); err != nil {
+		// bootout returns before launchd lets go of the old job, so the first
+		// bootstrap of a reinstall can fail; give it a few tries.
+		var err error
+		for i := 0; i < 10; i++ {
+			if err = runCommand("launchctl", "bootstrap", domain, plist); err == nil {
+				break
+			}
+			time.Sleep(serviceRetryDelay)
+		}
+		if err != nil {
 			return nil, err
 		}
 		return []string{

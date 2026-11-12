@@ -19,6 +19,7 @@ package web
 import (
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -153,5 +154,32 @@ func TestSameOrigin(t *testing.T) {
 	r.Header.Set("Origin", "http://evil.example")
 	if sameOrigin(r, false) {
 		t.Error("foreign origin accepted")
+	}
+}
+
+func TestLoginLimitHoldsUnderParallelAttempts(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAuth("me", hash)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	checked := 0
+	for i := 0; i < 3*maxFailures; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.login("7.7.7.7", "me", "nope")
+			if err != errTooManyFailures {
+				mu.Lock()
+				checked++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if checked > maxFailures {
+		t.Fatalf("%d passwords checked in parallel, limit %d", checked, maxFailures)
 	}
 }

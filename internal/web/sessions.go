@@ -38,6 +38,9 @@ const replayBytes = 512 << 10
 // before it is dropped. A dropped browser reconnects and gets the replay.
 const subscriberBuffer = 256
 
+// WebSessionEnv names the container variable holding the web session id.
+const WebSessionEnv = "EXITBOX_WEB_SESSION"
+
 // Session kinds.
 const (
 	KindRun    = "run"    // exitbox run started by the web UI
@@ -68,13 +71,14 @@ type SessionInfo struct {
 type Session struct {
 	info SessionInfo
 
-	mu     sync.Mutex
-	pty    *os.File
-	cmd    *exec.Cmd
-	replay []byte
-	subs   map[*subscriber]struct{}
-	pumped chan struct{} // closed when all output has been read
-	done   chan struct{} // closed when the process has exited
+	mu      sync.Mutex
+	pty     *os.File
+	cmd     *exec.Cmd
+	replay  []byte
+	subs    map[*subscriber]struct{}
+	pumped  chan struct{} // closed when all output has been read
+	done    chan struct{} // closed when the process has exited
+	settled chan struct{} // closed when the manager's exit hook has run
 }
 
 type subscriber struct {
@@ -240,17 +244,24 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 	if info.Kind == "" {
 		info.Kind = KindRun
 	}
-	cmd := m.command(info)
+	run := info
+	if info.Kind == KindRun {
+		// The container carries the session id, so the server can tell
+		// which container is this session's, also after a relaunch.
+		run.Args = append(append([]string(nil), info.Args...), "--env", WebSessionEnv+"="+id)
+	}
+	cmd := m.command(run)
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{info: info, pty: f, cmd: cmd, subs: make(map[*subscriber]struct{}), pumped: make(chan struct{}), done: make(chan struct{})}
+	s := &Session{info: info, pty: f, cmd: cmd, subs: make(map[*subscriber]struct{}), pumped: make(chan struct{}), done: make(chan struct{}), settled: make(chan struct{})}
 	m.mu.Lock()
 	m.sessions[id] = s
 	m.mu.Unlock()
 	go s.pump()
 	go func() {
+		defer close(s.settled)
 		s.wait()
 		m.onExit(s)
 	}()
@@ -326,6 +337,12 @@ func (s *Session) stop(grace time.Duration) {
 			kill(s.cmd)
 			<-s.done
 		}
+	}
+	// A rename asked for while the session ran happens in the exit hook;
+	// let it finish before the server goes away.
+	select {
+	case <-s.settled:
+	case <-time.After(10 * time.Second):
 	}
 	s.mu.Lock()
 	for sub := range s.subs {

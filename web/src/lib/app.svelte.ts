@@ -475,8 +475,10 @@ class App {
 				if (store[w.id]) store[info.id] = store[w.id];
 			}
 			setLocal('dockOrder', this.dockOrder);
-			this.dropWindow(w);
+			// Open the new window before dropping the old one: dropping prunes
+			// dock entries of windows that do not exist yet.
 			this.openWindow(info);
+			this.dropWindow(w);
 			this.refresh();
 		} catch (e) {
 			this.notify((e as Error).message, true);

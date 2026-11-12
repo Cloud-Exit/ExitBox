@@ -37,6 +37,13 @@ const inspectSample = `[
  {"Name": "exitbox-claude-x_1-0a1b2c3d", "Config": {"Env": ["EXITBOX_AGENT=claude"]}, "State": {"Running": false}}
 ]`
 
+func TestParseInspectWebSession(t *testing.T) {
+	got, err := parseInspect([]byte(`[{"Name": "exitbox-claude-p-0a1b2c3d", "Config": {"Env": ["EXITBOX_AGENT=claude", "EXITBOX_WEB_SESSION=abc"]}, "State": {"Running": true}}]`))
+	if err != nil || len(got) != 1 || got[0].WebSession != "abc" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
 func TestParseInspect(t *testing.T) {
 	got, err := parseInspect([]byte(inspectSample))
 	if err != nil {
@@ -61,21 +68,22 @@ func TestParseInspect(t *testing.T) {
 func TestMatchContainers(t *testing.T) {
 	t0 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	ctrs := []containerDoc{
-		{Container: "c-old", Agent: "claude", Dir: "/p", Session: "2026-11-12 09:00:00", Started: t0.Add(-time.Hour)},
-		{Container: "c-new", Agent: "claude", Dir: "/p", Session: "2026-11-12 10:00:05", Started: t0.Add(5 * time.Second)},
-		{Container: "c-named", Agent: "claude", Dir: "/p", Session: "feature-x", Started: t0.Add(time.Second)},
-		{Container: "c-term", Agent: "codex", Dir: "/q", Started: t0},
+		// A terminal session in the same folder that started later.
+		{Container: "c-term-later", Agent: "claude", Dir: "/p", Session: "x", Started: t0.Add(2 * time.Second)},
+		// The web session's container, relaunched under another name.
+		{Container: "c-web", Agent: "claude", Dir: "/p", Session: "switched", Started: t0.Add(5 * time.Second), WebSession: "web1"},
+		{Container: "c-attached", Agent: "codex", Dir: "/q", Started: t0},
 	}
 	sessions := []SessionInfo{
-		{ID: "unnamed", Kind: KindRun, Agent: "claude", Dir: "/p", Started: t0},
-		{ID: "named", Kind: KindRun, Agent: "claude", Dir: "/p", Name: "feature-x", Started: t0},
-		{ID: "attach", Kind: KindAttach, Agent: "codex", Dir: "/q", Container: "c-term", Started: t0},
+		{ID: "web1", Kind: KindRun, Agent: "claude", Dir: "/p", Name: "first", Container: "c-old", Started: t0},
+		{ID: "web2", Kind: KindRun, Agent: "claude", Dir: "/p", Started: t0},
+		{ID: "attach", Kind: KindAttach, Agent: "codex", Dir: "/q", Container: "c-attached", Started: t0},
 		{ID: "ended", Kind: KindRun, Agent: "claude", Dir: "/p", Started: t0, Exited: true},
 	}
 	got := matchContainers(sessions, ctrs)
-	want := map[string]int{"unnamed": 1, "named": 2, "attach": 3}
+	want := map[string]int{"web1": 1, "attach": 2}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("matches %v, want %v (the container started before the session belongs to a terminal)", got, want)
+		t.Fatalf("matches %v, want %v: pairing goes by session id, never by folder and start time", got, want)
 	}
 }
 

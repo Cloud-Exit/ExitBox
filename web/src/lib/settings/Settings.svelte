@@ -12,12 +12,14 @@
 	import type { IconName } from '../ui/icons';
 	import ListEditor from './ListEditor.svelte';
 	import PageHeader from './PageHeader.svelte';
+	import Vault from './Vault.svelte';
 	import WebAccess from './WebAccess.svelte';
 
 	const sections: { id: string; label: string; icon: IconName }[] = [
 		{ id: 'general', label: 'General', icon: 'settings' },
 		{ id: 'agents', label: 'Agents', icon: 'bot' },
 		{ id: 'workspaces', label: 'Workspaces', icon: 'folder' },
+		{ id: 'vault', label: 'Vault', icon: 'lock' },
 		{ id: 'firewall', label: 'Firewall', icon: 'shield' },
 		{ id: 'keybindings', label: 'Keybindings', icon: 'command' },
 		{ id: 'web', label: 'Web access', icon: 'globe' }
@@ -138,7 +140,11 @@
 						</div>
 						<SectionLabel>Defaults</SectionLabel>
 						<div class="flex flex-wrap gap-2.5">
-							<SelectField label="Default workspace" bind:value={doc.defaultWorkspace} options={doc.workspaces.map((w) => ({ value: w.name, label: w.name }))} />
+							<SelectField
+								label="Default workspace"
+								bind:value={doc.defaultWorkspace}
+								options={[{ value: '', label: 'Not set (the active workspace)' }, ...doc.workspaces.map((w) => ({ value: w.name, label: w.name }))]}
+							/>
 							<TextField label="Memory limit" placeholder="8g" bind:value={doc.memory} />
 							<TextField label="CPU limit" placeholder="4" bind:value={doc.cpus} />
 						</div>
@@ -159,7 +165,7 @@
 						<PageHeader
 							kind="Workspaces"
 							title="Workspaces"
-							lead="Named contexts with their own credentials, tools and vault. Roles, languages, tools, plugins and the vault are set up in exitbox setup."
+							lead="Named contexts with their own credentials, tools and vault. Roles, languages, tools and plugins are set up in exitbox setup; the vault is under Vault."
 							source="exitbox setup · Workspace management"
 						/>
 						{#each doc.workspaces as w (w.name)}
@@ -218,6 +224,8 @@
 							<TextField label="Workspace menu" mono placeholder={doc.keybindingDefaults?.workspaceMenu} hint="Save the current session, then switch workspace." bind:value={doc.workspaceMenu} />
 							<TextField label="Session menu" mono placeholder={doc.keybindingDefaults?.sessionMenu} hint="Switch to another named session or start a new one." bind:value={doc.sessionMenu} />
 						</div>
+					{:else if app.settingsSection === 'vault'}
+						<Vault />
 					{:else if doc.web}
 						<WebAccess web={doc.web} />
 					{/if}
@@ -225,7 +233,7 @@
 			</div>
 		</div>
 
-		{#if doc && app.settingsSection !== 'web'}
+		{#if doc && app.settingsSection !== 'web' && app.settingsSection !== 'vault'}
 			<div class="flex flex-wrap items-center gap-2.5 border-t border-line-1 bg-surface-1 px-8 py-3 max-md:px-4">
 				<Button variant="primary" icon="check" disabled={changes === 0} onclick={save}>Save configuration</Button>
 				<Button variant="ghost" disabled={changes === 0} onclick={discard}>Discard</Button>

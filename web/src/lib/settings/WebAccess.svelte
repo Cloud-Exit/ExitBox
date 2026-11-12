@@ -81,7 +81,7 @@
 	<TextField label="Confirm password" type="password" autocomplete="new-password" bind:value={confirm} />
 </div>
 <div class="flex flex-wrap gap-2">
-	<Button variant="primary" icon="lock" onclick={() => save(false)}>{web.authEnabled ? 'Save login' : 'Turn on login'}</Button>
+	<Button variant="primary" icon="lock" onclick={() => save(false)}>{web.authEnabled ? 'Save' : username.trim() || password ? 'Turn on login' : 'Save'}</Button>
 	{#if web.authEnabled}<Button variant="ghost" onclick={turnOff}>Turn off login</Button>{/if}
 </div>
 <SectionLabel>Run as a service</SectionLabel>
