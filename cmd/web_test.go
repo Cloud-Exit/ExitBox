@@ -70,6 +70,30 @@ func TestWebAttachCommand(t *testing.T) {
 	}
 }
 
+func TestWebSSHCommand(t *testing.T) {
+	bin := t.TempDir()
+	name := "ssh"
+	if runtime.GOOS == "windows" {
+		name = "ssh.exe"
+	}
+	fake := filepath.Join(bin, name)
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	c := sessionCommand("/usr/bin/exitbox")(web.SessionInfo{Kind: web.KindSSH, Dir: "/home/me", Args: []string{"-t", "-p", "2222", "--", "box"}})
+	if c.Err != nil || c.Path != fake || c.Dir != "/home/me" || strings.Join(c.Args[1:], " ") != "-t -p 2222 -- box" {
+		t.Fatalf("ssh command %q (%s) in %s: %v", c.Args, c.Path, c.Dir, c.Err)
+	}
+	if !strings.Contains("\n"+strings.Join(c.Env, "\n"), "\nTERM=xterm-256color") {
+		t.Fatal("ssh env lacks TERM=xterm-256color")
+	}
+	t.Setenv("PATH", t.TempDir())
+	if c := sessionCommand("/usr/bin/exitbox")(web.SessionInfo{Kind: web.KindSSH, Args: []string{"--", "box"}}); c.Err == nil {
+		t.Fatal("a missing ssh is not reported")
+	}
+}
+
 // A host that exits is reaped, and what it printed stays in its log.
 func TestSpawnHostReapsAndKeepsLog(t *testing.T) {
 	if runtime.GOOS == "windows" {

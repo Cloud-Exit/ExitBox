@@ -15,9 +15,11 @@
 	import Kbd from './ui/Kbd.svelte';
 	import Modal from './ui/Modal.svelte';
 	import SectionLabel from './ui/SectionLabel.svelte';
+	import Segmented from './ui/Segmented.svelte';
 	import SelectField from './ui/SelectField.svelte';
 	import TextField from './ui/TextField.svelte';
 	import type { IconName } from './ui/icons';
+	import SSHForm, { portValid, sshForm, sshRequest } from './SSHForm.svelte';
 
 	/** With edit, the dialog changes that window's session and restarts it. */
 	let { data, edit }: { data: State; edit?: Win } = $props();
@@ -38,6 +40,12 @@
 		};
 	})();
 	const req = start.req;
+
+	/** ExitBox runs an agent in a container; SSH opens a terminal on one of your machines. */
+	const editKind = untrack(() => edit?.info.kind);
+	let kind = $state<'run' | 'ssh'>((editKind ?? local<string>('lastKind')) === 'ssh' ? 'ssh' : 'run');
+	let ssh = $state(sshForm(untrack(() => edit?.info.ssh)));
+	const sshReady = $derived(!!ssh.host.trim() && portValid(ssh.port));
 
 	let dir = $state(app.tilde(start.dir));
 	let agent = $state(start.agent);
@@ -316,16 +324,26 @@
 
 	async function restart(w: Win) {
 		if (!w.info.exited) {
-			const ok = await app.ask('Restart this session?', `This ends the running ${app.agentDisplay(w.info.agent)} and starts it again with these settings.`, [
-				{ label: 'Restart', value: 'yes', tone: 'danger' }
-			]);
+			const text = w.ssh
+				? 'This ends the SSH connection and connects again with these settings.'
+				: `This ends the running ${app.agentDisplay(w.info.agent)} and starts it again with these settings.`;
+			const ok = await app.ask('Restart this session?', text, [{ label: 'Restart', value: 'yes', tone: 'danger' }]);
 			if (ok !== 'yes') return;
 		}
 		busy = true;
 		error = '';
 		const oldKey = windowKey(w.info);
+		const cols = Math.max(40, Math.floor((w.w - 24) / 7.8));
+		const rows = Math.max(10, Math.floor((w.h - 48) / 17));
 		try {
-			const info = await app.restartWith(w, Math.max(40, Math.floor((w.w - 24) / 7.8)), Math.max(10, Math.floor((w.h - 48) / 17)), request);
+			if (w.ssh) {
+				// restartWith carries the folder over; move it only on a change.
+				const info = await app.restartWith(w, cols, rows, { ssh: sshRequest(ssh) });
+				app.sessionSettings = null;
+				if (folder !== start.folder) app.moveToFolder(windowKey(info), data.folders?.some((f) => f.id === folder) ? folder : null);
+				return;
+			}
+			const info = await app.restartWith(w, cols, rows, { request });
 			app.sessionSettings = null;
 			if (folder === start.folder && windowKey(info) === oldKey) return;
 			if (data.folders?.some((f) => f.id === folder)) app.fileNewSession(info, folder);
@@ -342,13 +360,12 @@
 		busy = true;
 		error = '';
 		const size = defaultWindowSize();
+		const cols = Math.max(40, Math.floor((size.w - 24) / 7.8));
+		const rows = Math.max(10, Math.floor((size.h - 48) / 17));
 		try {
-			const info = await api<SessionInfo>('POST', '/api/sessions', {
-				...request,
-				cols: Math.max(40, Math.floor((size.w - 24) / 7.8)),
-				rows: Math.max(10, Math.floor((size.h - 48) / 17))
-			});
-			setLocal('last', { dir: info.dir, agent: info.agent, folder });
+			const info = await api<SessionInfo>('POST', '/api/sessions', kind === 'ssh' ? { kind: 'ssh', ssh: sshRequest(ssh), cols, rows } : { ...request, cols, rows });
+			setLocal('lastKind', kind);
+			if (kind === 'run') setLocal('last', { dir: info.dir, agent: info.agent, folder });
 			app.newSessionOpen = false;
 			app.openWindow(info);
 			if (data.folders?.some((f) => f.id === folder)) app.fileNewSession(info, folder);
@@ -371,7 +388,7 @@
 		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4">
 			<div class="flex flex-1 flex-col gap-0.5">
 				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase">
-					<span class="size-1.5 rounded-full bg-brand"></span>Session
+					<span class="size-1.5 rounded-full bg-brand"></span>{kind === 'ssh' ? 'SSH session' : 'Session'}
 				</span>
 				<h2 class="text-xl font-bold">{title}</h2>
 			</div>
@@ -379,173 +396,193 @@
 		</div>
 
 		<div class="flex min-h-0 flex-1 flex-col gap-[18px] overflow-auto px-5 py-[18px]">
+			{#if !edit}
+				<Segmented
+					label="Session type"
+					bind:value={kind}
+					options={[
+						{ value: 'run', label: 'ExitBox' },
+						{ value: 'ssh', label: 'SSH' }
+					]}
+				>
+					{#snippet lead(v)}{#if v === 'ssh'}<AgentIcon name="ssh" small />{:else}<Icon name="shield" size={13} />{/if}{/snippet}
+				</Segmented>
+			{/if}
 			{#if error}<Callout tone="bad">{error}</Callout>{/if}
 
-			<!-- A new session starts at its name; settings start at the folder, as before. -->
-			<TextField label="Session name" placeholder="Timestamp if empty" wrap="" data-autofocus={edit ? undefined : true} bind:value={name} />
+			{#if kind === 'ssh'}
+				<SSHForm {data} {edit} bind:form={ssh} bind:folder />
+			{:else}
+				<!-- A new session starts at its name; settings start at the folder, as before. -->
+				<TextField label="Session name" placeholder="Timestamp if empty" wrap="" data-autofocus={edit ? undefined : true} bind:value={name} />
 
-			<div class="flex flex-col gap-2">
-				<SectionLabel>Project folder</SectionLabel>
-				<div class="flex gap-2">
-					<input
-						data-autofocus={edit ? true : undefined}
-						bind:this={input}
-						bind:value={dir}
-						oninput={edited}
-						{onkeydown}
-						aria-label="Project folder"
-						autocomplete="off"
-						spellcheck="false"
-						class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none hover:border-line-2 focus:border-brand"
-					/>
-					{#if browse}
-						<Button icon="back" onclick={() => (browse = null)}>Known projects</Button>
-					{:else}
-						<Button icon="folder" onclick={() => openFolder(dir)}>Browse</Button>
-					{/if}
-				</div>
-				<div bind:this={list} class="flex max-h-[220px] flex-col overflow-auto rounded-lg border border-line-1">
-					{#if browse}
-						{#if browse.parent}
-							{@const parent = browse.parent}
-							<button type="button" onclick={() => openFolder(parent)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left hover:bg-surface-2">
-								<Icon name="up" /><span class="flex-1 font-mono text-[12.5px]">..</span><span class="text-[11.5px] text-ink-2">up</span>
-							</button>
-						{/if}
-						{#each browse.dirs as d (d)}
-							{@const path = browse.path.replace(/\/$/, '') + '/' + d}
-							<button type="button" onclick={() => openFolder(path)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2">
-								<Icon name="folder" /><span class="flex-1 truncate font-mono text-[12.5px]">{d}</span>
-							</button>
-						{:else}
-							<div class="px-3 py-2.5 text-xs text-ink-3">No folders here</div>
-						{/each}
-					{:else}
-						{#each suggestions as s, i (s.kind + s.path)}
-							{#if s.kind === 'dir' && (i === 0 || suggestions[i - 1].kind === 'project')}
-								<div class="shrink-0 border-b border-line-1 px-3 pt-2 pb-1 font-mono text-[10.5px] tracking-[0.08em] text-ink-3 uppercase">Folders</div>
-							{/if}
-							<button
-								type="button"
-								data-hi={i === hi || undefined}
-								onmousedown={(e) => e.preventDefault()}
-								onclick={() => pick(s)}
-								class={[
-									'flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2',
-									i === hi ? 'bg-surface-2' : s.kind === 'project' && s.path === fullDir && 'bg-brand-soft'
-								]}
-							>
-								{#if s.kind === 'project'}
-									<Icon name="folder" />
-									<span class="flex-1 truncate font-mono text-[12.5px]">{app.tilde(s.path)}</span>
-									<span class="text-[11.5px] whitespace-nowrap text-ink-2">{s.project.scoped ? 'directory-scoped to ' + s.project.workspace : s.project.workspace}</span>
-								{:else}
-									<span class="text-ink-3"><Icon name="folder" /></span>
-									<span class="flex-1 truncate font-mono text-[12.5px]"><span class="text-ink-3">{s.head}</span>{s.tail}</span>
-									{#if i === hi}<Kbd>Tab</Kbd>{/if}
-								{/if}
-							</button>
-						{:else}
-							<div class="px-3 py-2.5 text-xs text-ink-3">{data.projects.length ? 'No matches. Type a path or browse.' : 'No known projects yet. Type a path or browse.'}</div>
-						{/each}
-					{/if}
-				</div>
-				{#if browse}
-					{@const current = browse.path}
-					<label class="flex w-fit cursor-pointer items-center gap-2 text-xs text-ink-2">
+				<div class="flex flex-col gap-2">
+					<SectionLabel>Project folder</SectionLabel>
+					<div class="flex gap-2">
 						<input
-							type="checkbox"
-							bind:checked={showHidden}
-							onchange={() => {
-								setLocal('showHidden', showHidden);
-								openFolder(current);
-							}}
-							class="size-3.5 accent-brand"
+							data-autofocus={edit ? true : undefined}
+							bind:this={input}
+							bind:value={dir}
+							oninput={edited}
+							{onkeydown}
+							aria-label="Project folder"
+							autocomplete="off"
+							spellcheck="false"
+							class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none hover:border-line-2 focus:border-brand"
 						/>
-						Show hidden files
-					</label>
-				{/if}
-				<small class="text-[11.5px] text-ink-2">
-					Mounted at <span class="font-mono">/workspace</span>. {workspace ? 'Workspace forced to ' : 'Workspace resolves to '}{resolvedWs || 'none'}.
-				</small>
-			</div>
-
-			<div class="flex flex-col gap-2">
-				<SectionLabel>Agent</SectionLabel>
-				<div class="flex flex-wrap gap-1.5">
-					{#each data.agents as a (a.name)}
-						<Chip
-							size="md"
-							pressed={agent === a.name}
-							disabled={!a.enabled}
-							title={a.enabled ? a.display : a.display + ' is not enabled. Enable it under Settings > Agents.'}
-							onclick={() => (agent = a.name)}><AgentIcon name={a.name} muted={!a.enabled} />{a.display}</Chip
-						>
-					{/each}
+						{#if browse}
+							<Button icon="back" onclick={() => (browse = null)}>Known projects</Button>
+						{:else}
+							<Button icon="folder" onclick={() => openFolder(dir)}>Browse</Button>
+						{/if}
+					</div>
+					<div bind:this={list} class="flex max-h-[220px] flex-col overflow-auto rounded-lg border border-line-1">
+						{#if browse}
+							{#if browse.parent}
+								{@const parent = browse.parent}
+								<button type="button" onclick={() => openFolder(parent)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left hover:bg-surface-2">
+									<Icon name="up" /><span class="flex-1 font-mono text-[12.5px]">..</span><span class="text-[11.5px] text-ink-2">up</span>
+								</button>
+							{/if}
+							{#each browse.dirs as d (d)}
+								{@const path = browse.path.replace(/\/$/, '') + '/' + d}
+								<button type="button" onclick={() => openFolder(path)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2">
+									<Icon name="folder" /><span class="flex-1 truncate font-mono text-[12.5px]">{d}</span>
+								</button>
+							{:else}
+								<div class="px-3 py-2.5 text-xs text-ink-3">No folders here</div>
+							{/each}
+						{:else}
+							{#each suggestions as s, i (s.kind + s.path)}
+								{#if s.kind === 'dir' && (i === 0 || suggestions[i - 1].kind === 'project')}
+									<div class="shrink-0 border-b border-line-1 px-3 pt-2 pb-1 font-mono text-[10.5px] tracking-[0.08em] text-ink-3 uppercase">Folders</div>
+								{/if}
+								<button
+									type="button"
+									data-hi={i === hi || undefined}
+									onmousedown={(e) => e.preventDefault()}
+									onclick={() => pick(s)}
+									class={[
+										'flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2',
+										i === hi ? 'bg-surface-2' : s.kind === 'project' && s.path === fullDir && 'bg-brand-soft'
+									]}
+								>
+									{#if s.kind === 'project'}
+										<Icon name="folder" />
+										<span class="flex-1 truncate font-mono text-[12.5px]">{app.tilde(s.path)}</span>
+										<span class="text-[11.5px] whitespace-nowrap text-ink-2">{s.project.scoped ? 'directory-scoped to ' + s.project.workspace : s.project.workspace}</span>
+									{:else}
+										<span class="text-ink-3"><Icon name="folder" /></span>
+										<span class="flex-1 truncate font-mono text-[12.5px]"><span class="text-ink-3">{s.head}</span>{s.tail}</span>
+										{#if i === hi}<Kbd>Tab</Kbd>{/if}
+									{/if}
+								</button>
+							{:else}
+								<div class="px-3 py-2.5 text-xs text-ink-3">{data.projects.length ? 'No matches. Type a path or browse.' : 'No known projects yet. Type a path or browse.'}</div>
+							{/each}
+						{/if}
+					</div>
+					{#if browse}
+						{@const current = browse.path}
+						<label class="flex w-fit cursor-pointer items-center gap-2 text-xs text-ink-2">
+							<input
+								type="checkbox"
+								bind:checked={showHidden}
+								onchange={() => {
+									setLocal('showHidden', showHidden);
+									openFolder(current);
+								}}
+								class="size-3.5 accent-brand"
+							/>
+							Show hidden files
+						</label>
+					{/if}
+					<small class="text-[11.5px] text-ink-2">
+						Mounted at <span class="font-mono">/workspace</span>. {workspace ? 'Workspace forced to ' : 'Workspace resolves to '}{resolvedWs || 'none'}.
+					</small>
 				</div>
-			</div>
 
-			<div class="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
-				<SelectField
-					label="Workspace"
-					wrap=""
-					bind:value={workspace}
-					onchange={() => (envProfile = '')}
-					options={[{ value: '', label: 'Auto (resolution order)' }, ...data.workspaces.map((w) => ({ value: w.name, label: w.name }))]}
-				/>
-				<SelectField
-					label="Env profile"
-					wrap=""
-					bind:value={envProfile}
-					title={env?.error ?? ''}
-					options={[
-						{ value: '', label: env?.default ? `Workspace default (${env.default})` : 'Workspace default' },
-						...profiles.map((p) => ({ value: p, label: p }))
-					]}
-				/>
-				<SelectField label="Sidebar folder" wrap="" bind:value={folder} options={[{ value: '', label: 'None' }, ...(data.folders ?? []).map((f) => ({ value: f.id, label: f.name }))]} />
-			</div>
+				<div class="flex flex-col gap-2">
+					<SectionLabel>Agent</SectionLabel>
+					<div class="flex flex-wrap gap-1.5">
+						{#each data.agents as a (a.name)}
+							<Chip
+								size="md"
+								pressed={agent === a.name}
+								disabled={!a.enabled}
+								title={a.enabled ? a.display : a.display + ' is not enabled. Enable it under Settings > Agents.'}
+								onclick={() => (agent = a.name)}><AgentIcon name={a.name} muted={!a.enabled} />{a.display}</Chip
+							>
+						{/each}
+					</div>
+				</div>
 
-			<div class="flex flex-col gap-2">
-				<SectionLabel>Run options</SectionLabel>
-				<div class="flex flex-wrap gap-1.5">
-					{#each flagDefs as f (f.key)}
-						<Chip
-							icon={f.icon}
-							pressed={f.locked || flags[f.key]}
-							disabled={f.locked}
-							title={f.locked ? 'On by default (Settings > General)' : undefined}
-							onclick={() => (flags[f.key] = !flags[f.key])}>{f.label}</Chip
-						>
-					{/each}
+				<div class="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+					<SelectField
+						label="Workspace"
+						wrap=""
+						bind:value={workspace}
+						onchange={() => (envProfile = '')}
+						options={[{ value: '', label: 'Auto (resolution order)' }, ...data.workspaces.map((w) => ({ value: w.name, label: w.name }))]}
+					/>
+					<SelectField
+						label="Env profile"
+						wrap=""
+						bind:value={envProfile}
+						title={env?.error ?? ''}
+						options={[
+							{ value: '', label: env?.default ? `Workspace default (${env.default})` : 'Workspace default' },
+							...profiles.map((p) => ({ value: p, label: p }))
+						]}
+					/>
+					<SelectField label="Sidebar folder" wrap="" bind:value={folder} options={[{ value: '', label: 'None' }, ...(data.folders ?? []).map((f) => ({ value: f.id, label: f.name }))]} />
 				</div>
-				<div class="grid grid-cols-[1fr_1fr_2fr] gap-3 max-md:grid-cols-1">
-					<TextField label="Memory" wrap="" bind:value={memory} />
-					<TextField label="CPUs" wrap="" bind:value={cpus} />
-					<TextField label="Extra allowed domains" placeholder="api.example.com, cdn.example.com" wrap="" bind:value={domains} />
-				</div>
-			</div>
 
-			<div class="flex flex-col gap-2">
-				<div class="flex items-center gap-2">
-					<SectionLabel>{edit && changed ? 'Restarts as' : 'Runs as'}</SectionLabel>
-					<IconButton icon="copy" label="Copy command" small onclick={() => copy(shown)} />
+				<div class="flex flex-col gap-2">
+					<SectionLabel>Run options</SectionLabel>
+					<div class="flex flex-wrap gap-1.5">
+						{#each flagDefs as f (f.key)}
+							<Chip
+								icon={f.icon}
+								pressed={f.locked || flags[f.key]}
+								disabled={f.locked}
+								title={f.locked ? 'On by default (Settings > General)' : undefined}
+								onclick={() => (flags[f.key] = !flags[f.key])}>{f.label}</Chip
+							>
+						{/each}
+					</div>
+					<div class="grid grid-cols-[1fr_1fr_2fr] gap-3 max-md:grid-cols-1">
+						<TextField label="Memory" wrap="" bind:value={memory} />
+						<TextField label="CPUs" wrap="" bind:value={cpus} />
+						<TextField label="Extra allowed domains" placeholder="api.example.com, cdn.example.com" wrap="" bind:value={domains} />
+					</div>
 				</div>
-				<div class="rounded-lg border border-line-1 bg-inset px-3 py-2.5 font-mono text-xs break-all whitespace-pre-wrap">{shown}</div>
-				{#if edit && changed}
-					<small class="font-mono text-[11px] break-all text-ink-3" title="The command the session ran">Last run: {used}</small>
-				{/if}
-			</div>
+
+				<div class="flex flex-col gap-2">
+					<div class="flex items-center gap-2">
+						<SectionLabel>{edit && changed ? 'Restarts as' : 'Runs as'}</SectionLabel>
+						<IconButton icon="copy" label="Copy command" small onclick={() => copy(shown)} />
+					</div>
+					<div class="rounded-lg border border-line-1 bg-inset px-3 py-2.5 font-mono text-xs break-all whitespace-pre-wrap">{shown}</div>
+					{#if edit && changed}
+						<small class="font-mono text-[11px] break-all text-ink-3" title="The command the session ran">Last run: {used}</small>
+					{/if}
+				</div>
+			{/if}
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2 border-t border-line-1 px-5 py-3.5">
 			{#if edit}
-				<Button type="submit" variant="primary" icon="rotate" disabled={busy || !agent || !dir.trim()}>Restart with these settings</Button>
+				<Button type="submit" variant="primary" icon="rotate" disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}
+					>{kind === 'ssh' ? 'Reconnect with these settings' : 'Restart with these settings'}</Button
+				>
 				<Button variant="ghost" onclick={close}>Cancel</Button>
 			{:else}
-				<Button type="submit" variant="primary" icon="play" disabled={busy || !agent || !dir.trim()}>Start session</Button>
+				<Button type="submit" variant="primary" icon="play" disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}
+					>{kind === 'ssh' ? 'Connect' : 'Start session'}</Button
+				>
 				<Button variant="ghost" onclick={close}>Cancel</Button>
-				<span class="ml-auto text-[11.5px] text-ink-2">The image builds on first run.</span>
+				{#if kind === 'run'}<span class="ml-auto text-[11.5px] text-ink-2">The image builds on first run.</span>{/if}
 			{/if}
 		</div>
 	</form>

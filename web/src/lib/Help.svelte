@@ -59,6 +59,7 @@
 				{ keys: [[workspaceKey]], text: 'Workspace menu' },
 				{ keys: [[sessionKey]], text: 'Session menu' },
 				{ act: 'Cog on a window', text: 'Session settings and launch command' },
+				{ act: 'New session > SSH', text: 'A terminal on your own machine over ssh' },
 				{ act: 'Close a window', text: 'End the session or detach from it' },
 				{ keys: [['?']], text: 'This help, outside a terminal' }
 			]

@@ -260,12 +260,18 @@ func newWebSessionHostCmd() *cobra.Command {
 	return cmd
 }
 
-// sessionCommand runs `exitbox run ...` for a browser session, or attaches
-// to the tmux of a session started in a terminal.
+// sessionCommand runs `exitbox run ...` for a browser session, attaches
+// to the tmux of a session started in a terminal, or runs the system ssh
+// client for an SSH session.
 func sessionCommand(exe string) web.CommandFunc {
 	return func(info web.SessionInfo) *exec.Cmd {
 		var c *exec.Cmd
-		if info.Kind == web.KindAttach {
+		switch info.Kind {
+		case web.KindSSH:
+			// The server built and checked the arguments; ssh.exe on Windows.
+			c = exec.Command("ssh", info.Args...)
+			c.Dir = info.Dir
+		case web.KindAttach:
 			rt := "podman"
 			if r := container.Detect(); r != nil {
 				rt = container.Cmd(r)
@@ -273,7 +279,7 @@ func sessionCommand(exe string) web.CommandFunc {
 			// The entrypoint names the tmux session exitbox-<agent>.
 			c = exec.Command(rt, "exec", "-it", "-e", "TERM=xterm-256color", info.Container,
 				"tmux", "attach-session", "-t", "exitbox-"+info.Agent)
-		} else {
+		default:
 			c = exec.Command(exe, info.Args...)
 			c.Dir = info.Dir
 		}

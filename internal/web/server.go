@@ -156,7 +156,11 @@ func New(opts Options) (*Server, error) {
 	}
 	s.sessions.onExit = s.renameOnExit
 	s.sessions.logf = s.logf
-	s.prompts = newPromptBroker(func(id string) bool { return s.sessions.Get(id) != nil }, s.logf)
+	s.prompts = newPromptBroker(func(id string) bool {
+		// An SSH session never has the prompt socket; refuse one that claims it.
+		sess := s.sessions.Get(id)
+		return sess != nil && sess.Info().Kind != KindSSH
+	}, s.logf)
 	s.handler = s.routes()
 	return s, nil
 }
@@ -228,6 +232,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("GET /api/state", s.handleState)
 	api.HandleFunc("GET /api/fs", s.handleFS)
 	api.HandleFunc("GET /api/env-profiles", s.handleEnvProfiles)
+	api.HandleFunc("GET /api/ssh-hosts", s.handleSSHHosts)
 	api.HandleFunc("POST /api/sessions", s.handleStartSession)
 	api.HandleFunc("DELETE /api/sessions/{id}", s.handleCloseSession)
 	api.HandleFunc("POST /api/sessions/{id}/restart", s.handleRestartSession)

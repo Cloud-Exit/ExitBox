@@ -101,6 +101,11 @@
 		if (ok === 'yes') detach(w);
 	}
 
+	async function confirmDisconnect(w: Win) {
+		const ok = await app.ask(`Disconnect ${w.title}?`, 'The SSH connection ends and the window closes.', [{ label: 'Disconnect', value: 'yes', tone: 'danger' }]);
+		if (ok === 'yes') void app.terminate(w);
+	}
+
 	async function confirmTerminate(t: SessionTarget) {
 		const n = targetName(t);
 		const fromTerminal = t.kind === 'terminal' || (t.kind === 'window' && t.win.attached);
@@ -141,8 +146,11 @@
 		if (t.kind === 'window') {
 			const w = t.win;
 			if (w.info.exited) {
-				out.push({ label: w.attached ? 'Attach again' : 'Start again', icon: 'rotate', onselect: () => void app.restart(w, 120, 36) });
+				out.push({ label: w.attached ? 'Attach again' : w.ssh ? 'Reconnect' : 'Start again', icon: 'rotate', onselect: () => void app.restart(w, 120, 36) });
 				out.push({ label: 'Close window', icon: 'x', onselect: () => void app.stop(w) });
+			} else if (w.ssh) {
+				// No container and nothing to detach to: Minimize keeps it running.
+				out.push({ label: 'Disconnect', icon: 'power', danger: true, onselect: () => void confirmDisconnect(w) });
 			} else {
 				out.push({ label: 'Detach', icon: 'logout', onselect: () => void confirmDetach(w) });
 				out.push({ label: 'Terminate', icon: 'power', danger: true, onselect: () => void confirmTerminate(t) });

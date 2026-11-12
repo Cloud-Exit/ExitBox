@@ -55,6 +55,8 @@ type fakeStore struct {
 	// renameErr fails renameSaved; renameCalls counts its calls.
 	renameErr   error
 	renameCalls int
+	// noSSH: no ssh client is installed.
+	noSSH bool
 }
 
 func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
@@ -151,6 +153,12 @@ func (f *fakeStore) envProfiles(string) ([]string, string, error) {
 }
 func (f *fakeStore) runtime() string { return "podman" }
 func (f *fakeStore) home() string    { return f.homeD }
+func (f *fakeStore) sshPath() (string, error) {
+	if f.noSSH {
+		return "", exec.ErrNotFound
+	}
+	return "/usr/bin/ssh", nil
+}
 
 type recorder struct {
 	mu   sync.Mutex

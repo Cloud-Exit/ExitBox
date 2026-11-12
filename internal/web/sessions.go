@@ -52,6 +52,7 @@ const WebSessionEnv = "EXITBOX_WEB_SESSION"
 const (
 	KindRun    = "run"    // exitbox run started by the web UI
 	KindAttach = "attach" // a terminal on the tmux of a session started elsewhere
+	KindSSH    = "ssh"    // the system ssh client to one of the user's machines
 )
 
 // SessionInfo is what the UI shows for a running session.
@@ -75,6 +76,8 @@ type SessionInfo struct {
 	// Request is how a run session was started here; nil for attached
 	// sessions and those saved before it was kept.
 	Request *RunOptions `json:"request,omitempty"`
+	// SSH is how an SSH session connects; Agent is empty for those.
+	SSH *SSHOptions `json:"ssh,omitempty"`
 }
 
 // Session is one session, run by its host process (RunHost) and reached
@@ -122,6 +125,10 @@ func (s *Session) Info() SessionInfo {
 		r := *s.info.Request
 		r.AllowURLs = append([]string(nil), r.AllowURLs...)
 		info.Request = &r
+	}
+	if s.info.SSH != nil {
+		o := *s.info.SSH
+		info.SSH = &o
 	}
 	info.Viewers = len(s.subs)
 	return info
@@ -343,7 +350,8 @@ func (s *Session) ended(code int) {
 }
 
 // CommandFunc builds the process of a session: `exitbox <Args>` in Dir for
-// KindRun, or an exec into Container's tmux for KindAttach.
+// KindRun, an exec into Container's tmux for KindAttach, or `ssh <Args>`
+// for KindSSH.
 type CommandFunc func(info SessionInfo) *exec.Cmd
 
 // SpawnFunc starts the host of session id in dir, detached from exitbox
@@ -423,6 +431,10 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 		run.Args = append(append([]string(nil), info.Args...), "--env", WebSessionEnv+"="+id)
 	}
 	cmd := m.command(run)
+	if cmd.Err != nil {
+		// The program was not found: say so instead of a failed host.
+		return nil, cmd.Err
+	}
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()

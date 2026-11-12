@@ -8,6 +8,8 @@
 	import { termFont } from './termFont.svelte';
 	import SessionMenu, { detach } from './SessionMenu.svelte';
 	import PromptCard from './PromptCard.svelte';
+	import AgentIcon from './AgentIcon.svelte';
+	import { sshTarget } from './api';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
 
@@ -38,7 +40,7 @@
 		if (info.exited && win.attached) return { text: 'detached', tone: 'off' };
 		if (info.exited) return info.exitCode === 0 ? { text: 'ended', tone: 'off' } : { text: 'exit ' + info.exitCode, tone: 'bad' };
 		if (!win.connected) return { text: 'connecting', tone: 'wait' };
-		return win.attached ? { text: 'terminal', tone: 'run' } : { text: 'running', tone: 'run' };
+		return win.attached ? { text: 'terminal', tone: 'run' } : win.ssh ? { text: 'connected', tone: 'run' } : { text: 'running', tone: 'run' };
 	});
 
 	function termTheme() {
@@ -566,6 +568,15 @@
 			app.stop(win);
 			return;
 		}
+		if (win.ssh) {
+			const choice = await app.ask('Close this window?', 'Disconnect ends the SSH connection. Hide keeps it running in the sidebar.', [
+				{ label: 'Disconnect', value: 'terminate', tone: 'danger' },
+				{ label: 'Hide', value: 'hide', tone: 'secondary' }
+			]);
+			if (choice === 'terminate') app.terminate(win);
+			else if (choice === 'hide') app.hide(win);
+			return;
+		}
 		const agent = app.agentDisplay(info.agent);
 		const choice = await app.ask(
 			'Close this window?',
@@ -657,8 +668,15 @@
 				<IconButton icon="pencil" label="Rename session" small onclick={() => startRename()} />
 			{/if}
 		{/if}
-		<span class="shrink-0 rounded border border-line-2 bg-surface-2 px-2 py-0.5 text-[11.5px] font-semibold whitespace-nowrap">{app.agentDisplay(info.agent)}</span>
-		<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-2" title={info.dir}>{app.tilde(info.dir)}</span>
+		{#if win.ssh}
+			<span class="inline-flex shrink-0 items-center gap-1.5 rounded border border-line-2 bg-surface-2 py-0.5 pr-2 pl-1 text-[11.5px] font-semibold whitespace-nowrap"
+				><AgentIcon name="ssh" small />SSH</span
+			>
+			<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-2">{info.ssh ? sshTarget(info.ssh) : ''}</span>
+		{:else}
+			<span class="shrink-0 rounded border border-line-2 bg-surface-2 px-2 py-0.5 text-[11.5px] font-semibold whitespace-nowrap">{app.agentDisplay(info.agent)}</span>
+			<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-2" title={info.dir}>{app.tilde(info.dir)}</span>
+		{/if}
 		<span
 			class={[
 				'rounded px-[7px] py-0.5 text-[10.5px] font-semibold tracking-[0.03em] whitespace-nowrap uppercase',
@@ -701,12 +719,14 @@
 					<span class="flex-[1_1_160px]">
 						{#if win.attached}
 							Detached. The session may still run in its terminal.
+						{:else if win.ssh}
+							{info.exitCode === 0 ? 'The connection closed.' : `The connection closed with exit code ${info.exitCode}.`}
 						{:else}
 							{info.exitCode === 0 ? 'The session ended.' : `The session ended with exit code ${info.exitCode}.`}
 						{/if}
 						{#if info.renameError}<span class="block text-warn">Rename failed: {info.renameError}</span>{/if}
 					</span>
-					<Button size="sm" icon="rotate" onclick={() => app.restart(win, cols, rows)}>{win.attached ? 'Attach again' : 'Start again'}</Button>
+					<Button size="sm" icon="rotate" onclick={() => app.restart(win, cols, rows)}>{win.attached ? 'Attach again' : win.ssh ? 'Reconnect' : 'Start again'}</Button>
 					<Button size="sm" variant="ghost" onclick={() => app.stop(win)}>Close</Button>
 				</div>
 			</div>

@@ -1,7 +1,7 @@
 // App state shared by the components. The app is client-only (ssr = false),
 // so one module-level instance is safe.
 import { api, ApiError, loadLayout, local, sessionKey, setLocal, setUnauthorizedHandler } from './api';
-import type { Folder, Me, RunningDoc, RunOptions, SavedDoc, SessionInfo, SettingsDoc, State } from './api';
+import type { Folder, Me, RunningDoc, RunOptions, SavedDoc, SessionInfo, SettingsDoc, SSHOptions, State } from './api';
 
 export const MIN_W = 280;
 export const MIN_H = 160;
@@ -52,11 +52,15 @@ export class Win {
 	}
 
 	get title() {
-		return this.info.renameTo || sessionLabel(this.info.name, this.info.agent, this.info.started);
+		return this.info.renameTo || sessionLabel(this.info.name, this.info.agent || this.info.kind, this.info.started);
 	}
 
 	get attached() {
 		return this.info.kind === 'attach';
+	}
+
+	get ssh() {
+		return this.info.kind === 'ssh';
 	}
 
 	place(x: number, y: number, w: number, h: number) {
@@ -107,6 +111,8 @@ export class Win {
 
 /** A window's sidebar key; an unnamed run is keyed by window until it learns its name. */
 export function windowKey(i: SessionInfo) {
+	// SSH names need not be unique and nothing is saved under them: key by id.
+	if (i.kind === 'ssh') return sessionKey('', 'ssh', '', i.id);
 	return i.name ? sessionKey(i.workspace || 'default', i.agent, i.dir, i.name) : 'window:' + i.id;
 }
 
@@ -569,6 +575,7 @@ class App {
 				return;
 			}
 		}
+		this.unfileSSH(w);
 		this.dropWindow(w);
 		this.refresh();
 	}
@@ -583,6 +590,7 @@ class App {
 				return;
 			}
 		}
+		this.unfileSSH(w);
 		this.dropWindow(w);
 		this.refresh();
 	}
@@ -595,9 +603,19 @@ class App {
 		}
 	}
 
-	/** Starts a window's session again, with new options when given; the new window takes its place. */
-	async restartWith(w: Win, cols: number, rows: number, request?: RunOptions) {
-		const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', request ? { cols, rows, request } : { cols, rows });
+	/** An SSH session is gone once its window closes: so is its folder entry. */
+	private unfileSSH(w: Win) {
+		const key = windowKey(w.info);
+		if (w.ssh && this.data?.folders.some((f) => f.items.includes(key))) void this.moveToFolder(key, null);
+	}
+
+	/** Starts a window's session again, with new options when given (ssh for an SSH session); the new window takes its place. */
+	async restartWith(w: Win, cols: number, rows: number, opts?: { request?: RunOptions; ssh?: SSHOptions }) {
+		const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', { cols, rows, ...opts });
+		// An SSH session's folder key is its id: carry the folder to the new one.
+		const oldKey = windowKey(w.info);
+		const folder = w.ssh ? this.data?.folders.find((f) => f.items.includes(oldKey)) : undefined;
+		if (folder) await this.saveFolders((this.data?.folders ?? []).map((f) => ({ ...f, items: f.items.map((k) => (k === oldKey ? windowKey(info) : k)) })));
 		setLocal('win.' + info.id, { x: w.x, y: w.y, w: w.w, h: w.h, max: w.max, min: false, tab: w.tab });
 		// The new window takes the old one's dock slot.
 		this.dockOrder = this.dockOrder.map((id) => (id === w.id ? info.id : id));
@@ -1040,6 +1058,11 @@ class App {
 		const home = this.data?.home;
 		if (home && home !== '/' && (p === home || p.startsWith(home + '/'))) return '~' + p.slice(home.length);
 		return p;
+	}
+
+	/** What a session runs, for labels: the agent's name, or SSH. */
+	sessionDisplay(i: { kind: string; agent: string }) {
+		return i.kind === 'ssh' ? 'SSH' : this.agentDisplay(i.agent);
 	}
 
 	agentDisplay(name: string) {

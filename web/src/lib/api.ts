@@ -47,7 +47,8 @@ export interface SavedDoc {
 
 export interface SessionInfo {
 	id: string;
-	kind: 'run' | 'attach';
+	kind: 'run' | 'attach' | 'ssh';
+	/** Empty for an SSH session. */
 	agent: string;
 	dir: string;
 	workspace: string;
@@ -62,6 +63,45 @@ export interface SessionInfo {
 	renameError?: string;
 	/** How a run session was started here; missing when unknown. */
 	request?: RunOptions;
+	/** How an SSH session connects. */
+	ssh?: SSHOptions;
+}
+
+/** An SSH session's options (internal/web SSHOptions); port 0 is ssh's default. */
+export interface SSHOptions {
+	name: string;
+	host: string;
+	user: string;
+	port: number;
+	identity: string;
+}
+
+/** A Host alias of ~/.ssh/config, with what the config says about it. */
+export interface SSHHost {
+	alias: string;
+	hostname?: string;
+	user?: string;
+	port?: number;
+}
+
+/** Mirrors sshArgs in internal/web/ssh.go. */
+export function sshArgs(o: SSHOptions) {
+	const a = ['-t'];
+	if (o.port) a.push('-p', String(o.port));
+	if (o.user) a.push('-l', o.user);
+	if (o.identity) a.push('-i', o.identity);
+	a.push('--', o.host || '<host>');
+	return a;
+}
+
+export function sshCommand(args: string[]) {
+	return 'ssh ' + args.map(shellQuote).join(' ');
+}
+
+/** user@host:port of an SSH session, as far as it is set. */
+export function sshTarget(o: { host?: string; hostname?: string; user?: string; port?: number }) {
+	const host = o.hostname || o.host || '';
+	return (o.user ? o.user + '@' : '') + host + (o.port ? ':' + o.port : '');
 }
 
 /** An agent container that runs now but has no window: started in a terminal. */

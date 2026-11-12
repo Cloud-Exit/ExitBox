@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { app, OPEN_DRAG, sessionLabel, windowKey, type SidebarDrop, type Win } from './app.svelte';
-	import { sessionKey, type Folder, type RunningDoc, type SavedDoc } from './api';
+	import { sessionKey, sshTarget, type Folder, type RunningDoc, type SavedDoc } from './api';
+	import AgentIcon from './AgentIcon.svelte';
 	import SessionMenu, { folderItems, folderNaming, openTarget, type SessionTarget } from './SessionMenu.svelte';
 	import Brand from './ui/Brand.svelte';
 	import Button from './ui/Button.svelte';
@@ -16,6 +17,8 @@
 		| { kind: 'saved'; key: string; named: true; workspace: string; saved: SavedDoc };
 
 	const DRAG_TYPE = 'application/x-exitbox-session';
+	/** The sidebar group of SSH sessions; no workspace can have this name. */
+	const SSH_GROUP = '\u0000ssh';
 
 	const rows = $derived.by(() => {
 		const d = app.data;
@@ -24,7 +27,7 @@
 		const running = new Set<string>();
 		for (const w of app.windows) {
 			const i = w.info;
-			const ws = i.workspace || 'default';
+			const ws = i.kind === 'ssh' ? SSH_GROUP : i.workspace || 'default';
 			const key = windowKey(i);
 			if (!i.exited) running.add(key);
 			out.push({ kind: 'window', key, named: !!i.name, workspace: ws, win: w });
@@ -59,6 +62,10 @@
 	const needle = $derived(query.trim().toLowerCase());
 
 	function matches(r: Row) {
+		if (r.kind === 'window' && r.win.ssh) {
+			const o = r.win.info.ssh;
+			return [title(r), 'ssh', o?.host ?? '', o ? sshTarget(o) : ''].some((s) => s.toLowerCase().includes(needle));
+		}
 		const [agent, dir] = r.kind === 'window' ? [r.win.info.agent, r.win.info.dir] : r.kind === 'terminal' ? [r.run.agent, r.run.dir] : [r.saved.agent, r.saved.dir];
 		return [title(r), agent, r.workspace, dir, app.tilde(dir)].some((s) => s.toLowerCase().includes(needle));
 	}
@@ -85,7 +92,8 @@
 			}
 			g.rows.push(r);
 		}
-		return groups.filter((g) => g.rows.length);
+		// SSH last, after every workspace.
+		return groups.filter((g) => g.rows.length).sort((a, b) => +(a.name === SSH_GROUP) - +(b.name === SSH_GROUP));
 	});
 
 	const inactiveCount = $derived(rows.filter((r) => r.kind === 'saved').length);
@@ -280,7 +288,13 @@
 				<span class="flex min-w-0 flex-col">
 					<span class={['truncate text-[13px]', r.kind === 'saved' ? 'font-medium text-ink-2' : 'font-semibold']}>{name}</span>
 					<span class={['truncate font-mono text-[10.5px]', r.kind === 'saved' ? 'text-ink-3' : 'text-ink-2']}>
-						{#if r.kind === 'window'}
+						{#if r.kind === 'window' && r.win.ssh}
+							ssh · {r.win.info.ssh ? sshTarget(r.win.info.ssh) : ''}{app.tabs.length > 1 ? ' · ' + (app.tabs.find((t) => t.id === r.win.tab)?.name ?? '') : ''}{r.win.info.exited
+								? ' · ended'
+								: r.win.min
+									? ' · hidden'
+									: ''}
+						{:else if r.kind === 'window'}
 							{r.win.info.agent} · {app.tilde(r.win.info.dir)}{app.tabs.length > 1 ? ' · ' + (app.tabs.find((t) => t.id === r.win.tab)?.name ?? '') : ''}{r.win.attached ? ' · terminal' : ''}{r.win.info.exited ? (r.win.attached ? ' · detached' : ' · ended') : r.win.min ? ' · hidden' : ''}
 						{:else if r.kind === 'terminal'}
 							{r.run.agent} · {app.tilde(r.run.dir)} · terminal
@@ -406,7 +420,7 @@
 			{#each app.windows as w (w.id)}
 				<button
 					type="button"
-					title={w.title + ' · ' + w.info.agent + ' · ' + app.tilde(w.info.dir)}
+					title={w.title + ' · ' + app.sessionDisplay(w.info) + ' · ' + (w.ssh && w.info.ssh ? sshTarget(w.info.ssh) : app.tilde(w.info.dir))}
 					aria-label={'Show ' + w.title}
 					onclick={() => {
 						app.view = 'sessions';
@@ -480,11 +494,12 @@
 
 		{#each workspaceGroups as g (g.name)}
 			<div class="flex items-center gap-2 px-2 pt-3 pb-1" ondragover={allowDrop} ondrop={(e) => dropOn(e, null)} role="presentation">
-				<SectionLabel>{g.name}</SectionLabel>
+				{#if g.name === SSH_GROUP}<AgentIcon name="ssh" small />{/if}
+				<SectionLabel>{g.name === SSH_GROUP ? 'SSH' : g.name}</SectionLabel>
 				{#if g.isDefault}<span class="rounded border border-line-2 bg-surface-2 px-1.5 font-mono text-[9.5px] font-bold text-ink-2">default</span>{/if}
 				<span class="ml-auto font-mono text-[10.5px] text-ink-2">{g.vault}</span>
 			</div>
-			<div class="flex flex-col gap-0.5" role="list" aria-label={'Workspace ' + g.name} ondragover={allowDrop} ondrop={(e) => dropOn(e, null)}>
+			<div class="flex flex-col gap-0.5" role="list" aria-label={g.name === SSH_GROUP ? 'SSH sessions' : 'Workspace ' + g.name} ondragover={allowDrop} ondrop={(e) => dropOn(e, null)}>
 				{#each g.rows as r (rowId(r))}
 					{@render row(r)}
 				{/each}

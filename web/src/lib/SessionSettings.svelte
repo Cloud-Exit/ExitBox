@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { runCommand, shellQuote } from './api';
+	import { runCommand, shellQuote, sshCommand } from './api';
 	import type { State } from './api';
 	import { app } from './app.svelte';
 	import type { Win } from './app.svelte';
@@ -15,7 +15,9 @@
 	const info = $derived(win.info);
 	// Mirrors sessionCommand in cmd/web.go.
 	const command = $derived(
-		info.kind === 'attach'
+		info.kind === 'ssh'
+			? sshCommand(info.args)
+			: info.kind === 'attach'
 			? [data.runtime || 'podman', 'exec', '-it', '-e', 'TERM=xterm-256color', info.container || '<container>', 'tmux', 'attach-session', '-t', 'exitbox-' + info.agent]
 					.map(shellQuote)
 					.join(' ')
@@ -23,7 +25,7 @@
 	);
 	const rows = $derived(
 		[
-			['Agent', app.agentDisplay(info.agent)],
+			['Agent', info.agent ? app.agentDisplay(info.agent) : ''],
 			['Workspace', info.workspace],
 			['Directory', app.tilde(info.dir)],
 			['Container', info.container ?? ''],
@@ -39,7 +41,8 @@
 	}
 </script>
 
-{#if info.kind === 'run' && info.request}
+<!-- An SSH session edits its options in the New session dialog too. -->
+{#if (info.kind === 'run' && info.request) || (info.kind === 'ssh' && info.ssh)}
 	<NewSession {data} edit={win} />
 {:else}
 	<Modal label="Session settings" onclose={close}>

@@ -56,6 +56,8 @@ type store interface {
 	// stopContainer stops an agent container.
 	stopContainer(name string) error
 	home() string
+	// sshPath finds the system ssh client.
+	sshPath() (string, error)
 }
 
 type configStore struct{}
@@ -175,6 +177,8 @@ func (configStore) runtime() string {
 	}
 	return ""
 }
+
+func (configStore) sshPath() (string, error) { return exec.LookPath("ssh") }
 
 func (configStore) home() string {
 	h, err := os.UserHomeDir()
@@ -488,11 +492,14 @@ type RunOptions struct {
 	AllowURLs  []string `json:"allowUrls"`
 }
 
-// startRequest describes a new session.
+// startRequest describes a new session: an exitbox run (Kind "run", the
+// default) or an SSH session (Kind "ssh" with SSH).
 type startRequest struct {
 	RunOptions
-	Cols int `json:"cols"`
-	Rows int `json:"rows"`
+	Kind string      `json:"kind"`
+	SSH  *SSHOptions `json:"ssh"`
+	Cols int         `json:"cols"`
+	Rows int         `json:"rows"`
 }
 
 var (
@@ -627,18 +634,43 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	info, err := s.runSession(req.RunOptions)
+	var info SessionInfo
+	var err error
+	switch req.Kind {
+	case "", KindRun:
+		info, err = s.runSession(req.RunOptions)
+	case KindSSH:
+		if req.SSH == nil {
+			err = errors.New("an SSH session needs ssh options")
+		} else {
+			info, err = s.sshSession(*req.SSH)
+		}
+	default:
+		err = fmt.Errorf("unknown session kind %q", req.Kind)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	sess, err := s.sessions.Start(info, req.Cols, req.Rows)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting exitbox: %w", err))
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting %s: %w", program(info), err))
 		return
 	}
-	s.logf("web: started session %s: exitbox %s (in %s)", sess.Info().ID, strings.Join(info.Args, " "), info.Dir)
+	if info.Kind == KindSSH {
+		s.logf("web: started ssh session %s: ssh %s", sess.Info().ID, strings.Join(info.Args, " "))
+	} else {
+		s.logf("web: started session %s: exitbox %s (in %s)", sess.Info().ID, strings.Join(info.Args, " "), info.Dir)
+	}
 	writeJSON(w, http.StatusCreated, sess.Info())
+}
+
+// program is what a session runs, for messages.
+func program(info SessionInfo) string {
+	if info.Kind == KindSSH {
+		return "ssh"
+	}
+	return "exitbox"
 }
 
 func (s *Server) handleCloseSession(w http.ResponseWriter, r *http.Request) {
@@ -660,6 +692,16 @@ func (s *Server) handleTerminateSession(w http.ResponseWriter, r *http.Request) 
 	sess := s.sessions.Get(id)
 	if sess == nil {
 		writeError(w, http.StatusNotFound, errors.New("no such session"))
+		return
+	}
+	if sess.Info().Kind == KindSSH {
+		// No container: ending the ssh process is all there is.
+		if err := s.sessions.Close(id); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		s.logf("web: disconnected ssh session %s", id)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	// Learn the container if the last poll has not yet.
@@ -720,13 +762,14 @@ func (s *Server) handleRemoveSaved(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRestartSession starts a session again and forgets the old one. With
-// a request, a run session starts with those options instead of its own,
-// and one still running is stopped first.
+// a request (ssh for an SSH session), it starts with those options instead
+// of its own, and one still running is stopped first.
 func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cols    int         `json:"cols"`
 		Rows    int         `json:"rows"`
 		Request *RunOptions `json:"request"`
+		SSH     *SSHOptions `json:"ssh"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -739,7 +782,23 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	}
 	info := old.Info()
 	var next SessionInfo
-	if req.Request != nil {
+	if req.SSH != nil {
+		if info.Kind != KindSSH {
+			writeError(w, http.StatusBadRequest, errors.New("only an SSH session takes ssh options"))
+			return
+		}
+		var err error
+		if next, err = s.sshSession(*req.SSH); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !info.Exited {
+			if err := old.stop(); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("stopping the session: %w", err))
+				return
+			}
+		}
+	} else if req.Request != nil {
 		if info.Kind != KindRun {
 			writeError(w, http.StatusBadRequest, errors.New("only a session started here can change its settings"))
 			return
@@ -760,25 +819,44 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("the session is still running"))
 			return
 		}
-		next = SessionInfo{Kind: info.Kind, Agent: info.Agent, Dir: info.Dir, Workspace: info.Workspace, Name: info.Name, Args: info.Args, Request: info.Request}
-		if info.Kind == KindRun && !hasFlag(info.Args, "--name") {
-			// Without --name the new run picks a new timestamp name; it is
-			// learned from the container again.
-			next.Name = ""
-		}
-		if info.Kind == KindAttach {
-			next.Container = info.Container
+		if info.Kind == KindSSH {
+			// Reconnect with the same options, checked again.
+			if info.SSH == nil {
+				writeError(w, http.StatusConflict, errors.New("this SSH session lost its options; start a new one"))
+				return
+			}
+			var err error
+			if next, err = s.sshSession(*info.SSH); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			next.Name = info.Name
+			next.SSH.Name = info.Name
+		} else {
+			next = SessionInfo{Kind: info.Kind, Agent: info.Agent, Dir: info.Dir, Workspace: info.Workspace, Name: info.Name, Args: info.Args, Request: info.Request}
+			if info.Kind == KindRun && !hasFlag(info.Args, "--name") {
+				// Without --name the new run picks a new timestamp name; it is
+				// learned from the container again.
+				next.Name = ""
+			}
+			if info.Kind == KindAttach {
+				next.Container = info.Container
+			}
 		}
 	}
 	sess, err := s.sessions.Start(next, req.Cols, req.Rows)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting exitbox: %w", err))
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting %s: %w", program(next), err))
 		return
 	}
 	if err := s.sessions.Close(info.ID); err != nil {
 		s.logf("web: forget session %s: %v", info.ID, err)
 	}
-	s.logf("web: restarted session %s as %s: exitbox %s (in %s)", info.ID, sess.Info().ID, strings.Join(next.Args, " "), next.Dir)
+	if next.Kind == KindSSH {
+		s.logf("web: restarted ssh session %s as %s: ssh %s", info.ID, sess.Info().ID, strings.Join(next.Args, " "))
+	} else {
+		s.logf("web: restarted session %s as %s: exitbox %s (in %s)", info.ID, sess.Info().ID, strings.Join(next.Args, " "), next.Dir)
+	}
 	writeJSON(w, http.StatusCreated, sess.Info())
 }
 
@@ -892,6 +970,16 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	}
 	info := sess.Info()
 	switch {
+	case info.Kind == KindSSH:
+		// Nothing is saved under an SSH session's name: rename it now.
+		sess.update(func(i *SessionInfo) {
+			i.Name, i.RenameTo, i.RenameError = newName, "", ""
+			if i.SSH != nil {
+				o := *i.SSH
+				o.Name = newName
+				i.SSH = &o
+			}
+		})
 	case info.Kind == KindAttach && !info.Exited:
 		// Started in a terminal: the rename waits until the session ends.
 		if info.Name == "" {
@@ -938,7 +1026,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 // renameOnExit applies a rename asked for while the session ran.
 func (s *Server) renameOnExit(sess *Session) {
 	info := sess.Info()
-	if info.RenameTo == "" || info.Name == "" {
+	if info.Kind == KindSSH || info.RenameTo == "" || info.Name == "" {
 		return
 	}
 	if err := s.store.renameSaved(info.Workspace, info.Agent, info.Dir, info.Name, info.RenameTo); err != nil {

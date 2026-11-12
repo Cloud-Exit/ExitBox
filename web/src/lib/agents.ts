@@ -15,8 +15,15 @@ const marks: Record<string, AgentMark> = {
 	kimi: { tile: 'bg-indigo-600', glyph: '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>' },
 	opencode: { tile: 'bg-zinc-600', glyph: '<path d="M9 3H5v18h4"/><path d="M15 3h4v18h-4"/>' },
 	pi: { tile: 'bg-rose-600', glyph: '<path d="M3 7h18"/><path d="M8.5 7c0 5-1 9.5-3 13"/><path d="M15.5 7v9.5c0 2 1 3.5 3.5 3.5"/>' },
-	qwen: { tile: 'bg-sky-600', glyph: '<circle cx="11.5" cy="11.5" r="7.5"/><path d="M14 14l6.5 6.5"/>' }
+	qwen: { tile: 'bg-sky-600', glyph: '<circle cx="11.5" cy="11.5" r="7.5"/><path d="M14 14l6.5 6.5"/>' },
+	// Not an agent: SSH sessions, a prompt over a link.
+	ssh: { tile: 'bg-teal-700', glyph: '<polyline points="4 7 9 12 4 17"/><path d="M12 17h8"/><path d="M15 4h5v5"/>' }
 };
+
+/** The icon of a session: its agent, or the SSH mark. */
+export function sessionIcon(i: { kind: string; agent: string }) {
+	return i.kind === 'ssh' ? 'ssh' : i.agent;
+}
 
 export function agentMark(name: string): AgentMark {
 	return marks[name] ?? { tile: 'bg-slate-500', glyph: null };
