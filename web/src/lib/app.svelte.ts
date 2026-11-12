@@ -16,6 +16,15 @@ interface Geometry {
 	tab?: string;
 }
 
+/** A host prompt of a session (exitbox-allow, vault) waiting for an answer. */
+export interface HostPrompt {
+	id: string;
+	kind: 'allow' | 'vault-read' | 'vault-write' | 'vault-list' | 'vault-password';
+	agent: string;
+	workspace: string;
+	subject: string;
+}
+
 /** One session window on the desktop. */
 export class Win {
 	info = $state.raw<SessionInfo>() as SessionInfo;
@@ -29,6 +38,10 @@ export class Win {
 	connected = $state(false);
 	/** The tab the window lives in. */
 	tab = $state('');
+	/** Host prompts waiting for an answer, oldest first. */
+	prompts = $state<HostPrompt[]>([]);
+	/** Answers a prompt over the window's connection; set while it is open. */
+	answer: ((id: string, allow: boolean, password?: string) => void) | null = null;
 
 	constructor(info: SessionInfo) {
 		this.info = info;

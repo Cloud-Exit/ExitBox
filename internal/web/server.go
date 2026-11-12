@@ -29,7 +29,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +106,8 @@ type Server struct {
 
 	vault      vaultBackend
 	vaultGuard vaultGuard
+
+	prompts *promptBroker
 }
 
 // New builds a server. It refuses to listen beyond this machine without a
@@ -152,6 +156,7 @@ func New(opts Options) (*Server, error) {
 	}
 	s.sessions.onExit = s.renameOnExit
 	s.sessions.logf = s.logf
+	s.prompts = newPromptBroker(func(id string) bool { return s.sessions.Get(id) != nil }, s.logf)
 	s.handler = s.routes()
 	return s, nil
 }
@@ -165,6 +170,10 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // Serve runs until ctx ends. Sessions keep running in their hosts; the
 // next exitbox web takes them over.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if err := s.startPrompts(); err != nil {
+		s.logf("web: prompts stay in the terminal: %v", err)
+	}
+	defer s.stopPrompts()
 	srv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -368,6 +377,25 @@ func (s *Server) attachHandler() http.Handler {
 	})
 }
 
+// startPrompts takes the host prompts of the sessions started from now
+// on. Windows keeps its popups.
+func (s *Server) startPrompts() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	path := filepath.Join(s.opts.StateDir, "prompts.sock")
+	if err := s.prompts.listen(path); err != nil {
+		return err
+	}
+	s.sessions.setPromptSocket(path)
+	return nil
+}
+
+func (s *Server) stopPrompts() {
+	s.sessions.setPromptSocket("")
+	s.prompts.close()
+}
+
 // writeTimeout bounds one WebSocket write to a browser.
 const writeTimeout = 30 * time.Second
 
@@ -376,6 +404,10 @@ type clientMsg struct {
 	D string `json:"d,omitempty"`
 	C int    `json:"c,omitempty"`
 	R int    `json:"r,omitempty"`
+	// An answer to a prompt: {"t":"answer","id":...,"allow":true,"password":...}.
+	ID       string `json:"id,omitempty"`
+	Allow    bool   `json:"allow,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 func (s *Server) stream(conn *websocket.Conn, sess *Session) {
@@ -405,6 +437,10 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 	if err := send(`{"t":"live"}`); err != nil {
 		return
 	}
+	// Prompts waiting for an answer come right after.
+	id := sess.Info().ID
+	pv := s.prompts.watch(id)
+	defer s.prompts.unwatch(id, pv)
 
 	go func() {
 		defer sub.drop()
@@ -426,6 +462,8 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 				if err := sess.Resize(msg.C, msg.R); err != nil {
 					s.logf("web: resize session %s: %v", sess.Info().ID, err)
 				}
+			case "answer":
+				s.prompts.answer(id, msg.ID, msg.Allow, msg.Password)
 			}
 		}
 	}()
@@ -434,6 +472,10 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 		select {
 		case chunk := <-sub.out:
 			if err := send(chunk); err != nil {
+				return
+			}
+		case m := <-pv.out:
+			if err := send(m); err != nil {
 				return
 			}
 		case <-sub.gone:

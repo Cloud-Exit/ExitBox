@@ -34,6 +34,40 @@ import (
 // cannot render (e.g. Codex controlling the terminal).
 const promptTimeout = 30 * time.Second
 
+// PromptTimeout is how long any prompt waits for an answer.
+const PromptTimeout = promptTimeout
+
+// Popups are the tmux popup prompts of one container.
+type Popups struct {
+	Runtime       container.Runtime
+	ContainerName string
+}
+
+// Allow asks to allow a domain.
+func (p Popups) Allow(domain string) (bool, error) {
+	return promptViaTmuxPopup(p.Runtime, p.ContainerName, domain)
+}
+
+// VaultRead asks to allow reading a vault key.
+func (p Popups) VaultRead(key string) (bool, error) {
+	return promptVaultApproval(p.Runtime, p.ContainerName, key)
+}
+
+// VaultWrite asks to allow writing a vault key.
+func (p Popups) VaultWrite(key string) (bool, error) {
+	return promptVaultApprovalSet(p.Runtime, p.ContainerName, key)
+}
+
+// VaultList asks to allow listing the vault keys.
+func (p Popups) VaultList() (bool, error) {
+	return promptVaultApproval(p.Runtime, p.ContainerName, "list keys")
+}
+
+// VaultPassword asks for the vault password.
+func (p Popups) VaultPassword() (string, error) {
+	return promptVaultPassword(p.Runtime, p.ContainerName)
+}
+
 // AllowDomainHandlerConfig holds dependencies for the allow_domain handler.
 type AllowDomainHandlerConfig struct {
 	Runtime       container.Runtime

@@ -40,6 +40,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/project"
 	"github.com/cloud-exit/exitbox/internal/redactor"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/webprompt"
 	"golang.org/x/term"
 )
 
@@ -207,7 +208,13 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// IPC server: always start (vault/kv depend on it).
 	// Domain-allow handler only required when firewall is enabled.
-	ipcServer, ipcErr := newIPCServer(!opts.NoFirewall, rt, containerName)
+	// A session of exitbox web asks in the browser before any popup.
+	wsName := ""
+	if activeWorkspace != nil {
+		wsName = activeWorkspace.Workspace.Name
+	}
+	webPrompts := webprompt.FromEnv(opts.Agent, wsName, ipc.PromptTimeout)
+	ipcServer, ipcErr := newIPCServer(!opts.NoFirewall, rt, containerName, webPrompts)
 	if ipcErr != nil {
 		if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled {
 			return 1, fmt.Errorf("failed to start IPC server for vault-enabled workspace: %w", ipcErr)
@@ -360,11 +367,11 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	var vaultState *ipc.VaultState
 	if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled && ipcServer != nil {
 		vaultState = &ipc.VaultState{}
-		vCfg := ipc.VaultHandlerConfig{
+		vCfg := webVaultConfig(ipc.VaultHandlerConfig{
 			Runtime:       rt,
 			ContainerName: containerName,
 			WorkspaceName: activeWorkspace.Workspace.Name,
-		}
+		}, webPrompts)
 		ipcServer.Handle("vault_get", ipc.NewVaultGetHandler(vCfg, vaultState))
 		ipcServer.Handle("vault_list", ipc.NewVaultListHandler(vCfg, vaultState))
 		if !activeWorkspace.Workspace.Vault.ReadOnly {
@@ -630,15 +637,17 @@ func portAvailable(host string, port int) bool {
 
 // newIPCServer creates and configures an IPC server.
 // When firewallEnabled is true, it also registers the allow_domain handler.
-func newIPCServer(firewallEnabled bool, rt container.Runtime, containerName string) (*ipc.Server, error) {
+func newIPCServer(firewallEnabled bool, rt container.Runtime, containerName string, web *webprompt.Client) (*ipc.Server, error) {
 	s, err := ipc.NewServer()
 	if err != nil {
 		return nil, err
 	}
 	if firewallEnabled {
+		p := ipc.Popups{Runtime: rt, ContainerName: containerName}
 		s.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
 			Runtime:       rt,
 			ContainerName: containerName,
+			PromptFunc:    webApprove(web, webprompt.KindAllow, p.Allow),
 		}))
 	}
 	return s, nil

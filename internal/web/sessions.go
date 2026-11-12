@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cloud-exit/exitbox/internal/webprompt"
 )
 
 // replayBytes is how much recent output a session keeps for a browser that
@@ -360,6 +362,15 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	// promptSock is where run sessions send their host prompts; empty
+	// keeps them in the terminal.
+	promptSock string
+}
+
+func (m *Manager) setPromptSocket(path string) {
+	m.mu.Lock()
+	m.promptSock = path
+	m.mu.Unlock()
 }
 
 // NewManager returns a manager keeping its session files in dir.
@@ -416,6 +427,7 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 	if env == nil {
 		env = os.Environ()
 	}
+	env = withPromptEnv(env, info.Kind, m.promptSocket(), id)
 	spec, err := json.Marshal(hostSpec{Path: cmd.Path, Args: cmd.Args, Env: env, Dir: cmd.Dir, Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, err
@@ -442,6 +454,30 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 	m.mu.Unlock()
 	s.connect(conn)
 	return s, nil
+}
+
+func (m *Manager) promptSocket() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.promptSock
+}
+
+// withPromptEnv points a run session's exitbox run at the prompt socket.
+// The variables stay on the host: exitbox run passes the container only
+// what it names.
+func withPromptEnv(env []string, kind, sock, id string) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == webprompt.EnvSocket || k == webprompt.EnvSession {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if kind == KindRun && sock != "" {
+		out = append(out, webprompt.EnvSocket+"="+sock, webprompt.EnvSession+"="+id)
+	}
+	return out
 }
 
 // hostStartTimeout is how long a new host has to listen.

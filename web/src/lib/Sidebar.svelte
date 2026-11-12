@@ -273,8 +273,9 @@
 						'size-[7px] shrink-0 rounded-full',
 						r.kind === 'saved' && 'bg-ink-4',
 						r.kind === 'terminal' && 'bg-accent',
-						r.kind === 'window' && (r.win.info.exited ? 'bg-ink-4' : r.win.min ? 'bg-amber' : 'bg-brand')
+						r.kind === 'window' && (r.win.prompts.length ? 'bg-amber ring-2 ring-amber/40' : r.win.info.exited ? 'bg-ink-4' : r.win.min ? 'bg-amber' : 'bg-brand')
 					]}
+					title={r.kind === 'window' && r.win.prompts.length ? 'Waiting for your answer' : undefined}
 				></span>
 				<span class="flex min-w-0 flex-col">
 					<span class={['truncate text-[13px]', r.kind === 'saved' ? 'font-medium text-ink-2' : 'font-semibold']}>{name}</span>
@@ -418,7 +419,7 @@
 					]}
 				>
 					{numbers.get(w.id)}
-					<span class={['absolute right-1 bottom-1 size-1.5 rounded-full', w.info.exited ? 'bg-ink-4' : w.min ? 'bg-amber' : 'bg-brand']}></span>
+					<span class={['absolute right-1 bottom-1 size-1.5 rounded-full', w.prompts.length ? 'bg-amber ring-2 ring-amber/40' : w.info.exited ? 'bg-ink-4' : w.min ? 'bg-amber' : 'bg-brand']}></span>
 				</button>
 			{/each}
 		</div>

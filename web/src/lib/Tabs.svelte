@@ -144,6 +144,9 @@
 					class="flex h-full items-center gap-1.5 pr-1 pl-2.5 font-semibold whitespace-nowrap select-none"
 				>
 					{t.name}
+					{#if app.tabWindows(t.id).some((w) => w.prompts.length)}
+						<span title="A window here waits for your answer" class="size-1.5 rounded-full bg-amber ring-2 ring-amber/40"></span>
+					{/if}
 					<span class={['min-w-[18px] rounded px-1 text-center font-mono text-[10.5px]', active ? 'bg-surface-2 text-ink-2' : 'text-ink-3']}>{count}</span>
 				</button>
 				{#if app.tabs.length > 1}

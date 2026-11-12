@@ -7,6 +7,7 @@
 	import { copyText, parseOsc52 } from './clipboard';
 	import { termFont } from './termFont.svelte';
 	import SessionMenu, { detach } from './SessionMenu.svelte';
+	import PromptCard from './PromptCard.svelte';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
 
@@ -81,9 +82,10 @@
 		untrack(() => applyFont?.());
 	});
 
-	// Focus the terminal when this window becomes the focused one.
+	// Focus the terminal when this window becomes the focused one; a
+	// pending prompt takes the keyboard instead.
 	$effect(() => {
-		if (focused && !win.min) term?.focus();
+		if (focused && !win.min && win.prompts.length === 0) term?.focus();
 	});
 
 	/**
@@ -138,6 +140,10 @@
 
 		const send = (msg: object) => {
 			if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+		};
+		win.answer = (id, allow, password) => {
+			send(password ? { t: 'answer', id, allow, password } : { t: 'answer', id, allow });
+			win.prompts = win.prompts.filter((p) => p.id !== id);
 		};
 
 		const fitNow = () => {
@@ -196,7 +202,14 @@
 							if (replayParsing === 0) replaying = false;
 							else t.write('', () => (replaying = false));
 						}
-						if (msg?.t === 'exit') app.ended(win, msg.code);
+						if (msg?.t === 'exit') {
+							win.prompts = [];
+							app.ended(win, msg.code);
+						}
+						if (msg?.t === 'prompt' && typeof msg.id === 'string' && !win.prompts.some((p) => p.id === msg.id)) {
+							win.prompts = [...win.prompts, { id: msg.id, kind: msg.kind, agent: msg.agent || win.info.agent, workspace: msg.workspace ?? '', subject: msg.subject ?? '' }];
+						}
+						if (msg?.t === 'prompt-done') win.prompts = win.prompts.filter((p) => p.id !== msg.id);
 					} catch {
 						// Not a control message.
 					}
@@ -217,6 +230,8 @@
 			sock.onclose = () => {
 				if (ws !== sock) return;
 				win.connected = false;
+				// The server sends them again on the next connection.
+				win.prompts = [];
 				if (disposed || win.info.exited) return;
 				// A failed attempt is cheap: retry quickly, so a window is back
 				// within a second of the server.
@@ -345,6 +360,8 @@
 			const s = ws;
 			ws = null;
 			s?.close();
+			win.answer = null;
+			win.prompts = [];
 			t.dispose();
 			term = null;
 			applyFont = null;
@@ -665,6 +682,13 @@
 		]}
 	>
 		<div class="size-full" {@attach terminal}></div>
+		{#if win.prompts.length && !info.exited}
+			<div class="absolute inset-x-3 bottom-3 z-[6] flex max-h-[calc(100%-24px)] flex-col gap-2 overflow-y-auto">
+				{#each win.prompts as p, i (p.id)}
+					<PromptCard prompt={p} agent={app.agentDisplay(p.agent)} focus={i === 0 && focused && !win.min} onanswer={(allow, password) => win.answer?.(p.id, allow, password)} />
+				{/each}
+			</div>
+		{/if}
 		{#if info.exited}
 			<div class="absolute inset-x-3 bottom-3 z-[5]">
 				<div
