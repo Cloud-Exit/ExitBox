@@ -150,6 +150,8 @@ func connectFake(t *testing.T, m *Manager, id string, conns chan net.Conn) (*Ses
 	s.connect(conn)
 	select {
 	case hc := <-conns:
+		// Referenced until the end: a collected conn is closed by its finalizer.
+		t.Cleanup(func() { _ = hc.Close() })
 		return s, hc
 	case <-time.After(5 * time.Second):
 		t.Fatal("no connection")
@@ -182,6 +184,7 @@ func TestFailedWriteReconnects(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no reconnect after a failed write")
 	}
+	t.Cleanup(func() { _ = second.Close() })
 	// The cut connection is closed, so the host drops the partial frame.
 	_ = first.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.Copy(io.Discard, first); err != nil {
@@ -198,6 +201,8 @@ func TestFailedWriteReconnects(t *testing.T) {
 	if err != nil || kind != frameInput || string(payload) != "hi" {
 		t.Fatalf("next frame %q %q %v", kind, payload, err)
 	}
+	// A collected host conn would be closed by its finalizer and end the session.
+	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
 	if s.Info().Exited {
 		t.Fatal("closing the cut connection ended the session")
