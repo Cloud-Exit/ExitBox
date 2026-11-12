@@ -72,3 +72,8 @@ func DefaultStateDir() (string, error) {
 	}
 	return dir, nil
 }
+
+// isHidden reports whether a directory entry is hidden: a dotfile.
+func isHidden(_, name string) bool {
+	return len(name) > 0 && name[0] == '.'
+}

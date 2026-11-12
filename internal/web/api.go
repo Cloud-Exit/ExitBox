@@ -404,9 +404,10 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	showHidden := r.URL.Query().Get("hidden") == "1"
 	dirs := []string{}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
+		if !showHidden && isHidden(p, e.Name()) {
 			continue
 		}
 		if e.IsDir() {
@@ -455,7 +456,8 @@ func expandDir(p, home string) (string, error) {
 // --- sessions ---
 
 // startRequest describes a new session. Only these fields reach the
-// command line, each through its own flag.
+// command line, each through its own flag. There is no --no-tmux: web
+// windows and attaching need the session's tmux.
 type startRequest struct {
 	Dir        string   `json:"dir"`
 	Agent      string   `json:"agent"`
@@ -466,7 +468,6 @@ type startRequest struct {
 	ReadOnly   bool     `json:"readOnly"`
 	NoEnv      bool     `json:"noEnv"`
 	Ollama     bool     `json:"ollama"`
-	NoTmux     bool     `json:"noTmux"`
 	Fresh      bool     `json:"fresh"`
 	Resume     bool     `json:"resume"`
 	Memory     string   `json:"memory"`
@@ -523,9 +524,6 @@ func buildArgs(cfg *config.Config, req startRequest, home string) (dir string, a
 	}
 	if req.Ollama {
 		args = append(args, "--ollama")
-	}
-	if req.NoTmux {
-		args = append(args, "--no-tmux")
 	}
 	if name := strings.TrimSpace(req.Name); name != "" {
 		if !validName(name) {

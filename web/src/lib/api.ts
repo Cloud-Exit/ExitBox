@@ -120,7 +120,6 @@ export interface StartRequest {
 	readOnly: boolean;
 	noEnv: boolean;
 	ollama: boolean;
-	noTmux: boolean;
 	fresh: boolean;
 	resume?: boolean;
 	memory: string;

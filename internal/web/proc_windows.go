@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 func hangup(cmd *exec.Cmd) { kill(cmd) }
@@ -44,4 +45,21 @@ func DefaultStateDir() (string, error) {
 	}
 	dir := filepath.Join(base, "exitbox-web")
 	return dir, os.MkdirAll(dir, 0o700)
+}
+
+// isHidden reports whether a directory entry is hidden: marked Hidden, or
+// a dotfile as on Unix.
+func isHidden(dir, name string) bool {
+	if len(name) > 0 && name[0] == '.' {
+		return true
+	}
+	p, err := syscall.UTF16PtrFromString(filepath.Join(dir, name))
+	if err != nil {
+		return false
+	}
+	attrs, err := syscall.GetFileAttributes(p)
+	if err != nil {
+		return false
+	}
+	return attrs&syscall.FILE_ATTRIBUTE_HIDDEN != 0
 }

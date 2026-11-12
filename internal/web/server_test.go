@@ -389,7 +389,7 @@ func TestBuildArgs(t *testing.T) {
 
 	dir, args, err := buildArgs(cfg, startRequest{
 		Dir: "~/p", Agent: "claude", Workspace: "default", Name: "feature x", EnvProfile: "openrouter",
-		NoFirewall: true, ReadOnly: true, NoEnv: true, Ollama: true, NoTmux: true, Fresh: true,
+		NoFirewall: true, ReadOnly: true, NoEnv: true, Ollama: true, Fresh: true,
 		Memory: "16g", CPUs: "8", AllowURLs: []string{"api.example.com", " ", "10.0.0.1"},
 	}, home)
 	if err != nil {
@@ -398,7 +398,7 @@ func TestBuildArgs(t *testing.T) {
 	if dir != proj {
 		t.Fatalf("dir %q, want %q", dir, proj)
 	}
-	want := []string{"run", "claude", "--workspace", "default", "--no-firewall", "--read-only", "--no-env", "--ollama", "--no-tmux",
+	want := []string{"run", "claude", "--workspace", "default", "--no-firewall", "--read-only", "--no-env", "--ollama",
 		"--name", "feature x", "--no-resume", "--profile", "openrouter", "--memory", "16g", "--cpus", "8",
 		"--allow-urls", "api.example.com", "--allow-urls", "10.0.0.1"}
 	if !reflect.DeepEqual(args, want) {
@@ -479,6 +479,10 @@ func TestFolderBrowser(t *testing.T) {
 	dirs := out["dirs"].([]any)
 	if len(dirs) != 1 || dirs[0] != "code" {
 		t.Fatalf("dirs %v, want [code] without hidden ones", dirs)
+	}
+	_, out = do(t, ts, "GET", "/api/fs?hidden=1", nil, "")
+	if dirs := out["dirs"].([]any); len(dirs) != 2 || dirs[0] != ".hidden" {
+		t.Fatalf("dirs with hidden %v, want [.hidden code]", dirs)
 	}
 	resp, _ = do(t, ts, "GET", "/api/fs?path=relative", nil, "")
 	if resp.StatusCode != http.StatusBadRequest {
@@ -856,5 +860,13 @@ func TestRestoreDropsDeadHosts(t *testing.T) {
 	}
 	if _, err := os.Stat(infoPath(dir, "0123456789abcdef")); !os.IsNotExist(err) {
 		t.Fatal("files of a dead host left behind")
+	}
+}
+
+func TestNoTmuxIsRefused(t *testing.T) {
+	_, st, ts := newTestServer(t, Options{})
+	resp, _ := do(t, ts, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude", "noTmux": true}, "")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("noTmux accepted: %d", resp.StatusCode)
 	}
 }

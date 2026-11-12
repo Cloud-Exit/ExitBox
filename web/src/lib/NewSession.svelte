@@ -38,13 +38,14 @@
 		readOnly: start.defaults.readOnly,
 		noEnv: start.defaults.noEnv,
 		ollama: false,
-		noTmux: false,
 		fresh: false
 	});
 	let memory = $state(start.defaults.memory);
 	let cpus = $state(start.defaults.cpus);
 	let domains = $state('');
 	let browse = $state.raw<FolderList | null>(null);
+	/** Dotfiles, and on Windows entries marked Hidden. */
+	let showHidden = $state(local<boolean>('showHidden') ?? false);
 	let error = $state('');
 	let busy = $state(false);
 
@@ -76,7 +77,6 @@
 		{ key: 'readOnly', label: 'Read-only workspace', icon: 'lock', locked: defaults.readOnly },
 		{ key: 'noEnv', label: 'No host environment', icon: 'eyeOff', locked: defaults.noEnv },
 		{ key: 'ollama', label: 'Host Ollama', icon: 'bot', locked: false },
-		{ key: 'noTmux', label: 'No tmux', icon: 'terminal', locked: false },
 		{ key: 'fresh', label: 'Fresh session', icon: 'rotate', locked: false }
 	];
 
@@ -91,7 +91,6 @@
 		readOnly: flags.readOnly && !defaults.readOnly,
 		noEnv: flags.noEnv && !defaults.noEnv,
 		ollama: flags.ollama,
-		noTmux: flags.noTmux,
 		fresh: flags.fresh,
 		memory: memory.trim() === defaults.memory ? '' : memory.trim(),
 		cpus: cpus.trim() === defaults.cpus ? '' : cpus.trim(),
@@ -107,7 +106,6 @@
 		if (r.readOnly) a.push('--read-only');
 		if (r.noEnv) a.push('--no-env');
 		if (r.ollama) a.push('--ollama');
-		if (r.noTmux) a.push('--no-tmux');
 		if (r.name) a.push('--name', r.name);
 		if (r.fresh) a.push('--no-resume');
 		if (r.envProfile) a.push('--profile', r.envProfile);
@@ -119,7 +117,7 @@
 
 	async function openFolder(path: string) {
 		try {
-			browse = await api<FolderList>('GET', '/api/fs?path=' + encodeURIComponent(path));
+			browse = await api<FolderList>('GET', '/api/fs?path=' + encodeURIComponent(path) + (showHidden ? '&hidden=1' : ''));
 			dir = app.tilde(browse.path);
 			error = '';
 		} catch (e) {
@@ -214,6 +212,21 @@
 						{/each}
 					{/if}
 				</div>
+				{#if browse}
+					{@const current = browse.path}
+					<label class="flex w-fit cursor-pointer items-center gap-2 text-xs text-ink-2">
+						<input
+							type="checkbox"
+							bind:checked={showHidden}
+							onchange={() => {
+								setLocal('showHidden', showHidden);
+								openFolder(current);
+							}}
+							class="size-3.5 accent-brand"
+						/>
+						Show hidden files
+					</label>
+				{/if}
 				<small class="text-[11.5px] text-ink-2">
 					Mounted at <span class="font-mono">/workspace</span>. {workspace ? 'Workspace forced to ' : 'Workspace resolves to '}{resolvedWs || 'none'}.
 				</small>
