@@ -5,6 +5,8 @@ export interface Me {
 	signedIn: boolean;
 	user: string;
 	version: string;
+	/** The server only accepts connections from this machine. */
+	loopback: boolean;
 }
 
 export interface AgentDoc {

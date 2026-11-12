@@ -282,6 +282,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"signedIn":    !s.auth.enabled() || s.auth.valid(r),
 		"user":        s.signedInUser(r),
 		"version":     s.opts.Version,
+		"loopback":    isLoopbackListen(s.opts.Listen),
 	})
 }
 

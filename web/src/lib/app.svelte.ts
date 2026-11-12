@@ -969,6 +969,25 @@ class App {
 		if (!this.settings) this.loadSettings();
 	}
 
+	/** Set by enableLogin; the Web access page focuses its username field once. */
+	focusWebLogin = $state(false);
+
+	/** Opens Settings at Web access to set a login. */
+	enableLogin() {
+		this.settingsSection = 'web';
+		this.focusWebLogin = true;
+		this.openSettings();
+	}
+
+	/** Reloads who is signed in, after the login settings change. */
+	async loadMe() {
+		try {
+			this.me = await api<Me>('GET', '/api/me');
+		} catch {
+			// The next boot or poll reports a lost server.
+		}
+	}
+
 	// ---------- helpers ----------
 
 	tilde(p: string) {

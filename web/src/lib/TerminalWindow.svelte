@@ -4,6 +4,7 @@
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import { app, MIN_H, MIN_W, type Win } from './app.svelte';
+	import { termFont } from './termFont.svelte';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
 
@@ -12,6 +13,7 @@
 	const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 	let busy = $state<'' | 'drag' | 'resize'>('');
 	let term: Terminal | null = null;
+	let applyFont: (() => void) | null = null;
 	let cols = 120;
 	let rows = 36;
 
@@ -71,6 +73,12 @@
 		if (term) term.options.theme = termTheme();
 	});
 
+	// Follow the font settings live.
+	$effect(() => {
+		void [termFont.css, termFont.size, termFont.lineHeight];
+		untrack(() => applyFont?.());
+	});
+
 	// Focus the terminal when this window becomes the focused one.
 	$effect(() => {
 		if (focused && !win.min) term?.focus();
@@ -100,9 +108,9 @@
 
 	function mountTerminal(node: HTMLElement) {
 		const t = new Terminal({
-			fontFamily: "'Atkinson Hyperlegible Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-			fontSize: 13,
-			lineHeight: 1.15,
+			fontFamily: termFont.css,
+			fontSize: termFont.size,
+			lineHeight: termFont.lineHeight,
 			cursorBlink: true,
 			scrollback: 5000,
 			theme: termTheme(),
@@ -241,15 +249,35 @@
 			if (ev.type === 'keydown') send({ t: 'i', d: '\n' });
 			return false;
 		});
-		const ro = new ResizeObserver(fitSoon);
-		ro.observe(node);
-		const fontsDone = () => {
+		// A hidden terminal cannot measure; it does so once it shows again.
+		let fontStale = false;
+		const remeasure = () => {
+			if (disposed) return;
+			if (!node.clientWidth) {
+				fontStale = true;
+				return;
+			}
+			fontStale = false;
 			// Make xterm measure the font again once it is there.
+			const family = t.options.fontFamily ?? termFont.css;
 			t.options.fontFamily = 'monospace';
-			t.options.fontFamily = "'Atkinson Hyperlegible Mono', ui-monospace, SFMono-Regular, Menlo, monospace";
+			t.options.fontFamily = family;
 			fitSoon();
 		};
-		document.fonts?.ready.then(fontsDone);
+		const ro = new ResizeObserver(() => {
+			if (fontStale) remeasure();
+			fitSoon();
+		});
+		ro.observe(node);
+		document.fonts?.ready.then(remeasure);
+		applyFont = () => {
+			t.options.fontFamily = termFont.css;
+			t.options.fontSize = termFont.size;
+			t.options.lineHeight = termFont.lineHeight;
+			remeasure();
+			// A web or local font may arrive after the first measure.
+			document.fonts?.load(`${termFont.size}px ${termFont.css}`).then(remeasure, () => {});
+		};
 		connect();
 
 		return () => {
@@ -264,6 +292,7 @@
 			s?.close();
 			t.dispose();
 			term = null;
+			applyFont = null;
 		};
 	}
 
@@ -516,13 +545,13 @@
 			if (!(e.target as HTMLElement).closest('button')) app.toggleMax(win);
 		}}
 		class={[
-			'flex h-9 shrink-0 touch-none items-center gap-2 overflow-hidden border-b pr-1 pl-3',
+			'flex h-[42px] shrink-0 touch-none items-center gap-2 overflow-hidden border-b pr-1 pl-3',
 			focused ? 'border-line-2 bg-surface-3' : 'border-line-1 bg-surface-1 text-ink-2',
 			win.max ? 'rounded-none' : 'rounded-t-[11px] max-md:rounded-none',
 			busy === 'drag' ? 'cursor-grabbing' : 'cursor-grab'
 		]}
 	>
-		<span class="font-mono text-[10.5px] text-ink-2">{number}</span>
+		<span class="font-mono text-[12px] text-ink-2">{number}</span>
 		{#if renaming}
 			<input
 				bind:value={draft}
@@ -540,10 +569,10 @@
 					}
 				}}
 				onblur={commitRename}
-				class="h-6 min-w-0 flex-[0_1_220px] rounded border border-brand bg-surface-0 px-1.5 text-[13px] outline-none"
+				class="h-[28px] min-w-0 flex-[0_1_240px] rounded border border-brand bg-surface-0 px-1.5 text-[16px] font-semibold outline-none"
 			/>
 		{:else}
-			<span class="min-w-0 truncate text-[13px] font-semibold" title={info.renameTo ? `Renames to "${info.renameTo}" when it ends` : undefined}>{win.title}</span>
+			<span class="min-w-0 truncate text-[16px] font-semibold" title={info.renameTo ? `Renames to "${info.renameTo}" when it ends` : undefined}>{win.title}</span>
 			{#if info.name && !(win.attached && info.exited)}
 				<IconButton icon="pencil" label="Rename session" small onclick={() => startRename()} />
 			{/if}

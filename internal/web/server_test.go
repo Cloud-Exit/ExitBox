@@ -347,6 +347,24 @@ func TestGuard(t *testing.T) {
 	}
 }
 
+func TestMeReportsLoginAndLoopback(t *testing.T) {
+	_, _, ts := newTestServer(t, Options{})
+	resp, me := do(t, ts, "GET", "/api/me", nil, "")
+	if resp.StatusCode != 200 || me["authEnabled"] != false || me["signedIn"] != true || me["loopback"] != true {
+		t.Fatalf("me without login: %d %v", resp.StatusCode, me)
+	}
+
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, ts = newTestServer(t, Options{Listen: "0.0.0.0:4848", Username: "me", PasswordHash: hash})
+	resp, me = do(t, ts, "GET", "/api/me", nil, "")
+	if resp.StatusCode != 200 || me["authEnabled"] != true || me["loopback"] != false {
+		t.Fatalf("me on a public address: %d %v", resp.StatusCode, me)
+	}
+}
+
 func TestAuthFlow(t *testing.T) {
 	hash, err := HashPassword("correct horse")
 	if err != nil {

@@ -37,8 +37,7 @@
 				app.showLogin('Login settings changed. Sign in again.');
 				return;
 			}
-			await app.refresh();
-			await app.loadSettings();
+			await Promise.all([app.refresh(), app.loadSettings(), app.loadMe()]);
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -49,6 +48,13 @@
 			{ label: 'Turn off', value: 'yes', tone: 'danger' }
 		]);
 		if (ok === 'yes') save(true);
+	}
+
+	// The "Enable login" bar sends the user here to type a username.
+	function focusIfAsked(node: HTMLInputElement) {
+		if (!app.focusWebLogin) return;
+		app.focusWebLogin = false;
+		node.focus();
 	}
 </script>
 
@@ -68,7 +74,7 @@
 {#if error}<Callout tone="bad">{error}</Callout>{/if}
 <div class="flex flex-wrap gap-2.5">
 	<TextField label="Listen address" mono placeholder="127.0.0.1:4848" hint="Takes effect when exitbox web restarts." bind:value={listen} />
-	<TextField label="Username" autocomplete="username" bind:value={username} />
+	<TextField label="Username" autocomplete="username" bind:value={username} {@attach focusIfAsked} />
 </div>
 <div class="flex flex-wrap gap-2.5">
 	<TextField

@@ -3,6 +3,7 @@
 	import Desktop from '$lib/Desktop.svelte';
 	import Login from '$lib/Login.svelte';
 	import NewSession from '$lib/NewSession.svelte';
+	import NoLoginBar from '$lib/NoLoginBar.svelte';
 	import Prompt from '$lib/Prompt.svelte';
 	import Settings from '$lib/settings/Settings.svelte';
 	import Sidebar from '$lib/Sidebar.svelte';
@@ -30,13 +31,17 @@
 		</div>
 	</div>
 {:else if app.view === 'sessions' || app.view === 'settings'}
-	<div class="flex h-screen overflow-hidden max-md:h-auto max-md:min-h-screen max-md:flex-col max-md:overflow-visible">
-		<Sidebar />
-		<main class="flex min-w-0 flex-1 flex-col">
-			<Desktop />
-			<Settings />
-			<StatusBar />
-		</main>
+	<div class="flex h-screen flex-col overflow-hidden max-md:h-auto max-md:min-h-screen max-md:overflow-visible">
+		<!-- Takes layout space, so the desktop measures and tiles below it. -->
+		{#if app.me && !app.me.authEnabled}<NoLoginBar />{/if}
+		<div class="flex min-h-0 flex-1 max-md:flex-col">
+			<Sidebar />
+			<main class="flex min-w-0 flex-1 flex-col">
+				<Desktop />
+				<Settings />
+				<StatusBar />
+			</main>
+		</div>
 	</div>
 	{#if app.newSessionOpen && app.data}
 		<NewSession data={app.data} />

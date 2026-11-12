@@ -12,6 +12,7 @@
 	import type { IconName } from '../ui/icons';
 	import ListEditor from './ListEditor.svelte';
 	import PageHeader from './PageHeader.svelte';
+	import TerminalFont from './TerminalFont.svelte';
 	import Vault from './Vault.svelte';
 	import WebAccess from './WebAccess.svelte';
 
@@ -22,7 +23,8 @@
 		{ id: 'vault', label: 'Vault', icon: 'lock' },
 		{ id: 'firewall', label: 'Firewall', icon: 'shield' },
 		{ id: 'keybindings', label: 'Keybindings', icon: 'command' },
-		{ id: 'web', label: 'Web access', icon: 'globe' }
+		{ id: 'web', label: 'Web access', icon: 'globe' },
+		{ id: 'terminal', label: 'Terminal', icon: 'terminal' }
 	];
 
 	const agentInfo: Record<string, string> = {
@@ -113,7 +115,10 @@
 	<div class="flex min-w-0 flex-1 flex-col">
 		<div class="flex-1 overflow-auto">
 			<div class="flex w-full max-w-[1040px] flex-col gap-5 px-8 py-7 max-md:px-4 max-md:py-5">
-				{#if app.settingsError && !doc}
+				{#if app.settingsSection === 'terminal'}
+					<!-- Per browser: needs no server settings. -->
+					<TerminalFont />
+				{:else if app.settingsError && !doc}
 					<Callout tone="bad">{app.settingsError}</Callout>
 				{:else if !doc}
 					<span class="text-ink-2">Loading settings…</span>
@@ -233,7 +238,7 @@
 			</div>
 		</div>
 
-		{#if doc && app.settingsSection !== 'web' && app.settingsSection !== 'vault'}
+		{#if doc && !['web', 'vault', 'terminal'].includes(app.settingsSection)}
 			<div class="flex flex-wrap items-center gap-2.5 border-t border-line-1 bg-surface-1 px-8 py-3 max-md:px-4">
 				<Button variant="primary" icon="check" disabled={changes === 0} onclick={save}>Save configuration</Button>
 				<Button variant="ghost" disabled={changes === 0} onclick={discard}>Discard</Button>
