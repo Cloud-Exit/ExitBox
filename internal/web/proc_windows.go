@@ -23,6 +23,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+
+	"github.com/cloud-exit/exitbox/internal/webprompt"
 )
 
 func hangup(cmd *exec.Cmd) { kill(cmd) }
@@ -39,11 +41,10 @@ func DetachProcess(*exec.Cmd) {}
 
 // DefaultStateDir is where session hosts keep their files.
 func DefaultStateDir() (string, error) {
-	base, err := os.UserCacheDir()
+	dir, err := webprompt.StateDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "exitbox-web")
 	return dir, os.MkdirAll(dir, 0o700)
 }
 

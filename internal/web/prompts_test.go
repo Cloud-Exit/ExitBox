@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -27,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +56,13 @@ func (s *safeBuf) String() string {
 	return s.b.String()
 }
 
+// Containers of testBroker: one shown in window a, one in a and b, one in none.
+const (
+	ctrA      = "exitbox-claude-p-0a1b2c3d"
+	ctrAB     = "exitbox-codex-p-0a1b2c3e"
+	ctrNobody = "exitbox-claude-q-0a1b2c3f"
+)
+
 // testBroker listens on a short socket path; known sessions are a and b.
 func testBroker(t *testing.T) (*promptBroker, string, *safeBuf) {
 	t.Helper()
@@ -62,7 +71,10 @@ func testBroker(t *testing.T) (*promptBroker, string, *safeBuf) {
 	}
 	logs := &safeBuf{}
 	lg := log.New(logs, "", 0)
-	b := newPromptBroker(func(id string) bool { return id == "a" || id == "b" }, lg.Printf)
+	byContainer := func(name string) []string {
+		return map[string][]string{ctrA: {"a"}, ctrAB: {"a", "b"}}[name]
+	}
+	b := newPromptBroker(func(id string) bool { return id == "a" || id == "b" }, byContainer, lg.Printf)
 	path := filepath.Join(shortTempDir(t), "prompts.sock")
 	if err := b.listen(path); err != nil {
 		t.Fatal(err)
@@ -172,11 +184,16 @@ func TestPromptNoViewerRepliesAtOnce(t *testing.T) {
 func TestPromptRejectsBadRequests(t *testing.T) {
 	_, path, _ := testBroker(t)
 	for name, req := range map[string]webprompt.Request{
-		"unknown session": {Session: "zzz", Kind: webprompt.KindAllow, Subject: "x.com"},
-		"unknown kind":    {Session: "a", Kind: "shell", Subject: "x.com"},
-		"no subject":      {Session: "a", Kind: webprompt.KindVaultRead},
-		"long subject":    {Session: "a", Kind: webprompt.KindAllow, Subject: strings.Repeat("a", webprompt.MaxSubject+1)},
-		"control chars":   {Session: "a", Kind: webprompt.KindAllow, Subject: "x.com\x1b[2J"},
+		"unknown session":         {Session: "zzz", Kind: webprompt.KindAllow, Subject: "x.com"},
+		"unknown kind":            {Session: "a", Kind: "shell", Subject: "x.com"},
+		"no subject":              {Session: "a", Kind: webprompt.KindVaultRead},
+		"long subject":            {Session: "a", Kind: webprompt.KindAllow, Subject: strings.Repeat("a", webprompt.MaxSubject+1)},
+		"control chars":           {Session: "a", Kind: webprompt.KindAllow, Subject: "x.com\x1b[2J"},
+		"no session or container": {Kind: webprompt.KindAllow, Subject: "x.com"},
+		"session and container":   {Session: "a", Container: ctrA, Kind: webprompt.KindAllow, Subject: "x.com"},
+		"bad container name":      {Container: "not-exitbox", Kind: webprompt.KindAllow, Subject: "x.com"},
+		"container path":          {Container: "exitbox-claude-../x-0a1b2c3d", Kind: webprompt.KindAllow, Subject: "x.com"},
+		"container control chars": {Container: "exitbox-claude-p\x1b-0a1b2c3d", Kind: webprompt.KindAllow, Subject: "x.com"},
 	} {
 		r := ask(t, path, req)
 		if rep := r.wait(t); rep.Status != webprompt.StatusInvalid {
@@ -214,6 +231,78 @@ func TestPromptRoutesToItsSessionAndFirstAnswerWins(t *testing.T) {
 	}
 	if b.answer("a", "nope", true, "") {
 		t.Fatal("answer for an unknown id taken")
+	}
+}
+
+// TestPromptRoutesByContainer: a run started in a terminal names its
+// container and reaches the window attached to it.
+func TestPromptRoutesByContainer(t *testing.T) {
+	b, path, _ := testBroker(t)
+	va, vb := b.watch("a"), b.watch("b")
+	r := ask(t, path, webprompt.Request{Container: ctrA, Kind: webprompt.KindVaultRead, Agent: "claude", Subject: "API_KEY"})
+	m := next(t, va)
+	if m.T != "prompt" || m.Kind != webprompt.KindVaultRead || m.Subject != "API_KEY" {
+		t.Fatalf("prompt %+v", m)
+	}
+	quiet(t, vb)
+	if b.answer("b", m.ID, true, "") {
+		t.Fatal("answer from a window on another container taken")
+	}
+	if !b.answer("a", m.ID, true, "") {
+		t.Fatal("answer refused")
+	}
+	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || !rep.Allow {
+		t.Fatalf("reply %+v", rep)
+	}
+	if d := next(t, va); d.T != "prompt-done" || d.ID != m.ID {
+		t.Fatalf("done %+v", d)
+	}
+}
+
+func TestPromptByContainerShownInEveryWindow(t *testing.T) {
+	b, path, _ := testBroker(t)
+	va, vb := b.watch("a"), b.watch("b")
+	r := ask(t, path, webprompt.Request{Container: ctrAB, Kind: webprompt.KindAllow, Subject: "x.example"})
+	ma, mb := next(t, va), next(t, vb)
+	if ma.ID != mb.ID {
+		t.Fatalf("prompts %+v %+v", ma, mb)
+	}
+	if !b.answer("b", mb.ID, false, "") {
+		t.Fatal("answer refused")
+	}
+	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || rep.Allow {
+		t.Fatalf("reply %+v", rep)
+	}
+	for _, v := range []*promptViewer{va, vb} {
+		if d := next(t, v); d.T != "prompt-done" || d.ID != ma.ID {
+			t.Fatalf("done %+v", d)
+		}
+	}
+	// A window opened later on a still pending prompt sees it too.
+	r2 := ask(t, path, webprompt.Request{Container: ctrAB, Kind: webprompt.KindVaultList})
+	first := next(t, va)
+	next(t, vb)
+	vb2 := b.watch("b")
+	if m := next(t, vb2); m.ID != first.ID {
+		t.Fatalf("resent %+v", m)
+	}
+	if !b.answer("b", first.ID, true, "") {
+		t.Fatal("answer refused")
+	}
+	if rep := r2.wait(t); !rep.Allow {
+		t.Fatalf("reply %+v", rep)
+	}
+}
+
+func TestPromptByContainerNoViewer(t *testing.T) {
+	b, path, _ := testBroker(t)
+	// A window on another container does not count.
+	b.watch("b")
+	for _, c := range []string{ctrA, ctrNobody} {
+		r := ask(t, path, webprompt.Request{Container: c, Kind: webprompt.KindAllow, Subject: "x.example"})
+		if rep := r.wait(t); rep.Status != webprompt.StatusNoViewer {
+			t.Fatalf("%s: reply %+v", c, rep)
+		}
 	}
 }
 
@@ -396,5 +485,129 @@ func TestPromptOverWebSocket(t *testing.T) {
 	_, done := readUntil(t, ws, "")
 	if done["t"] != "prompt-done" || done["id"] != msg["id"] {
 		t.Fatalf("done %v", done)
+	}
+}
+
+// TestPromptOverWebSocketForAttachedWindow: an exitbox run started in a
+// terminal finds exitbox web in its state dir and names its container; the
+// browser window attached to that container gets the prompt and answers it.
+func TestPromptOverWebSocketForAttachedWindow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	const ctr = "exitbox-claude-p-0a1b2c3d"
+	base := shortTempDir(t)
+	t.Setenv("TMPDIR", base)
+	stateDir, err := DefaultStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(&recorder{}, "echo attached; sleep 30"), StateDir: stateDir})
+	st.ctrs = []containerDoc{{Container: ctr, Agent: "claude", Dir: st.dirs[0], Workspace: "work", Session: "from-terminal", Started: time.Now()}}
+	if err := s.startPrompts(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.stopPrompts)
+
+	t.Setenv(webprompt.EnvSocket, "")
+	t.Setenv(webprompt.EnvSession, "")
+	client := webprompt.FromEnv("claude", "work", ctr, 5*time.Second)
+	if client == nil || client.Session != "" {
+		t.Fatalf("client %+v", client)
+	}
+	// Nobody shows the container yet: the popup would show.
+	if _, err := client.Ask(webprompt.KindAllow, "x.example"); !errors.Is(err, webprompt.ErrUnavailable) {
+		t.Fatalf("no window: err %v", err)
+	}
+
+	resp, out := do(t, ts, "POST", "/api/attach", map[string]any{"container": ctr, "cols": 80, "rows": 24}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("attach: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	// An attached window with no browser is no viewer either.
+	if _, err := client.Ask(webprompt.KindAllow, "x.example"); !errors.Is(err, webprompt.ErrUnavailable) {
+		t.Fatalf("no browser: err %v", err)
+	}
+	ws, err := dialSession(t, ts, id, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.Close() }()
+	readUntil(t, ws, "attached")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.prompts.mu.Lock()
+		n := len(s.prompts.viewers[id])
+		s.prompts.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("viewer never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	type result struct {
+		r   webprompt.Reply
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		r, err := client.Ask(webprompt.KindVaultRead, "API_KEY")
+		res <- result{r, err}
+	}()
+	_, msg := readUntil(t, ws, "")
+	if msg["t"] != "prompt" || msg["kind"] != webprompt.KindVaultRead || msg["subject"] != "API_KEY" || msg["agent"] != "claude" {
+		t.Fatalf("prompt message %v", msg)
+	}
+	answer, err := json.Marshal(map[string]any{"t": "answer", "id": msg["id"], "allow": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := websocket.Message.Send(ws, string(answer)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-res:
+		if got.err != nil || got.r.Status != webprompt.StatusAnswer || !got.r.Allow {
+			t.Fatalf("reply %+v %v", got.r, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reply")
+	}
+	_, done := readUntil(t, ws, "")
+	if done["t"] != "prompt-done" || done["id"] != msg["id"] {
+		t.Fatalf("done %v", done)
+	}
+}
+
+func TestContainerSessions(t *testing.T) {
+	s, _, _ := newTestServer(t, Options{})
+	for _, info := range []SessionInfo{
+		{ID: "att", Kind: KindAttach, Container: "c1"},
+		{ID: "run", Kind: KindRun, Container: "c1"},
+		{ID: "gone", Kind: KindAttach, Container: "c1", Exited: true},
+		{ID: "ssh", Kind: KindSSH, Container: "c1"},
+		{ID: "other", Kind: KindAttach, Container: "c2"},
+	} {
+		sess := s.sessions.newSession(info)
+		s.sessions.mu.Lock()
+		s.sessions.sessions[info.ID] = sess
+		s.sessions.mu.Unlock()
+	}
+	t.Cleanup(func() {
+		s.sessions.mu.Lock()
+		s.sessions.sessions = map[string]*Session{}
+		s.sessions.mu.Unlock()
+	})
+	got := s.containerSessions("c1")
+	sort.Strings(got)
+	if fmt.Sprint(got) != "[att run]" {
+		t.Fatalf("sessions %v", got)
+	}
+	if got := s.containerSessions("c3"); len(got) != 0 {
+		t.Fatalf("unknown container %v", got)
 	}
 }

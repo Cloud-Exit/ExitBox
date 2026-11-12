@@ -14,9 +14,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// Package webprompt carries host approval prompts of an exitbox run started
-// by exitbox web to the browser, over a Unix socket of exitbox web. Requests
-// name what is asked for (a domain, a vault key), never a secret value.
+// Package webprompt carries host approval prompts of an exitbox run to the
+// browser, over a Unix socket of exitbox web. A run started by exitbox web
+// names its session; one started in a terminal names its container, for the
+// windows attached to it. Requests name what is asked for (a domain, a vault
+// key), never a secret value.
 package webprompt
 
 import (
@@ -36,6 +38,9 @@ const (
 	EnvSocket  = "EXITBOX_WEB_PROMPT_SOCK"
 	EnvSession = "EXITBOX_WEB_PROMPT_SESSION"
 )
+
+// SocketName is the prompt socket's name in exitbox web's state dir.
+const SocketName = "prompts.sock"
 
 // Prompt kinds.
 const (
@@ -72,7 +77,10 @@ func ValidKind(k string) bool {
 
 // Request is one prompt, sent as a single JSON line.
 type Request struct {
+	// Session is the web session; when empty, Container names the agent
+	// container instead.
 	Session   string `json:"session"`
+	Container string `json:"container,omitempty"`
 	Kind      string `json:"kind"`
 	Agent     string `json:"agent"`
 	Workspace string `json:"workspace"`
@@ -91,26 +99,35 @@ type Reply struct {
 // ErrUnavailable means nobody can answer in the browser.
 var ErrUnavailable = errors.New("no browser to ask")
 
-// Client asks exitbox web for one session.
+// Client asks exitbox web for one session, or for one container.
 type Client struct {
+	// Socket empty means WellKnownSocket, looked up at each prompt.
 	Socket    string
 	Session   string
+	Container string
 	Agent     string
 	Workspace string
 	// Timeout bounds the wait for an answer.
 	Timeout time.Duration
 }
 
-// FromEnv returns a client when this process runs a web session, or nil.
-// It removes the variables so child processes do not inherit them.
-func FromEnv(agent, workspace string, timeout time.Duration) *Client {
+// FromEnv returns the client of a web session when this process runs one,
+// else one that names container to a running exitbox web, or nil. It
+// removes the variables so child processes do not inherit them.
+func FromEnv(agent, workspace, container string, timeout time.Duration) *Client {
 	sock, id := os.Getenv(EnvSocket), os.Getenv(EnvSession)
 	_ = os.Unsetenv(EnvSocket)
 	_ = os.Unsetenv(EnvSession)
-	if sock == "" || id == "" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" {
 		return nil
 	}
-	return &Client{Socket: sock, Session: id, Agent: agent, Workspace: workspace, Timeout: timeout}
+	if sock != "" && id != "" {
+		return &Client{Socket: sock, Session: id, Agent: agent, Workspace: workspace, Timeout: timeout}
+	}
+	if container == "" {
+		return nil
+	}
+	return &Client{Container: container, Agent: agent, Workspace: workspace, Timeout: timeout}
 }
 
 // dialTimeout bounds reaching exitbox web; a var for tests.
@@ -119,12 +136,25 @@ var dialTimeout = 2 * time.Second
 // Ask sends one prompt and waits for its answer. ErrUnavailable means the
 // caller should prompt another way; a timeout is a refusal.
 func (c *Client) Ask(kind, subject string) (Reply, error) {
-	conn, err := net.DialTimeout("unix", c.Socket, dialTimeout)
+	sock := c.Socket
+	if sock == "" {
+		// exitbox web may have started after this run; look again each time.
+		p, err := WellKnownSocket()
+		if err != nil {
+			return Reply{}, ErrUnavailable
+		}
+		sock = p
+	}
+	conn, err := net.DialTimeout("unix", sock, dialTimeout)
 	if err != nil {
 		return Reply{}, ErrUnavailable
 	}
 	defer func() { _ = conn.Close() }()
-	line, err := json.Marshal(Request{Session: c.Session, Kind: kind, Agent: c.Agent, Workspace: c.Workspace, Subject: subject})
+	req := Request{Session: c.Session, Kind: kind, Agent: c.Agent, Workspace: c.Workspace, Subject: subject}
+	if c.Session == "" {
+		req.Container = c.Container
+	}
+	line, err := json.Marshal(req)
 	if err != nil {
 		return Reply{}, err
 	}

@@ -37,11 +37,14 @@ const promptRequestTimeout = 5 * time.Second
 
 // promptBroker passes the host prompts of web sessions (exitbox-allow,
 // vault approvals, the vault password) to the browsers viewing them. A
-// requester is the exitbox run of a session; it connects to the broker's
-// socket, sends one prompt and waits for the first answer.
+// requester is an exitbox run; it connects to the broker's socket, sends one
+// prompt and waits for the first answer. It names its web session, or, when
+// started in a terminal, its container.
 type promptBroker struct {
 	known func(session string) bool
-	logf  func(format string, args ...any)
+	// byContainer lists the sessions whose window shows a container.
+	byContainer func(container string) []string
+	logf        func(format string, args ...any)
 
 	mu      sync.Mutex
 	viewers map[string]map[*promptViewer]struct{}
@@ -60,22 +63,33 @@ type promptViewer struct {
 }
 
 type pendingPrompt struct {
-	id      string
-	session string
-	kind    string
-	seq     uint64
-	msg     string
-	reply   chan webprompt.Reply
+	id string
+	// sessions may answer it: one, or every window on its container.
+	sessions []string
+	kind     string
+	seq      uint64
+	msg      string
+	reply    chan webprompt.Reply
 }
 
-func newPromptBroker(known func(string) bool, logf func(string, ...any)) *promptBroker {
+func (p *pendingPrompt) shownIn(session string) bool {
+	for _, s := range p.sessions {
+		if s == session {
+			return true
+		}
+	}
+	return false
+}
+
+func newPromptBroker(known func(string) bool, byContainer func(string) []string, logf func(string, ...any)) *promptBroker {
 	return &promptBroker{
-		known:   known,
-		logf:    logf,
-		viewers: map[string]map[*promptViewer]struct{}{},
-		pending: map[string]*pendingPrompt{},
-		conns:   map[net.Conn]struct{}{},
-		closed:  make(chan struct{}),
+		known:       known,
+		byContainer: byContainer,
+		logf:        logf,
+		viewers:     map[string]map[*promptViewer]struct{}{},
+		pending:     map[string]*pendingPrompt{},
+		conns:       map[net.Conn]struct{}{},
+		closed:      make(chan struct{}),
 	}
 }
 
@@ -167,7 +181,7 @@ func (b *promptBroker) watch(session string) *promptViewer {
 	b.viewers[session][v] = struct{}{}
 	var list []*pendingPrompt
 	for _, p := range b.pending {
-		if p.session == session {
+		if p.shownIn(session) {
 			list = append(list, p)
 		}
 	}
@@ -196,11 +210,13 @@ func (b *promptBroker) unwatch(session string, v *promptViewer) {
 	}
 }
 
-func (b *promptBroker) broadcastLocked(session, msg string) {
-	for v := range b.viewers[session] {
-		select {
-		case v.out <- msg:
-		default:
+func (b *promptBroker) broadcastLocked(sessions []string, msg string) {
+	for _, s := range sessions {
+		for v := range b.viewers[s] {
+			select {
+			case v.out <- msg:
+			default:
+			}
 		}
 	}
 }
@@ -221,7 +237,7 @@ func doneMsg(id string) string {
 func (b *promptBroker) answer(session, id string, allow bool, password string) bool {
 	b.mu.Lock()
 	p := b.pending[id]
-	if p == nil || p.session != session {
+	if p == nil || !p.shownIn(session) {
 		b.mu.Unlock()
 		return false
 	}
@@ -231,7 +247,7 @@ func (b *promptBroker) answer(session, id string, allow bool, password string) b
 		return false
 	}
 	delete(b.pending, id)
-	b.broadcastLocked(session, doneMsg(id))
+	b.broadcastLocked(p.sessions, doneMsg(id))
 	b.mu.Unlock()
 	r := webprompt.Reply{Status: webprompt.StatusAnswer, Allow: allow}
 	if isPassword && allow {
@@ -249,12 +265,12 @@ func (b *promptBroker) cancel(p *pendingPrompt) {
 		return
 	}
 	delete(b.pending, p.id)
-	b.broadcastLocked(p.session, doneMsg(p.id))
+	b.broadcastLocked(p.sessions, doneMsg(p.id))
 }
 
-// open records a prompt and shows it to the session's viewers; nil when
-// nobody views the session.
-func (b *promptBroker) open(req webprompt.Request) (*pendingPrompt, error) {
+// open records a prompt and shows it to the viewers of sessions; nil when
+// nobody views them.
+func (b *promptBroker) open(req webprompt.Request, sessions []string) (*pendingPrompt, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -272,18 +288,52 @@ func (b *promptBroker) open(req webprompt.Request) (*pendingPrompt, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.viewers[req.Session]) == 0 {
+	viewed := false
+	for _, s := range sessions {
+		if len(b.viewers[s]) > 0 {
+			viewed = true
+			break
+		}
+	}
+	if !viewed {
 		return nil, nil
 	}
 	b.seq++
-	p := &pendingPrompt{id: id, session: req.Session, kind: req.Kind, seq: b.seq, msg: string(msg), reply: make(chan webprompt.Reply, 1)}
+	p := &pendingPrompt{id: id, sessions: sessions, kind: req.Kind, seq: b.seq, msg: string(msg), reply: make(chan webprompt.Reply, 1)}
 	b.pending[id] = p
-	b.broadcastLocked(req.Session, p.msg)
+	b.broadcastLocked(sessions, p.msg)
 	return p, nil
 }
 
+// route returns the sessions a request is for; false refuses it. A
+// container nobody shows is valid, with no sessions.
+func (b *promptBroker) route(req webprompt.Request) ([]string, bool) {
+	if !b.validRequest(req) {
+		return nil, false
+	}
+	if req.Session != "" {
+		return []string{req.Session}, b.known(req.Session)
+	}
+	if b.byContainer == nil {
+		return nil, true
+	}
+	return b.byContainer(req.Container), true
+}
+
 func (b *promptBroker) validRequest(req webprompt.Request) bool {
-	if req.Session == "" || len(req.Session) > webprompt.MaxName || !webprompt.ValidKind(req.Kind) {
+	if !webprompt.ValidKind(req.Kind) {
+		return false
+	}
+	switch {
+	case req.Session != "" && req.Container == "":
+		if len(req.Session) > webprompt.MaxName {
+			return false
+		}
+	case req.Session == "" && req.Container != "":
+		if len(req.Container) > webprompt.MaxSubject || !containerNameRe.MatchString(req.Container) {
+			return false
+		}
+	default:
 		return false
 	}
 	if len(req.Agent) > webprompt.MaxName || len(req.Workspace) > webprompt.MaxName || len(req.Subject) > webprompt.MaxSubject {
@@ -295,14 +345,14 @@ func (b *promptBroker) validRequest(req webprompt.Request) bool {
 			return false
 		}
 	}
-	for _, s := range []string{req.Agent, req.Workspace, req.Subject} {
+	for _, s := range []string{req.Agent, req.Workspace, req.Subject, req.Container} {
 		for _, r := range s {
 			if unicode.IsControl(r) {
 				return false
 			}
 		}
 	}
-	return b.known(req.Session)
+	return true
 }
 
 // serve handles one requester: one prompt, one reply.
@@ -327,16 +377,25 @@ func (b *promptBroker) serve(conn net.Conn) {
 		return
 	}
 	var req webprompt.Request
-	if err := json.Unmarshal(sc.Bytes(), &req); err != nil || !b.validRequest(req) {
+	if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+		reply(webprompt.Reply{Status: webprompt.StatusInvalid})
+		return
+	}
+	sessions, ok := b.route(req)
+	if !ok {
 		reply(webprompt.Reply{Status: webprompt.StatusInvalid})
 		return
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
-	p, err := b.open(req)
+	p, err := b.open(req, sessions)
 	if err != nil {
-		b.logf("web: prompt for session %s: %v", req.Session, err)
+		who := req.Session
+		if who == "" {
+			who = req.Container
+		}
+		b.logf("web: prompt for %s: %v", who, err)
 		reply(webprompt.Reply{Status: webprompt.StatusInvalid})
 		return
 	}

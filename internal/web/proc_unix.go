@@ -20,11 +20,11 @@ package web
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
+
+	"github.com/cloud-exit/exitbox/internal/webprompt"
 )
 
 // hangup sends SIGHUP to the session's process group, as closing a
@@ -52,8 +52,12 @@ func DetachProcess(cmd *exec.Cmd) {
 
 // DefaultStateDir is where session hosts keep their sockets: a directory
 // only this user can enter, under the temp dir (sockets need short paths).
+// exitbox run finds the prompt socket there too.
 func DefaultStateDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("exitbox-web-%d", os.Getuid()))
+	dir, err := webprompt.StateDir()
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

@@ -178,3 +178,73 @@ func TestWebPasswordCancel(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// TestWebApproveByContainer: a run started in a terminal finds exitbox web
+// by its state dir and names its container; without it, the popup shows.
+func TestWebApproveByContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no web prompts on Windows")
+	}
+	const ctr = "exitbox-codex-p-0a1b2c3d"
+	base, err := os.MkdirTemp("", "rc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	t.Setenv("TMPDIR", base)
+	t.Setenv(webprompt.EnvSocket, "")
+	t.Setenv(webprompt.EnvSession, "")
+	c := webprompt.FromEnv("codex", "work", ctr, 5*time.Second)
+	if c == nil {
+		t.Fatal("no client for a terminal run")
+	}
+	popups := 0
+	popup := func(string) (bool, error) {
+		popups++
+		return true, nil
+	}
+	if ok, err := webApprove(c, webprompt.KindAllow, popup)("x.com"); err != nil || !ok || popups != 1 {
+		t.Fatalf("no exitbox web: %v %v popups=%d", ok, err, popups)
+	}
+
+	dir, err := webprompt.StateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, webprompt.SocketName)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan webprompt.Request, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		sc := bufio.NewScanner(conn)
+		if !sc.Scan() {
+			return
+		}
+		var req webprompt.Request
+		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+			return
+		}
+		got <- req
+		_, _ = conn.Write([]byte(`{"status":"answer","allow":false}` + "\n"))
+	}()
+	if ok, err := webApprove(c, webprompt.KindAllow, noPopup(t))("registry.npmjs.org:443"); err != nil || ok {
+		t.Fatalf("deny in the browser: %v %v", ok, err)
+	}
+	if req := <-got; req.Container != ctr || req.Session != "" || req.Subject != "registry.npmjs.org:443" {
+		t.Fatalf("request %+v", req)
+	}
+}

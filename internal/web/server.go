@@ -36,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloud-exit/exitbox/internal/webprompt"
 	"golang.org/x/net/websocket"
 )
 
@@ -160,7 +161,7 @@ func New(opts Options) (*Server, error) {
 		// An SSH session never has the prompt socket; refuse one that claims it.
 		sess := s.sessions.Get(id)
 		return sess != nil && sess.Info().Kind != KindSSH
-	}, s.logf)
+	}, s.containerSessions, s.logf)
 	s.handler = s.routes()
 	return s, nil
 }
@@ -388,12 +389,27 @@ func (s *Server) startPrompts() error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	path := filepath.Join(s.opts.StateDir, "prompts.sock")
+	path := filepath.Join(s.opts.StateDir, webprompt.SocketName)
 	if err := s.prompts.listen(path); err != nil {
 		return err
 	}
 	s.sessions.setPromptSocket(path)
 	return nil
+}
+
+// containerSessions lists the live sessions whose window shows container:
+// the prompts of an exitbox run started in a terminal go there.
+func (s *Server) containerSessions(container string) []string {
+	var ids []string
+	for _, info := range s.sessions.List() {
+		if info.Exited || info.Container != container {
+			continue
+		}
+		if info.Kind == KindAttach || info.Kind == KindRun {
+			ids = append(ids, info.ID)
+		}
+	}
+	return ids
 }
 
 func (s *Server) stopPrompts() {

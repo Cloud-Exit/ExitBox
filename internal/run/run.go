@@ -208,12 +208,12 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// IPC server: always start (vault/kv depend on it).
 	// Domain-allow handler only required when firewall is enabled.
-	// A session of exitbox web asks in the browser before any popup.
+	// A window of exitbox web on this run asks in the browser before any popup.
 	wsName := ""
 	if activeWorkspace != nil {
 		wsName = activeWorkspace.Workspace.Name
 	}
-	webPrompts := webprompt.FromEnv(opts.Agent, wsName, ipc.PromptTimeout)
+	webPrompts := webprompt.FromEnv(opts.Agent, wsName, containerName, ipc.PromptTimeout)
 	ipcServer, ipcErr := newIPCServer(!opts.NoFirewall, rt, containerName, webPrompts)
 	if ipcErr != nil {
 		if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled {
