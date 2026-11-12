@@ -205,9 +205,24 @@
 				if (ws !== sock) return;
 				win.connected = false;
 				if (disposed || win.info.exited) return;
-				timer = setTimeout(connect, Math.min(5000, 500 * 2 ** retry++));
+				// A failed attempt is cheap: retry quickly, so a window is back
+				// within a second of the server.
+				timer = setTimeout(() => {
+					timer = null;
+					connect();
+				}, Math.min(1000, 250 * 2 ** retry++));
 			};
 		};
+		// Hidden tabs throttle timers (up to a minute); retry at once when
+		// the page shows again or the network returns.
+		const reconnectNow = () => {
+			if (!timer || document.visibilityState !== 'visible') return;
+			clearTimeout(timer);
+			timer = null;
+			connect();
+		};
+		document.addEventListener('visibilitychange', reconnectNow);
+		window.addEventListener('online', reconnectNow);
 
 		const dataSub = t.onData((d) => {
 			if (!replaying) send({ t: 'i', d });
@@ -235,6 +250,8 @@
 		return () => {
 			disposed = true;
 			if (timer) clearTimeout(timer);
+			document.removeEventListener('visibilitychange', reconnectNow);
+			window.removeEventListener('online', reconnectNow);
 			ro.disconnect();
 			dataSub.dispose();
 			const s = ws;
