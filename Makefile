@@ -2,10 +2,19 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -ldflags "-s -w -X github.com/cloud-exit/exitbox/cmd.Version=$(VERSION)"
 BINARY := exitbox
 
-.PHONY: build test test-shell coverage vet lint clean install cross-compile
+.PHONY: build test test-shell coverage vet lint clean install cross-compile web web-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
+
+# Rebuild the exitbox web UI (SvelteKit + Tailwind in web/) into
+# internal/web/assets, which the binary embeds. Run this after changing web/,
+# and commit the result.
+web:
+	cd web && bun install --frozen-lockfile && bun run build
+
+web-check:
+	cd web && bun install --frozen-lockfile && bun run check
 
 test:
 	go test ./...

@@ -133,3 +133,33 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o /dev/null .
           GOOS=windows GOARCH=amd64 go build -o /dev/null .
           GOOS=windows GOARCH=arm64 go build -o /dev/null .
+
+  web:
+    name: "Web UI"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Install
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        working-directory: web
+        run: bun run check
+
+      - name: Build
+        working-directory: web
+        run: bun run build
+
+      - name: Committed build is current
+        run: |
+          if ! git diff --quiet -- internal/web/assets || [ -n "$(git status --porcelain -- internal/web/assets)" ]; then
+            git status --short -- internal/web/assets
+            echo "internal/web/assets is out of date: run 'make web' and commit the result."
+            exit 1
+          fi

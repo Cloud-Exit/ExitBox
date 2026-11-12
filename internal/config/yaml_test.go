@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -102,5 +103,40 @@ agents:
 	}
 	if cfg.Settings.DefaultWorkspace != "myws" {
 		t.Fatalf("expected default workspace 'myws', got %q", cfg.Settings.DefaultWorkspace)
+	}
+}
+
+func TestSaveConfigPrivateWithWebPassword(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix file modes on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := DefaultConfig()
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0644 {
+		t.Fatalf("mode %v without a password, want 0644", st.Mode().Perm())
+	}
+	cfg.Web = WebConfig{Username: "me", PasswordHash: "$2a$12$x"}
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0600 {
+		t.Fatalf("mode %v with a password hash, want 0600", st.Mode().Perm())
+	}
+	got, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Web.AuthEnabled() || got.Web.ListenOrDefault() != DefaultWebListen {
+		t.Fatalf("web config %+v", got.Web)
 	}
 }

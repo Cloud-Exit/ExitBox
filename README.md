@@ -371,6 +371,27 @@ Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name
 
 All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
 
+### Web UI
+
+`exitbox web` runs your agent sessions in the browser. Each session is an `exitbox run` in its own terminal window.
+
+- **Tiling**: windows tile themselves like in a tiling window manager such as Hyprland, in a grid by default. They re-tile when a window opens, closes or hides and when the browser resizes, and they never overlap. Drag a title bar onto another window to swap them. Drag an edge to move the split with its neighbour; the neighbour gives way. Grid, Columns and Main + stack are the layouts, and Free turns tiling off so windows float where you put them. Maximize covers the whole page, sidebar included. Your browser remembers the layout, the order and the splits.
+- **Sidebar**: collapse it to a narrow rail of numbered window buttons with the button at its top.
+- **Focus**: the window you type into is bright with an accent border; the others are dimmed until you hover them.
+
+- **Sessions**: start an agent in a project folder with the same options as `exitbox run` (workspace, name, env profile, firewall, read-only, memory, CPUs, extra domains). The sidebar groups sessions by workspace.
+- **Sessions started in a terminal**: agents you started with `exitbox run` show up too. Click one to open it in a window: it attaches to the session's tmux, so the terminal and the browser show the same session. Closing that window detaches; the session keeps running. A session started with `--no-tmux` can only be used in its own terminal.
+- **Inactive sessions**: saved sessions that are not running are hidden; "Show inactive sessions" lists them, and clicking one resumes it.
+- **Rename**: the pencil next to a session's name renames it, including its saved conversation, so `--name <new>` resumes it. A running session takes the new name when it ends, because its container saves the conversation under the name it started with.
+- **Folders**: create folders in the sidebar and drag sessions into them (or use the folder button on a session). A session keeps its folder across runs and renames. Folders live in `~/.config/exitbox/web/folders.json` and are shared by every browser.
+- **Keeps running**: sessions belong to the server, not the browser tab. Close the tab or reconnect from another browser and the windows come back with their recent output.
+- **Settings**: general settings, agents, workspace directories and packages, firewall domains, keybindings and the web login, written to the same `config.yaml` and `allowlist.yaml` as `exitbox setup`.
+- **Login**: optional. Set it in `exitbox setup` (Web access) or with `--username` and `--password`. Sessions mount host folders, so exitbox web refuses to listen beyond this machine (anything but `127.0.0.1`, `::1` or `localhost`) without a login. Passwords are stored as bcrypt hashes; a login cookie lasts 7 days, and 10 failed logins lock out an address for 10 minutes. exitbox web speaks plain HTTP: beyond this machine, put it behind a TLS reverse proxy or reach it through an SSH tunnel so the password does not cross the network in clear text.
+- **Service**: `exitbox web --service` installs a systemd user unit (Linux) or a launchd agent (macOS) that starts it at login. Stopping the service stops its sessions.
+- **Browser safety**: on loopback it answers only to `localhost`-style host names (no DNS rebinding), refuses cross-site writes and WebSockets, and sends a strict Content Security Policy.
+
+The UI is a SvelteKit + Tailwind CSS app in `web/`. `make web` builds it into `internal/web/assets`, which the binary embeds; commit the build with your change.
+
 ### Named Resumable Sessions
 
 When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox captures this token and can pass it on the next run, so you seamlessly resume where you left off.
@@ -596,6 +617,20 @@ exitbox run opencode [args]   # Run OpenCode
 exitbox run pi [args]         # Run Pi Coding Agent
 exitbox run qwen [args]       # Run Qwen Code
 ```
+
+### Web UI
+
+```bash
+exitbox web                                   # Serve the UI on 127.0.0.1:4848
+exitbox web --open                            # ... and open it in the browser
+exitbox web --listen 127.0.0.1:9000           # Another address (default from config)
+exitbox web --username me                     # Require a login for this run (asks for the password)
+exitbox web --service                         # Install and start it as a login service
+exitbox web --service --listen 0.0.0.0:4848 --username me   # Service on the network, with a login
+exitbox web --remove-service                  # Stop and remove the service
+```
+
+Without `--service`, `--username` and `--password` apply to that run only; with `--service` they are saved to `config.yaml` so the service uses them. Prefer the prompt over `--password`, which shows up in your shell history.
 
 ### Management
 
@@ -964,6 +999,11 @@ settings:
     read_only: false          # Set true to mount workspace as read-only by default
     no_env: false             # Set true to not pass host env vars by default
     auto_resume: false        # Set true to auto-resume agent sessions
+
+web:                          # exitbox web (set in exitbox setup > Web access)
+  listen: 127.0.0.1:4848      # Omitted means 127.0.0.1:4848
+  username: me                # With password_hash: a login is required
+  password_hash: $2a$12$...   # bcrypt; config.yaml is then written 0600
 ```
 
 **Settings reference:**

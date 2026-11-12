@@ -26,6 +26,31 @@ type Config struct {
 	Agents         AgentConfig      `yaml:"agents"`
 	Tools          ToolsConfig      `yaml:"tools"`
 	Settings       SettingsConfig   `yaml:"settings"`
+	Web            WebConfig        `yaml:"web,omitempty"`
+}
+
+// DefaultWebListen is where exitbox web listens when nothing is configured.
+const DefaultWebListen = "127.0.0.1:4848"
+
+// WebConfig holds the exitbox web settings. An empty Username means the UI
+// has no login.
+type WebConfig struct {
+	Listen       string `yaml:"listen,omitempty"`
+	Username     string `yaml:"username,omitempty"`
+	PasswordHash string `yaml:"password_hash,omitempty"` // bcrypt
+}
+
+// AuthEnabled reports whether the web UI asks for a login.
+func (w WebConfig) AuthEnabled() bool {
+	return w.Username != "" && w.PasswordHash != ""
+}
+
+// ListenOrDefault returns the configured listen address or the default.
+func (w WebConfig) ListenOrDefault() string {
+	if w.Listen == "" {
+		return DefaultWebListen
+	}
+	return w.Listen
 }
 
 // WorkspaceCatalog stores named workspaces and the active workspace name.

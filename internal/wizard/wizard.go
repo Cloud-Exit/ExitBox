@@ -135,6 +135,10 @@ func applyResult(state State, existingCfg *config.Config) error {
 		copyCfg := *existingCfg
 		cfg = &copyCfg
 	}
+	// The Web access page saves on its own while the wizard runs; keep it.
+	if current, err := loadSavedConfig(); err == nil {
+		cfg.Web = current.Web
+	}
 
 	workspaceName := activeWorkspaceNameOrDefault(state.WorkspaceName)
 	var development []string

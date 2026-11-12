@@ -132,7 +132,15 @@ func SaveConfigTo(cfg *Config, path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// A web password hash makes the file private.
+	mode := os.FileMode(0644)
+	if cfg.Web.PasswordHash != "" {
+		mode = 0600
+	}
+	if err := os.WriteFile(path, data, mode); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
 }
 
 // LoadAllowlist reads and parses allowlist.yaml.
