@@ -24,6 +24,15 @@ import (
 )
 
 func TestGenerateConfig_Claude(t *testing.T) {
+	envOf := func(t *testing.T, m map[string]interface{}) map[string]interface{} {
+		t.Helper()
+		e, ok := m["env"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("env block missing: %v", m)
+		}
+		return e
+	}
+
 	t.Run("with api key no vault", func(t *testing.T) {
 		cfg := config.ServerConfig{
 			BaseURL: "http://localhost:8080/v1",
@@ -37,14 +46,20 @@ func TestGenerateConfig_Claude(t *testing.T) {
 			t.Fatalf("GenerateConfig error: %v", err)
 		}
 
-		if result["apiBaseUrl"] != "http://localhost:8080/v1" {
-			t.Errorf("wrong apiBaseUrl: %v", result["apiBaseUrl"])
+		env := envOf(t, result)
+		if env["ANTHROPIC_BASE_URL"] != "http://localhost:8080" {
+			t.Errorf("wrong ANTHROPIC_BASE_URL: %v", env["ANTHROPIC_BASE_URL"])
+		}
+		if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test" {
+			t.Errorf("wrong ANTHROPIC_AUTH_TOKEN: %v", env["ANTHROPIC_AUTH_TOKEN"])
 		}
 		if result["model"] != "gpt-4" {
 			t.Errorf("wrong model: %v", result["model"])
 		}
-		if result["apiKey"] != "sk-test" {
-			t.Errorf("wrong apiKey: %v", result["apiKey"])
+		for _, legacy := range []string{"apiBaseUrl", "apiKey"} {
+			if _, ok := result[legacy]; ok {
+				t.Errorf("%s is not a Claude Code setting and must not be written", legacy)
+			}
 		}
 	})
 
@@ -62,14 +77,14 @@ func TestGenerateConfig_Claude(t *testing.T) {
 			t.Fatalf("GenerateConfig error: %v", err)
 		}
 
-		if _, ok := result["apiKey"]; ok {
-			t.Error("apiKey should not be set when vault key is used")
+		if _, ok := envOf(t, result)["ANTHROPIC_AUTH_TOKEN"]; ok {
+			t.Error("token should not be set when vault key is used")
 		}
 	})
 
 	t.Run("no api key", func(t *testing.T) {
 		cfg := config.ServerConfig{
-			BaseURL: "http://localhost:8080/v1",
+			BaseURL: "http://localhost:8080/",
 			ModelID: "gpt-4",
 		}
 
@@ -79,10 +94,32 @@ func TestGenerateConfig_Claude(t *testing.T) {
 			t.Fatalf("GenerateConfig error: %v", err)
 		}
 
-		if _, ok := result["apiKey"]; ok {
-			t.Error("apiKey should not be set when empty")
+		env := envOf(t, result)
+		if _, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok {
+			t.Error("token should not be set when empty")
+		}
+		if env["ANTHROPIC_BASE_URL"] != "http://localhost:8080" {
+			t.Errorf("wrong ANTHROPIC_BASE_URL: %v", env["ANTHROPIC_BASE_URL"])
 		}
 	})
+}
+
+func TestExtractConfigServerURLs_Claude(t *testing.T) {
+	c := &Claude{}
+	generated, err := c.GenerateConfig(config.ServerConfig{BaseURL: "http://10.0.0.5:8080/v1", ModelID: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ExtractConfigServerURLs(generated); len(got) != 1 || got[0] != "http://10.0.0.5:8080" {
+		t.Errorf("generated config URLs = %v", got)
+	}
+	legacy := map[string]interface{}{"apiBaseUrl": "http://old:9000"}
+	if got := c.ExtractConfigServerURLs(legacy); len(got) != 1 || got[0] != "http://old:9000" {
+		t.Errorf("legacy config URLs = %v", got)
+	}
+	if got := c.ExtractConfigServerURLs(map[string]interface{}{"model": "x"}); got != nil {
+		t.Errorf("no URL config = %v", got)
+	}
 }
 
 func TestConfigFilePath_Claude(t *testing.T) {

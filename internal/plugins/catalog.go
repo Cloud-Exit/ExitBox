@@ -19,12 +19,14 @@ package plugins
 import (
 	"crypto/sha256"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/distro"
 	"github.com/cloud-exit/exitbox/internal/plugin"
+	"github.com/cloud-exit/exitbox/internal/plugins/clauderouter"
 	"github.com/cloud-exit/exitbox/internal/plugins/codexrouter"
 )
 
@@ -40,6 +42,7 @@ func Register(p *plugin.Plugin) {
 
 func init() {
 	Register(codexrouter.New())
+	Register(clauderouter.New())
 }
 
 // Get returns the catalog plugin with the given name, or nil.
@@ -177,6 +180,84 @@ func Domains(ws *config.Workspace, agent string) []string {
 	return out
 }
 
+// HostPorts returns the host loopback ports the enabled plugins need
+// relayed into the container, sorted.
+func HostPorts(ws *config.Workspace, agent string) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, p := range Enabled(ws, agent) {
+		if p.HostPorts == nil {
+			continue
+		}
+		for _, port := range p.HostPorts(Settings(ws, agent, p)) {
+			if !seen[port] {
+				seen[port] = true
+				out = append(out, port)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// Conflict reports why a plugin cannot be enabled for an agent: another
+// plugin that is enabled for it does the same job. among lists the enabled
+// plugin names to check against.
+func Conflict(agent, name string, among []string) error {
+	p := Get(name)
+	if p == nil {
+		return nil
+	}
+	for _, other := range among {
+		o := Get(other)
+		if o == nil || !o.SupportsAgent(agent) || !p.ConflictsWith(o) {
+			continue
+		}
+		return fmt.Errorf("%s cannot be enabled together with %s for %s: both set the agent's API base URL. Disable one first: exitbox plugins disable %s %s",
+			p.Name, o.Name, agent, agent, o.Name)
+	}
+	return nil
+}
+
+// CheckRun reports why a session cannot start with the plugins enabled for
+// an agent: two of them conflict, or one cannot work in this session.
+func CheckRun(ws *config.Workspace, agent string, in plugin.RunInput) error {
+	enabled := Enabled(ws, agent)
+	names := make([]string, 0, len(enabled))
+	for _, p := range enabled {
+		names = append(names, p.Name)
+	}
+	for _, p := range enabled {
+		if err := Conflict(agent, p.Name, names); err != nil {
+			return err
+		}
+		if p.CheckRun == nil {
+			continue
+		}
+		in.Agent = agent
+		in.Settings = Settings(ws, agent, p)
+		if err := p.CheckRun(in); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BuildFiles returns the files the enabled plugins' Dockerfile snippets
+// copy from the build context, keyed by file name.
+func BuildFiles(ws *config.Workspace, agent string) map[string][]byte {
+	out := map[string][]byte{}
+	for _, p := range Enabled(ws, agent) {
+		if p.Files == nil {
+			continue
+		}
+		for name, data := range p.Files(runtime.GOARCH) {
+			out[name] = data
+		}
+	}
+	return out
+}
+
 // DockerfileSnippets returns the install steps for the enabled plugins of
 // an agent, in catalog order.
 func DockerfileSnippets(ws *config.Workspace, agent string, d *distro.Distro) []string {
@@ -214,7 +295,13 @@ func BuildHash(ws *config.Workspace, agent string) string {
 	var parts []string
 	for _, p := range Enabled(ws, agent) {
 		entry, _ := ws.PluginEntry(agent, p.Name)
-		parts = append(parts, p.Name+"@"+p.VersionOrDefault(entry.Version))
+		part := p.Name + "@" + p.VersionOrDefault(entry.Version)
+		if p.BuildID != nil {
+			// A plugin that ships its own files changes with ExitBox, not
+			// with a version the user pins.
+			part += "+" + p.BuildID(runtime.GOARCH)
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
 		return ""

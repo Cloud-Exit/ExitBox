@@ -530,8 +530,34 @@ configure_codex_session_storage() {
 link_skills() {
     local ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     local skills_src="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/skills"
+    # The agent's master skill lives in the read-only subagent store, so a
+    # session cannot rewrite the rules the next one follows.
+    local master_src="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents/${AGENT}/master-skill"
+    local master_warned=""
 
-    [[ -d "$skills_src" ]] || return 0
+    # A skill of the same name from another source wins; the link of a
+    # removed master skill is dropped.
+    _link_master_skill_into() {
+        local link="$1/master-skill" managed=""
+        if [[ -L "$link" ]]; then
+            case "$(readlink "$link")" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*/master-skill) managed=1 ;;
+            esac
+        fi
+        if [[ ! -f "$master_src/SKILL.md" ]]; then
+            [[ -n "$managed" ]] && rm -f "$link"
+            return 0
+        fi
+        if [[ -z "$managed" && ( -e "$link" || -L "$link" ) ]]; then
+            if [[ -z "$master_warned" ]]; then
+                echo "[WARN] Master skill: another skill named master-skill is already installed; keeping it and skipping the workspace's master skill" >&2
+                master_warned=1
+            fi
+            return 0
+        fi
+        mkdir -p "$1"
+        ln -sfn "$master_src" "$link"
+    }
 
     # Create a real skills directory inside each agent's config path,
     # then symlink each individual skill into it. Using a real parent
@@ -539,17 +565,20 @@ link_skills() {
     # (whole-directory symlinks are not always followed by skill discovery).
     _link_skills_into() {
         local target_dir="$1"
-        mkdir -p "$target_dir"
         local skill link
-        for skill in "$skills_src"/*/; do
-            [[ -d "$skill" ]] || continue
-            link="${target_dir}/$(basename "$skill")"
-            # A real directory at that name belongs to another installer (e.g.
-            # graphify installs its own skill dir). `ln -sfn` would drop the
-            # link *inside* it, creating a self-referential loop, so skip it.
-            [[ -d "$link" && ! -L "$link" ]] && continue
-            ln -sfn "$skill" "$link"
-        done
+        if [[ -d "$skills_src" ]]; then
+            mkdir -p "$target_dir"
+            for skill in "$skills_src"/*/; do
+                [[ -d "$skill" ]] || continue
+                link="${target_dir}/$(basename "$skill")"
+                # A real directory at that name belongs to another installer (e.g.
+                # graphify installs its own skill dir). `ln -sfn` would drop the
+                # link *inside* it, creating a self-referential loop, so skip it.
+                [[ -d "$link" && ! -L "$link" ]] && continue
+                ln -sfn "$skill" "$link"
+            done
+        fi
+        _link_master_skill_into "$target_dir"
     }
 
     case "$AGENT" in
@@ -585,6 +614,92 @@ link_skills() {
             _link_skills_into "$HOME/.agents/skills"
             ;;
     esac
+}
+
+# Put the workspace's subagents for this agent (read-only store) into the
+# agent's own agents directory. A real file with the same name (created in
+# the container or copied by `exitbox config import`) wins and is left alone.
+#
+# Claude Code is verified to load symlinked agent files, so it gets links.
+# For the other agents that is not verified, so they get copies, listed in
+# a manifest so the next start can refresh or remove them.
+link_subagents() {
+    local home_dir ext mode="copy"
+    case "$AGENT" in
+        claude)   home_dir="$HOME/.claude";          ext=".md"; mode="link" ;;
+        codex)    home_dir="$HOME/.codex";           ext=".toml" ;;
+        copilot)  home_dir="$HOME/.copilot";         ext=".agent.md" ;;
+        cursor)   home_dir="$HOME/.cursor";          ext=".md" ;;
+        kimi)     home_dir="$HOME/.kimi-code";       ext=".md" ;;
+        opencode) home_dir="$HOME/.config/opencode"; ext=".md" ;;
+        qwen)     home_dir="$HOME/.qwen";            ext=".md" ;;
+        *) return 0 ;;
+    esac
+    local ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
+    local store="${GLOBAL_WORKSPACE_ROOT}/${ws_name}/subagents/${AGENT}"
+    local real_dir agents_dir src link target name
+    real_dir="$(readlink -f "$home_dir")"
+    [[ -d "$real_dir" ]] || return 0
+    agents_dir="$real_dir/agents"
+
+    if [[ "$mode" == "copy" ]]; then
+        local manifest="$agents_dir/.exitbox-subagents"
+        if [[ -f "$manifest" ]]; then
+            while IFS= read -r name; do
+                [[ -n "$name" && "$name" != */* ]] || continue
+                rm -f "$agents_dir/$name"
+            done < "$manifest"
+            rm -f "$manifest"
+        fi
+        [[ -d "$store" ]] || return 0
+        for src in "$store"/*"$ext"; do
+            [[ -f "$src" ]] || continue
+            name="$(basename "$src")"
+            mkdir -p "$agents_dir"
+            if [[ -e "$agents_dir/$name" || -L "$agents_dir/$name" ]]; then
+                echo "[WARN] Subagent $name: a file with that name already exists in the agent's agents directory; keeping it and skipping the managed one" >&2
+                continue
+            fi
+            cp "$src" "$agents_dir/$name"
+            printf '%s\n' "$name" >> "$manifest"
+        done
+        return 0
+    fi
+
+    # Drop links into any workspace's store whose target is gone.
+    if [[ -d "$agents_dir" ]]; then
+        for link in "$agents_dir"/*"$ext"; do
+            [[ -L "$link" ]] || continue
+            target="$(readlink "$link")"
+            case "$target" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*)
+                    [[ -e "$link" ]] || rm -f "$link"
+                    ;;
+            esac
+        done
+    fi
+
+    [[ -d "$store" ]] || return 0
+    for src in "$store"/*"$ext"; do
+        [[ -f "$src" ]] || continue
+        mkdir -p "$agents_dir"
+        link="$agents_dir/$(basename "$src")"
+        if [[ -e "$link" && ! -L "$link" ]]; then
+            echo "[WARN] Subagent $(basename "$src"): a file with that name already exists in ~/.claude/agents; keeping it and skipping the managed one" >&2
+            continue
+        fi
+        if [[ -L "$link" ]]; then
+            target="$(readlink "$link")"
+            case "$target" in
+                "${GLOBAL_WORKSPACE_ROOT}"/*/subagents/*) ;;
+                *)
+                    echo "[WARN] Subagent $(basename "$src"): ~/.claude/agents has a foreign link with that name; skipping the managed one" >&2
+                    continue
+                    ;;
+            esac
+        fi
+        ln -sfn "$src" "$link"
+    done
 }
 
 default_session_name() {
@@ -1055,6 +1170,7 @@ run_agent_loop() {
         inject_sandbox_instructions
         inject_codex_approval_rules
         link_skills
+        link_subagents
         setup_graphify
         setup_plugins
     fi
@@ -1409,6 +1525,7 @@ setup_plugins() {
     for name in ${EXITBOX_PLUGINS//,/ }; do
         case "$name" in
             codex-router) setup_codex_router ;;
+            claude-router) setup_claude_router ;;
             *) echo "[WARN] Unknown plugin '$name' - skipped" >&2 ;;
         esac
     done
@@ -1499,6 +1616,117 @@ setup_codex_router() {
     # and let it die with the container.
     nohup model-router "$target" start --foreground >"${state_dir}/exitbox-router.log" 2>&1 &
     disown 2>/dev/null || true
+}
+
+# claude_router_dir returns where the router keeps its logs. It is inside
+# the Claude Code config dir, which is mounted per workspace, so the logs
+# can be read on the host after the session.
+claude_router_dir() {
+    echo "$HOME/.claude/exitbox-router"
+}
+
+# setup_claude_router starts exitbox-router and points Claude Code at it.
+# Requests for Claude models pass through to Anthropic untouched; requests
+# for a routed model ID go to the local backend of that route.
+#
+# Only ANTHROPIC_BASE_URL is set. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY
+# stay as they are, so a claude.ai subscription login keeps being the active
+# credential. The variable is exported into this shell only, never written
+# to settings.json: disabling the plugin fully reverts it.
+setup_claude_router() {
+    local routes port auto_start sanitize dir keys key token i tries
+    [[ "$AGENT" == "claude" ]] || return 0
+    if ! command -v exitbox-router >/dev/null 2>&1; then
+        echo "[WARN] claude-router is enabled but not installed in this image." >&2
+        echo "[WARN] Rebuild it with: exitbox rebuild ${AGENT}" >&2
+        return 0
+    fi
+
+    auto_start="$(plugin_setting claude-router auto_start)" || auto_start=""
+    [[ "$auto_start" == "false" ]] && return 0
+
+    routes="$(plugin_setting claude-router routes)" || routes=""
+    if [[ -z "$routes" ]]; then
+        echo "[INFO] claude-router: no routes configured. Run: exitbox plugins edit claude claude-router" >&2
+        return 0
+    fi
+
+    # ExitBox refuses this combination before the container starts; this
+    # catches a base URL that appeared some other way.
+    if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
+        echo "[WARN] claude-router: ANTHROPIC_BASE_URL is already set, so the router is not started." >&2
+        return 0
+    fi
+
+    port="$(plugin_setting claude-router port)" || port=""
+    [[ "$port" =~ ^[0-9]+$ ]] || port="4203"
+    sanitize="$(plugin_setting claude-router sanitize)" || sanitize=""
+    dir="$(claude_router_dir)"
+    mkdir -p "$dir" 2>/dev/null || true
+
+    # Already running, because the agent loop was entered again.
+    if exitbox-router health "$port" 2>/dev/null; then
+        export ANTHROPIC_BASE_URL="http://127.0.0.1:${port}"
+        return 0
+    fi
+
+    if ! keys="$(EXITBOX_ROUTER_ROUTES="$routes" exitbox-router vault-keys 2>"$dir/start.log")"; then
+        echo "[WARN] claude-router: the routes setting is not valid, so the router is not started. See $dir/start.log" >&2
+        return 0
+    fi
+
+    # Backend tokens come from the vault here, in the foreground, because
+    # each read waits for approval on the host. They are held in a local
+    # array and exported only inside the subshell that becomes the router:
+    # they never reach Claude Code's environment or the disk. The router
+    # takes them by position, in the order vault-keys printed the keys.
+    local -a tokens=()
+    i=0
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        token=""
+        if command -v exitbox-vault >/dev/null 2>&1; then
+            token="$(exitbox-vault get "$key" 2>/dev/null)" || token=""
+        fi
+        if [[ -z "$token" ]]; then
+            echo "[WARN] claude-router: vault key '$key' is not available; its routes are sent without a token." >&2
+        fi
+        tokens[i]="$token"
+        i=$((i + 1))
+    done <<< "$keys"
+    token=""
+
+    (
+        for i in "${!tokens[@]}"; do
+            if [[ -n "${tokens[$i]}" ]]; then
+                export "EXITBOX_ROUTER_SECRET_${i}=${tokens[$i]}"
+            fi
+        done
+        export EXITBOX_ROUTER_ROUTES="$routes"
+        export EXITBOX_ROUTER_PORT="$port"
+        export EXITBOX_ROUTER_SANITIZE="$sanitize"
+        export EXITBOX_ROUTER_LOG="$dir/router.log"
+        # No service manager inside the container: the router runs detached
+        # and dies with the container.
+        exec nohup exitbox-router >>"$dir/start.log" 2>&1
+    ) &
+    disown 2>/dev/null || true
+    tokens=()
+
+    tries=0
+    while (( tries < 50 )); do
+        if exitbox-router health "$port" 2>/dev/null; then
+            export ANTHROPIC_BASE_URL="http://127.0.0.1:${port}"
+            return 0
+        fi
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+
+    # Claude Code still works on Claude models; a routed subagent now fails
+    # with an error from Anthropic instead of silently using another model.
+    echo "[WARN] claude-router: the router did not start within 5 seconds. Claude Code runs without it and routed subagents will fail." >&2
+    echo "[WARN] See $dir/start.log" >&2
 }
 
 # ============================================================================
@@ -1935,6 +2163,63 @@ Overall average: **60-90% token reduction** on common development operations.
 "
 fi
 
+# subagent_field prints one top-level field of a subagent file: YAML
+# frontmatter for Markdown agents, a top-level key for TOML (Codex).
+subagent_field() {
+    local file="$1" field="$2"
+    case "$file" in
+        *.toml)
+            sed -n "s/^${field}[[:space:]]*=[[:space:]]*[\"']\\(.*\\)[\"'][[:space:]]*\$/\\1/p" "$file" 2>/dev/null | head -1
+            ;;
+        *)
+            awk -v f="$field" '
+                NR == 1 && $0 != "---" { exit }
+                NR > 1 && $0 == "---" { exit }
+                NR > 1 && index($0, f ":") == 1 {
+                    v = substr($0, length(f) + 2)
+                    sub(/^[ \t]+/, "", v); sub(/[ \t\r]+$/, "", v)
+                    if (v ~ /^".*"$/ || v ~ /^\x27.*\x27$/) v = substr(v, 2, length(v) - 2)
+                    print v; exit
+                }' "$file" 2>/dev/null
+            ;;
+    esac
+}
+
+# coordination_instructions prints the block that makes the agent use its
+# master skill. A skill is only read when the model decides to open it, so
+# without this pointer in the always-loaded instructions the coordinator
+# rules may never be seen. Prints nothing when the agent has no master skill.
+coordination_instructions() {
+    local ws_root="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}"
+    local store="${ws_root}/subagents/${AGENT}"
+    [[ -f "${store}/master-skill/SKILL.md" ]] || return 0
+
+    local file name desc list=""
+    for file in "$store"/*.md "$store"/*.toml; do
+        [[ -f "$file" ]] || continue
+        name="$(subagent_field "$file" name)"
+        [[ -n "$name" ]] || name="$(basename "${file%.*}")"
+        name="${name%.agent}"
+        desc="$(subagent_field "$file" description)"
+        list="${list}- \`${name}\`${desc:+: ${desc}}
+"
+    done
+    [[ -n "$list" ]] || list="- none stored yet
+"
+    printf '%s' "<!-- BEGIN-EXITBOX-COORDINATION -->
+# Coordinating subagents
+
+This workspace has a master skill named \`master-skill\`. You are the coordinator.
+Before you start any task that changes files or takes more than one step, load
+the \`master-skill\` skill and follow it: it says which subagent does which work
+and who reviews the result. When it hands a task to a subagent, delegate it;
+do not make those changes yourself.
+
+Subagents installed for this session:
+${list}<!-- END-EXITBOX-COORDINATION -->
+"
+}
+
 inject_sandbox_instructions() {
     local target=""
     case "$AGENT" in
@@ -1976,6 +2261,11 @@ inject_sandbox_instructions() {
             printf '\n\n'
         fi
         printf '%s' "$SANDBOX_INSTRUCTIONS"
+        local coordination
+        coordination="$(coordination_instructions)"
+        if [[ -n "$coordination" ]]; then
+            printf '\n\n%s\n' "$coordination"
+        fi
     } > "$target"
 }
 
@@ -2084,6 +2374,7 @@ if [[ -n "$AGENT" ]]; then
     inject_sandbox_instructions
     inject_codex_approval_rules
     link_skills
+    link_subagents
     setup_graphify
     setup_plugins
 fi

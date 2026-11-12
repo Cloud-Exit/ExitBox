@@ -70,6 +70,17 @@ func (m Model) stepAfterAgents() Step {
 	return stepSettings
 }
 
+// enabledPlugins returns the plugins enabled for an agent in wizard state.
+func (m Model) enabledPlugins(agentName string) []string {
+	var out []string
+	for name, entry := range m.state.Plugins[agentName] {
+		if entry.Enabled {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // pluginEntry returns the stored configuration of one plugin.
 func (m Model) pluginEntry(agentName, pluginName string) config.PluginEntry {
 	if m.state.Plugins == nil {
@@ -107,6 +118,14 @@ func (m Model) updatePlugins(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.pluginCursor < len(rows) {
 					row := rows[m.pluginCursor]
 					entry := m.pluginEntry(row.Agent, row.Plugin.Name)
+					m.pluginNote = ""
+					if result.Enabled && !entry.Enabled {
+						if err := plugins.Conflict(row.Agent, row.Plugin.Name, m.enabledPlugins(row.Agent)); err != nil {
+							// Keep the settings, refuse only the switch.
+							m.pluginNote = err.Error()
+							result.Enabled = false
+						}
+					}
 					entry.Enabled = result.Enabled
 					entry.Settings = prunePluginSettings(row.Plugin, result.Settings)
 					m.setPluginEntry(row.Agent, row.Plugin.Name, entry)
@@ -135,6 +154,13 @@ func (m Model) updatePlugins(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pluginCursor < len(rows) {
 			row := rows[m.pluginCursor]
 			entry := m.pluginEntry(row.Agent, row.Plugin.Name)
+			m.pluginNote = ""
+			if !entry.Enabled {
+				if err := plugins.Conflict(row.Agent, row.Plugin.Name, m.enabledPlugins(row.Agent)); err != nil {
+					m.pluginNote = err.Error()
+					return m, nil
+				}
+			}
 			if !entry.Enabled && entry.Settings == nil {
 				entry.Settings = row.Plugin.DefaultSettings()
 			}
@@ -188,6 +214,9 @@ func (m Model) viewPlugins() string {
 		}
 	}
 
+	if m.pluginNote != "" {
+		b.WriteString("\n" + warnStyle.Render(m.pluginNote) + "\n")
+	}
 	b.WriteString(helpStyle.Render("\nSpace to toggle, e to configure, Enter to continue, Esc to go back" + m.tabHint()))
 	return b.String()
 }

@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/plugins/clauderouter"
 )
 
 func TestGenerateSquidConfig_BasicStructure(t *testing.T) {
@@ -217,5 +219,37 @@ func TestSessionURLFileRoundtrip(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("expected 1 session file, got %d", len(entries))
+	}
+}
+
+// A claude-router backend on the LAN is addressed by IP and listens on a
+// port other than 443. It must come out as a dst ACL: Squid ignores IP
+// literals in a dstdomain ACL, and the agent network has no other way out.
+func TestGenerateSquidConfig_ClaudeRouterBackendByIP(t *testing.T) {
+	settings := map[string]string{"routes": "qwen=http://10.0.0.21:8080,gemma=http://127.0.0.1:8000"}
+	p := clauderouter.New()
+	conf := GenerateSquidConfigWithHostPorts("10.89.0.0/24", []string{"anthropic.com"}, p.SettingDomains(settings), p.HostPorts(settings))
+
+	for _, want := range []string{
+		"acl allowed_ips dst 10.0.0.21\n",
+		"http_access allow agent_sources allowed_ips\n",
+		// The host loopback backend goes through the same relay as --ollama.
+		"acl host_loopback dstdomain host.docker.internal\n",
+		"acl host_loopback_ports port 8000\n",
+		"http_access allow agent_sources host_loopback host_loopback_ports\n",
+		// Port 8080 is plain http and falls in the unregistered range.
+		"acl Safe_ports port 1025-65535",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("config missing %q:\n%s", want, conf)
+		}
+	}
+	if strings.Contains(conf, "dstdomain 10.0.0.21") || strings.Contains(conf, "dstdomain .10.0.0.21") {
+		t.Errorf("the backend IP was rendered as a domain:\n%s", conf)
+	}
+	// The LAN port is not opened for TLS tunnels: only the relayed host
+	// port joins 443 there.
+	if strings.Contains(conf, "acl SSL_ports port 8080") {
+		t.Errorf("port 8080 was added to SSL_ports:\n%s", conf)
 	}
 }

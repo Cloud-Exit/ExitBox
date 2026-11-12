@@ -2,10 +2,17 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -ldflags "-s -w -X github.com/cloud-exit/exitbox/cmd.Version=$(VERSION)"
 BINARY := exitbox
 
-.PHONY: build test test-shell coverage vet lint clean install cross-compile
+.PHONY: build test test-shell coverage vet lint clean install cross-compile router
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
+
+# Rebuild the claude-router binaries that are embedded in exitbox and copied
+# into the plugins image layer. Run this after changing cmd/exitbox-router or
+# internal/router, and commit the result.
+router:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags "-s -w" -o static/build/exitbox-router-amd64 ./cmd/exitbox-router/
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags "-s -w" -o static/build/exitbox-router-arm64 ./cmd/exitbox-router/
 
 test:
 	go test ./...

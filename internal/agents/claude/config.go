@@ -18,20 +18,31 @@ package claude
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 )
 
-// GenerateConfig produces a Claude Code settings.json config map.
+// GenerateConfig produces a Claude Code settings.json config map. Claude Code
+// has no apiBaseUrl or apiKey setting; the documented route is the env block
+// (https://code.claude.com/docs/en/settings). Claude Code appends /v1/messages
+// itself, so a trailing /v1 from an OpenAI-style base URL is dropped.
 func (c *Claude) GenerateConfig(cfg config.ServerConfig) (map[string]interface{}, error) {
-	m := map[string]interface{}{
-		"apiBaseUrl": cfg.BaseURL,
-		"model":      cfg.ModelID,
+	envBlock := map[string]interface{}{
+		"ANTHROPIC_BASE_URL": anthropicBaseURL(cfg.BaseURL),
 	}
 	if cfg.APIKey != "" && cfg.VaultKeyName == "" {
-		m["apiKey"] = cfg.APIKey
+		envBlock["ANTHROPIC_AUTH_TOKEN"] = cfg.APIKey
 	}
-	return m, nil
+	return map[string]interface{}{
+		"env":   envBlock,
+		"model": cfg.ModelID,
+	}, nil
+}
+
+func anthropicBaseURL(u string) string {
+	u = strings.TrimRight(u, "/")
+	return strings.TrimSuffix(u, "/v1")
 }
 
 // LogSearchDirs returns directories to search for Claude Code log files.
@@ -46,10 +57,17 @@ func (c *Claude) ConfigFilePath(agentDir string) string {
 	return filepath.Join(agentDir, ".claude", "settings.json")
 }
 
-// ExtractConfigServerURLs reads the top-level apiBaseUrl from a Claude config.
+// ExtractConfigServerURLs reads env.ANTHROPIC_BASE_URL from a Claude config,
+// plus the legacy top-level apiBaseUrl that older ExitBox versions wrote.
 func (c *Claude) ExtractConfigServerURLs(data map[string]interface{}) []string {
-	if baseURL, ok := data["apiBaseUrl"].(string); ok && baseURL != "" {
-		return []string{baseURL}
+	var urls []string
+	if envBlock, ok := data["env"].(map[string]interface{}); ok {
+		if baseURL, ok := envBlock["ANTHROPIC_BASE_URL"].(string); ok && baseURL != "" {
+			urls = append(urls, baseURL)
+		}
 	}
-	return nil
+	if baseURL, ok := data["apiBaseUrl"].(string); ok && baseURL != "" {
+		urls = append(urls, baseURL)
+	}
+	return urls
 }

@@ -375,6 +375,11 @@ func runPluginsSetEnabled(agentName, pluginName string, enabled bool) {
 		ui.Infof("%s is already %s for %s in workspace '%s'", p.Name, enabledLabel(enabled), agentName, ws.Name)
 		return
 	}
+	if enabled {
+		if err := plugins.Conflict(agentName, p.Name, ws.EnabledPlugins(agentName)); err != nil {
+			ui.Errorf("%v", err)
+		}
+	}
 	if !existed && enabled {
 		entry.Settings = p.DefaultSettings()
 	}
@@ -416,7 +421,7 @@ func runPluginsSetSetting(agentName, pluginName, key, value string) {
 		return
 	}
 	ui.Successf("Set %s.%s = %s in workspace '%s'", p.Name, key, settingDisplay(*setting, normalized), ws.Name)
-	if vaultKey, ok := plugin.VaultKey(normalized); ok {
+	for _, vaultKey := range p.SecretKeys(map[string]string{key: normalized}) {
 		fmt.Printf("Store the secret with: exitbox vault set %s <value> -w %s\n", vaultKey, ws.Name)
 	}
 }
@@ -439,6 +444,11 @@ func runPluginsEdit(agentName, pluginName string) {
 	}
 
 	wasEnabled := entry.Enabled
+	if result.Enabled && !wasEnabled {
+		if err := plugins.Conflict(agentName, p.Name, ws.EnabledPlugins(agentName)); err != nil {
+			ui.Errorf("%v", err)
+		}
+	}
 	entry.Enabled = result.Enabled
 	entry.Settings = prunedSettings(p, result.Settings)
 	ws.SetPluginEntry(agentName, p.Name, entry)
@@ -448,10 +458,8 @@ func runPluginsEdit(agentName, pluginName string) {
 	}
 	ui.Successf("Saved %s settings for %s in workspace '%s'", p.Name, agentName, ws.Name)
 
-	for _, value := range entry.Settings {
-		if vaultKey, ok := plugin.VaultKey(value); ok {
-			fmt.Printf("Secret expected in the vault: %s (exitbox vault set %s <value> -w %s)\n", vaultKey, vaultKey, ws.Name)
-		}
+	for _, vaultKey := range p.SecretKeys(entry.Settings) {
+		fmt.Printf("Secret expected in the vault: %s (exitbox vault set %s <value> -w %s)\n", vaultKey, vaultKey, ws.Name)
 	}
 	if wasEnabled != entry.Enabled {
 		fmt.Printf("Apply it with: exitbox rebuild %s (or the next `exitbox run %s`)\n", agentName, agentName)

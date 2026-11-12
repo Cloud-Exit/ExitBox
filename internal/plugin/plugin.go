@@ -70,6 +70,9 @@ type Setting struct {
 	// provider is selected). Empty means always visible.
 	DependsOn    string
 	DependsValue string
+	// Check is an extra rule for a value that already passed the type
+	// check, for values with a syntax of their own (e.g. a route list).
+	Check func(value string) error
 }
 
 // Visible reports whether a setting applies given the current values of the
@@ -134,6 +137,37 @@ type Plugin struct {
 	// SettingDomains returns extra firewall domains implied by the plugin's
 	// configuration (e.g. the API hosts of the selected model providers).
 	SettingDomains func(settings map[string]string) []string
+	// Conflicts names plugins that cannot be enabled for the same agent at
+	// the same time (e.g. two routers that both own the agent's base URL).
+	Conflicts []string
+	// Files returns files the Dockerfile snippet copies into the image,
+	// keyed by their name in the build context. arch is the Go name of the
+	// image architecture ("amd64", "arm64").
+	Files func(arch string) map[string][]byte
+	// BuildID identifies the content of Files. It is part of the image
+	// hash, so a new ExitBox with changed files rebuilds the layer.
+	BuildID func(arch string) string
+	// HostPorts returns ports on the host's loopback that the plugin's
+	// configuration needs reachable from the container.
+	HostPorts func(settings map[string]string) []int
+	// VaultKeys returns vault keys the configuration refers to outside of
+	// TypeSecret settings (e.g. inside a route list).
+	VaultKeys func(settings map[string]string) []string
+	// CheckRun reports why a session cannot start with this plugin as it is
+	// configured. Nil means there is nothing to check.
+	CheckRun func(in RunInput) error
+}
+
+// RunInput describes the session a plugin is about to be started in.
+type RunInput struct {
+	Agent    string
+	Settings map[string]string // effective settings, defaults applied
+	Firewall bool              // false with --no-firewall
+	Ollama   bool              // --ollama
+	// BaseURLFrom says where the agent's API base URL is set for this
+	// session ("env profile 'x'", "settings.json", ...). Empty when it is
+	// not set at all.
+	BaseURLFrom string
 }
 
 // SupportsAgent reports whether the plugin can be enabled for an agent.
@@ -164,6 +198,42 @@ func (p *Plugin) Setting(key string) *Setting {
 		}
 	}
 	return nil
+}
+
+// ConflictsWith reports whether two plugins cannot be enabled together.
+// Either side may declare the conflict.
+func (p *Plugin) ConflictsWith(other *Plugin) bool {
+	if other == nil || p.Name == other.Name {
+		return false
+	}
+	return containsOption(p.Conflicts, other.Name) || containsOption(other.Conflicts, p.Name)
+}
+
+// SecretKeys returns every vault key the settings refer to: the values of
+// TypeSecret settings and whatever VaultKeys reports, each once, in order.
+func (p *Plugin) SecretKeys(settings map[string]string) []string {
+	seen := map[string]bool{}
+	var keys []string
+	add := func(key string) {
+		if key != "" && !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	for _, s := range p.Settings {
+		if s.Type != TypeSecret || !s.Visible(settings) {
+			continue
+		}
+		if key, ok := VaultKey(settings[s.Key]); ok {
+			add(key)
+		}
+	}
+	if p.VaultKeys != nil {
+		for _, key := range p.VaultKeys(settings) {
+			add(key)
+		}
+	}
+	return keys
 }
 
 // EnvPrefix returns the environment variable prefix for this plugin, e.g.
@@ -242,6 +312,11 @@ func (s *Setting) Validate(value string) error {
 	case TypeSecret:
 		if _, ok := VaultKey(value); !ok {
 			return fmt.Errorf("%s must be a vault reference like %sMY_KEY", s.Key, VaultPrefix)
+		}
+	}
+	if s.Check != nil {
+		if err := s.Check(value); err != nil {
+			return fmt.Errorf("%s: %w", s.Key, err)
 		}
 	}
 	return nil

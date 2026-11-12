@@ -236,8 +236,8 @@ Supported command categories: `git`, `go`, `gh`, `grep`, `ls`, `curl`, `cargo`, 
 Agent-level management commands:
 
 ```bash
-exitbox agents list            # Show enabled agents and their status
-exitbox agents config claude   # Open agent config in $EDITOR
+exitbox list                   # Show available agents and their build status
+exitbox config edit claude     # Open agent config in $EDITOR
 ```
 
 > **Note:** RTK is experimental. If you encounter issues, disable it via `exitbox setup` and rebuild with `exitbox run <agent> --update`.
@@ -260,7 +260,7 @@ Compatible agents: **Claude, Codex, OpenCode, Copilot, Pi**. (Cursor's graphify 
 
 Plugins extend an agent inside its ExitBox image. They are enabled **per workspace**, installed into a dedicated plugins image layer, and configured through a menu whose settings are applied when the container starts.
 
-The first plugin is [codex-router](https://github.com/duolahypercho/codex-router): a local model router that lets **Codex**, **Claude Code**, and **Cursor** talk to Anthropic, DeepSeek, Kimi, Grok, OpenRouter, and other providers through one gateway running inside the container.
+There are two plugins. [claude-router](#claude-router-experimental) runs Claude Code subagents on local models and is described below. The other is [codex-router](https://github.com/duolahypercho/codex-router): a local model router that lets **Codex**, **Claude Code**, and **Cursor** talk to Anthropic, DeepSeek, Kimi, Grok, OpenRouter, and other providers through one gateway running inside the container.
 
 ```bash
 exitbox plugins list                       # Every plugin, per agent, with status
@@ -282,6 +282,56 @@ exitbox vault set CODEX_ROUTER_ANTHROPIC_KEY <your-api-key>
 At container start the entrypoint resolves the reference through the vault, exports it as the variable the router expects, publishes the routes to the agent, and starts the router service. The provider API hosts a plugin needs are added to the firewall allowlist for that session automatically.
 
 Enabling or disabling a plugin, or pinning a different version, changes the image: apply it with `exitbox rebuild <agent>` or the next `exitbox run <agent>`. Editing settings does not rebuild anything.
+
+#### Claude Router (Experimental)
+
+`claude-router` keeps a Claude Code session on Claude models and sends chosen [subagents](#subagents) to a model you host yourself with llama.cpp or vLLM. A subagent with `model: qwen3.6-27b` then runs locally while the main session stays on Opus, and a claude.ai subscription login keeps working.
+
+The easiest way to set it up is `exitbox setup` → **Subagent Management** → Claude Code: check the subagents you want, keep **Enable claude-router** checked, and enter each local model's backend URL and API key. From the command line:
+
+```bash
+exitbox plugins enable claude claude-router
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080"
+exitbox run claude
+```
+
+A route is `model-id=backend-url[=served-name][=vault:KEY]`. Several routes are separated by commas.
+
+| Part | Meaning |
+|:-----|:--------|
+| `model-id` | The value subagents put in `model:`. It must not start with `claude` or be `sonnet`, `opus`, `haiku`, `fable` or `inherit`. |
+| `backend-url` | Base URL of a server that speaks the Anthropic Messages API (`/v1/messages`), such as `llama-server` or vLLM. A trailing `/v1` is dropped. |
+| `served-name` | The model name the backend knows, when it differs from `model-id`. |
+| `vault:KEY` | Vault key that holds the backend's API key. |
+
+**Backend authentication.** A backend that was started with an API key (`llama-server --api-key`, `vllm serve --api-key`) gets it from the vault:
+
+```bash
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080=vault:LOCAL_LLM_KEY"
+exitbox vault set LOCAL_LLM_KEY
+```
+
+At container start ExitBox reads each key from the vault, with one approval per key, and hands it to the router process only. The router sends it to that backend as `Authorization: Bearer` and as `x-api-key`. The key never reaches Claude Code's environment, a file, or the Anthropic API, and Claude Code's own credentials never reach a backend.
+
+How it works:
+
+- **Router**: `exitbox-router`, a small Go program that is part of ExitBox and is copied into the plugins image layer. No third-party code is installed. At container start it listens on `127.0.0.1:4203` and ExitBox exports `ANTHROPIC_BASE_URL` for Claude Code. Nothing is written to `settings.json`, so disabling the plugin reverts everything.
+- **Claude models**: a request whose model has no route goes to `api.anthropic.com` with its original body bytes and headers.
+- **Routed models**: the request goes to the route's backend. With `sanitize` on, only the Messages API fields a local server understands are kept, server tools such as web search are dropped and named in the log, and `system` entries inside the conversation become `<system-reminder>` blocks in the neighbouring user turn. `cache_control` is kept until a backend rejects it.
+- **Firewall**: backend hosts are allowed for the session, including LAN backends addressed by IP. A backend on the host's loopback (`http://127.0.0.1:8080` or `http://localhost:8080`) is relayed into the container the same way `--ollama` reaches Ollama. Behind the firewall an `https` backend has to listen on port 443; plain `http` works on any port.
+- **Log**: one line per request in `~/.claude/exitbox-router/router.log` inside the container, with model, route, status, duration and token counts. A refused request also shows why: the error type and message when the body is readable, plus the `request-id`, `retry-after` and `anthropic-ratelimit-*` headers. Prompts, answers and credentials are never logged. Responses from Anthropic arrive compressed, so their lines carry no token counts, and their error lines only the headers. Start-up messages are in `start.log` next to it. On the host both files are under the workspace's `claude/.claude/exitbox-router/`.
+- **Validation**: while the plugin is enabled, `exitbox subagents validate` reports a subagent whose model has no route as an error. `exitbox subagents validate --probe` also asks each backend for its context size (llama.cpp `/props`, vLLM `/v1/models`) and warns when `autoCompactWindow` is missing or larger than that.
+
+Settings: `routes`, `port` (default `4203`), `auto_start` (default `true`), `sanitize` (default `true`).
+
+Limits:
+
+- **Experimental.** Anthropic does not support routing Claude Code to non-Claude models through a gateway. A new Claude Code release can add request fields that break local subagents until the sanitizer is updated.
+- **One owner of the base URL.** It cannot be enabled together with `codex-router` for Claude Code. A run is refused with `--ollama`, and when `ANTHROPIC_BASE_URL` is already set by an env profile, by `-e`, or in the workspace's Claude Code `settings.json`.
+- **Messages API only.** OpenAI-format endpoints are not translated.
+- **Router not running.** If the router fails to start, Claude Code runs without it: the main session works and routed subagents fail with an error.
+- **Fallback models.** If you configure a fallback model in Claude Code, a backend outage can move a subagent onto a paid Claude model. The router log shows the switch.
+- **Context size.** A local model usually has less context than a Claude model. Set `autoCompactWindow` in the subagent; Claude Code accepts 100000 to 1000000.
 
 ### GPU Support (Experimental)
 
@@ -370,6 +420,112 @@ Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name
 | Kimi Code | `~/.kimi-code/skills/<name>/SKILL.md` (+ `~/.agents/skills/`) |
 
 All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
+
+### Subagents
+
+Subagents are agent definitions a coding agent can hand tasks to. Every agent has its own format and its own directory, so ExitBox keeps one subagent store per agent in each workspace and puts the stored files into that agent's directory when its container starts.
+
+| Agent | File format | Read from, inside the container | Rules checked against |
+|:------|:------------|:--------------------------------|:----------------------|
+| Claude Code | Markdown, YAML frontmatter (`name`, `description`) | `~/.claude/agents/<name>.md` | Claude Code 2.1.319 |
+| OpenAI Codex | TOML (`name`, `description`, `developer_instructions`) | `~/.codex/agents/<name>.toml` | [docs](https://developers.openai.com/codex/subagents) |
+| GitHub Copilot CLI | Markdown, YAML frontmatter (`description`); named by file | `~/.copilot/agents/<name>.agent.md` | [docs](https://docs.github.com/en/copilot/reference/custom-agents-configuration) |
+| Cursor CLI | Markdown, YAML frontmatter; name defaults to the file name | `~/.cursor/agents/<name>.md` | [docs](https://cursor.com/docs/subagents) |
+| Kimi Code CLI | Markdown, YAML frontmatter (`description`); kebab-case name | `~/.kimi-code/agents/<name>.md` | [docs](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/agents.html) |
+| OpenCode | Markdown, YAML frontmatter (`mode: subagent`); named by file | `~/.config/opencode/agents/<name>.md` | [docs](https://opencode.ai/docs/agents/) |
+| Qwen Code | Markdown, YAML frontmatter (`name`, `description`) | `~/.qwen/agents/<name>.md` | Qwen Code source |
+
+Pi has no native subagents. Only the Claude Code rules were run against a real release; the others follow each agent's documentation (Qwen Code: its source).
+
+```bash
+# Create one in the agent's format and open it in $EDITOR
+exitbox subagents new code-reviewer --agent claude --model sonnet --tools "Read, Grep, Glob" \
+  --description "Reviews diffs for bugs and style issues"
+exitbox subagents new pr_explorer --agent codex --description "Read-only codebase explorer"
+
+# Add from a local file or directory, a raw URL, or a GitHub file or directory
+exitbox subagents add ./agents/ --agent opencode
+exitbox subagents add https://github.com/org/repo/tree/main/agents --agent claude
+exitbox subagents add ./reviewer.md --agent claude --force   # replace a stored subagent with the same name
+
+# Copy the agent's own agents directory on the host into the store (existing names are skipped)
+exitbox subagents import --agent claude
+
+# Inspect, change, and check
+exitbox subagents list            # every agent: name, model, tools, source, status, shadowing
+exitbox subagents list --agent codex --json
+exitbox subagents show code-reviewer
+exitbox subagents edit code-reviewer
+exitbox subagents validate        # exits non-zero on any error
+exitbox subagents rm code-reviewer
+```
+
+All commands take `-w <workspace>` and `--agent <agent>`.
+
+- **Which agent**: `--agent` can be left out when only one enabled agent has subagents, and for `edit`, `show`, `rm` and `validate <name>` when that name is stored for one agent only. `list` and `validate` cover every agent without it.
+- **Store**: `~/.config/exitbox/profiles/global/<workspace>/subagents/<agent>/`. It is mounted read-only into the container, so a session cannot rewrite the prompts the next session trusts.
+- **Formats are not converted**: `add` and `import` take files in the agent's own format. A Claude Code file is not turned into a Codex one.
+- **Installing**: for Claude Code each file becomes a symlink in `~/.claude/agents/`, which Claude Code is verified to load. For the other agents that is not verified, so each file is copied and the copies are refreshed, or removed, at every start. A file with the same name that is already there (created inside the container, or copied by `exitbox config import`) is kept, and the managed one is skipped with a warning. A project's own agents directory is never touched.
+- **Changes** made on the host reach a running session at the next container start.
+- **Validation**: most agents skip a broken agent file without telling you. `validate`, `new`, `edit`, and `add` report as errors what makes the agent skip the file, and as warnings what it ignores:
+  - *Claude Code*: errors for an opening `---` that is not on line 1, YAML that does not parse, a missing `name` or `description`, a `name` that starts with `-`, contains `:`, or is longer than 256 characters, and two files with the same `name`. Warnings for unknown fields (with the closest known one), a `model` that is not `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a `claude-*` ID (no finding when [claude-router](#claude-router-experimental) has a route for it, an error when that plugin is enabled without one), an `autoCompactWindow` that is not a plain integer from 100000 to 1000000 (`200k` is read as 200), and an env profile that sets `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, which makes Claude Code ignore every `model` field.
+  - *OpenAI Codex*: errors for TOML that does not parse and a missing `name`, `description` or `developer_instructions`. Warnings for `sandbox_mode`, `approval_policy`, `model_provider` and `mcp_servers`, which an agent file cannot override.
+  - *GitHub Copilot CLI*: errors for a missing `description` and a prompt over 30,000 characters. Warnings for the retired `infer` and for undocumented properties.
+  - *Cursor CLI*: warnings only: a missing `description`, a `name` that is not lowercase letters and hyphens, undocumented fields.
+  - *Kimi Code CLI*: errors for a missing `description`, a name (or, without one, a file name) that is not kebab-case, and the name of a built-in agent (`coder`, `explore`, `plan`) without `override: true`. Warnings for fields Kimi Code ignores, such as `model`.
+  - *OpenCode*: warnings only: no `mode`, or `mode: primary`, makes it a primary agent instead of a subagent; a missing `description`; a `model` that is not `provider/model`; fields the current docs call deprecated (`tools`, `permission`, `maxSteps`, ...).
+  - *Qwen Code*: errors for a missing `name` or `description`, a `name` that is not 2 to 50 letters, digits, hyphens or underscores, starts or ends with `-` or `_`, or is reserved (`main`, `default`, ...), and a prompt under 10 characters. Warnings for Claude Code fields it does not read yet.
+- **Shadowing**: `list` flags a stored subagent when the container already has a file with the same file name or name, or when a project agent has the same name and the agent lets project agents win (Claude Code, Cursor, Kimi Code, Qwen Code).
+- **Cursor CLI**: Cursor staff report that the CLI (seen in 2026.07.23) loads only a project's `.cursor/agents`, not `~/.cursor/agents`. Until Cursor fixes that, subagents stored for Cursor may not load. `list` and `validate` say so.
+
+Every `exitbox subagents` command is also available as `exitbox agents subagents`.
+
+**In `exitbox setup`**, the main menu has a **Subagent Management** item. Pick a coding agent and a workspace (`w` switches it):
+
+- The subagents found in the agent's host directory (for example `~/.claude/agents`) are listed as checkboxes. Checking one copies it into the workspace store; unchecking removes the workspace copy and leaves the host file alone. `a` checks all of them.
+- For Claude Code, **Enable claude-router** is checked by default. Subagents on non-Claude models do not work without it. For every such model the page asks for the backend URL and, if the server needs one, its API key. The key is stored in the workspace vault (the page creates the vault if there is none) and only its vault key name goes into the config.
+- The master skill can be created and edited there too, and its **Reviewer** row switches between the main agent and each subagent in use.
+
+Everything on that page is saved at once, not at the review step.
+
+### Master Skill
+
+The master skill is one editable `SKILL.md` per coding agent and workspace. By default it makes the main agent a **coordinator**: it plans the work, hands each task to the subagent its route names (independent tasks in parallel), and then **reviews every result itself** before it relies on it or reports it as done. You can hand reviews to a subagent instead.
+
+```bash
+exitbox agents skill edit --agent claude   # create it on first use, then edit it in $EDITOR
+exitbox agents skill show --agent claude
+exitbox agents skill path --agent claude
+exitbox agents skill reviewer --agent claude                 # who reviews: "main agent" or a subagent
+exitbox agents skill reviewer code-reviewer --agent claude   # hand reviews to a subagent
+exitbox agents skill reviewer main --agent claude            # back to the main agent
+exitbox agents skill rm --agent claude
+```
+
+`edit` writes a starting file with the coordination rules, one route per subagent stored for that agent, and a Review section:
+
+```markdown
+## Routes
+
+| When the task is | Send it to | Notes |
+|:--|:--|:--|
+| Reads long log files and reports the errors it finds | `log-reader` | model haiku |
+| Mechanical edits across many files | `bulk-editor` | third-party model qwen3-coder |
+
+## Review
+
+Reviewer: main agent
+```
+
+From then on the file is yours: reorder the routes, add rules for third-party agents, or rewrite it. ExitBox never rewrites it, except the `Reviewer:` line when you change it with `exitbox agents skill reviewer` or in `exitbox setup`; a subagent you add later needs its own row. A subagent set as reviewer never reviews its own work: the main agent reviews that task. All commands take `-w <workspace>`; `--agent` can be left out when only one enabled agent can have a master skill.
+
+- **Agents**: Claude Code, OpenAI Codex, OpenCode, Pi and Kimi Code, the agents ExitBox links skills for (see [Agent Skills](#agent-skills)). Each has its own master skill, because each has its own subagents.
+- **Storage**: `~/.config/exitbox/profiles/global/<workspace>/subagents/<agent>/master-skill/SKILL.md`. It sits in the read-only subagent store, so a session cannot change the rules the next session follows.
+- **Always read**: an agent loads a skill's text only when it decides to, so a coordinator rule could go unread. When a master skill exists, ExitBox adds a short block to the agent's always-loaded instructions (`CLAUDE.md` for Claude Code, `AGENTS.md` for Codex and OpenCode) that tells it to load `master-skill` before any multi-step task and lists the subagents installed for the session. Pi and Kimi Code have no such file and rely on the skill alone.
+- **No routes needed**: when no route matches, the default rules send the task to the subagent whose description fits best, so a subagent added later is used without editing the table.
+- **Linking**: at container start it is linked as `master-skill` into the agent's skill directory. A skill with the same name that you installed with `exitbox skills install`, or that already exists in the agent's skill directory, is kept and the master skill is skipped with a warning.
+- **Validation**: `edit` and `exitbox subagents validate` report missing frontmatter, a missing `name`, or a missing `description` as errors, because agents skip such a skill.
+- **Third-party models**: for Claude Code, a route to a subagent whose `model` is not a Claude model needs the [claude-router](#claude-router-experimental) plugin with a route for that model; `exitbox subagents validate` flags subagents that have none.
 
 ### Named Resumable Sessions
 
@@ -610,8 +766,15 @@ exitbox tools update      # Update tools/languages to latest or a pinned version
 exitbox uninstall <agent> # Remove agent images and config
 exitbox update            # Update ExitBox to the latest version
 exitbox aliases           # Print shell aliases for ~/.bashrc
-exitbox agents list       # List enabled agents and their status
-exitbox agents config <agent>  # Open agent config in $EDITOR
+exitbox agents edit       # Edit the workspace's agents.md (custom agent instructions)
+exitbox agents show       # Show the workspace's agents.md
+exitbox agents path       # Print the path to agents.md
+exitbox agents skill edit --agent <agent>  # Create or edit an agent's master skill (task routing rules)
+exitbox agents skill show --agent <agent>  # Print the master skill
+exitbox agents skill path --agent <agent>  # Print the path to the master skill
+exitbox agents skill reviewer [name|main] --agent <agent>  # Show or set who reviews delegated work
+exitbox agents skill rm --agent <agent>    # Remove the master skill
+exitbox agents subagents <command>  # Same as 'exitbox subagents <command>'
 exitbox codex accounts list     # List saved Codex accounts
 exitbox codex accounts current  # Show current/previous Codex account
 exitbox codex accounts save <name>   # Save active Codex login
@@ -622,6 +785,15 @@ exitbox config edit <agent>        # Open agent config file in $EDITOR
 exitbox skills install <source>    # Install a skill from URL/path
 exitbox skills list                # List installed skills
 exitbox skills remove <name>       # Remove an installed skill
+exitbox subagents list             # List every agent's subagents and their status
+exitbox subagents new <name> --agent <agent>    # Create a subagent and open it in $EDITOR
+exitbox subagents add <source> --agent <agent>  # Add subagents from a file, dir, URL, or GitHub path
+exitbox subagents import --agent <agent>        # Copy the agent's host agents directory into the store
+exitbox subagents edit <name>      # Edit a subagent in $EDITOR and validate it
+exitbox subagents show <name>      # Print a subagent file
+exitbox subagents rm <name>        # Remove a subagent
+exitbox subagents validate [name]  # Check subagents against their agent's loading rules
+exitbox subagents validate --probe # Also compare autoCompactWindow with each claude-router backend's context
 exitbox env create <profile>       # Create a new env profile
 exitbox env edit <profile>         # Edit env profile in $EDITOR
 exitbox env list                   # List env profiles
@@ -644,6 +816,8 @@ exitbox plugins show codex codex-router       # Stored configuration
 exitbox plugins set codex codex-router port 4300      # Set one setting
 exitbox plugins set codex codex-router port           # Clear it (back to default)
 exitbox plugins enable codex codex-router -w work     # Target another workspace
+exitbox plugins enable claude claude-router           # Local models for Claude Code subagents
+exitbox plugins set claude claude-router routes "qwen3.6-27b=http://10.0.0.21:8080=vault:LOCAL_LLM_KEY"
 
 # Project-scoped marketplace plugins (Codex)
 exitbox plugins install codex https://github.com/org/plugin-repo
@@ -902,7 +1076,7 @@ The recommended way to configure ExitBox is through the setup wizard:
 exitbox setup
 ```
 
-The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through roles, languages, tools, per-tool versions, packages, workspace name, credentials, agents, settings, firewall (domain allowlist), and review. The settings step includes an **Auto-update tools to latest** option that sets unpinned managed tools to `latest`, and the tool-versions step lets you pin Go, Node.js, Bun, etc. individually. Some steps are shown conditionally (e.g., credentials only when other workspaces exist). Re-run it at any time to reconfigure.
+The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through roles, languages, tools, per-tool versions, packages, workspace name, credentials, agents, plugins, settings, firewall (domain allowlist), and review. When you re-run it, the main menu also offers **Subagent Management**: per coding agent, check the host's subagents to use in a workspace, set up [claude-router](#claude-router-experimental) backends and their API keys for Claude Code, and create or edit the agent's [master skill](#master-skill). What you do there is saved at once, not at the review step. The settings step includes an **Auto-update tools to latest** option that sets unpinned managed tools to `latest`, and the tool-versions step lets you pin Go, Node.js, Bun, etc. individually. Some steps are shown conditionally (e.g., credentials only when other workspaces exist). Re-run it at any time to reconfigure.
 
 ### config.yaml
 

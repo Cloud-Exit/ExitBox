@@ -61,6 +61,12 @@ var ExitboxKVAmd64 []byte
 //go:embed build/exitbox-kv-arm64
 var ExitboxKVArm64 []byte
 
+//go:embed build/exitbox-router-amd64
+var ExitboxRouterAmd64 []byte
+
+//go:embed build/exitbox-router-arm64
+var ExitboxRouterArm64 []byte
+
 //go:embed config/allowlist.txt
 var DefaultAllowlistTxt []byte
 

@@ -111,6 +111,9 @@ func BuildPlugins(ctx context.Context, rt container.Runtime, agentName, projectD
 	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
 		return "", fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
+	if err := writePluginFiles(buildCtx, plugins.BuildFiles(ws, agentName)); err != nil {
+		return "", err
+	}
 
 	args := buildArgs(cmd)
 	if force {
@@ -134,4 +137,19 @@ func BuildPlugins(ctx context.Context, rt container.Runtime, agentName, projectD
 
 	ui.Successf("%s plugins image built", agentName)
 	return imageName, nil
+}
+
+// writePluginFiles puts the files plugins ship themselves (e.g. a prebuilt
+// binary) into the build context, where their Dockerfile snippets COPY
+// them from. A name with a path in it is refused: files stay in the context.
+func writePluginFiles(buildCtx string, files map[string][]byte) error {
+	for name, data := range files {
+		if name == "" || name != filepath.Base(name) || name == "Dockerfile" {
+			return fmt.Errorf("plugin file name %q is not allowed in the build context", name)
+		}
+		if err := os.WriteFile(filepath.Join(buildCtx, name), data, 0755); err != nil {
+			return fmt.Errorf("failed to write plugin file %s: %w", name, err)
+		}
+	}
+	return nil
 }

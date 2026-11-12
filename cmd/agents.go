@@ -17,13 +17,16 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/profile"
+	"github.com/cloud-exit/exitbox/internal/subagents"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -31,17 +34,235 @@ import (
 func newAgentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agents",
-		Short: "Manage per-workspace agent instructions (agents.md)",
-		Long: "Manage the agents.md file that provides custom instructions to AI agents.\n\n" +
-			"Each workspace has its own agents.md file. On container start, ExitBox\n" +
-			"combines your agents.md with its sandbox instructions into the agent's\n" +
-			"instruction file (e.g. ~/.claude/CLAUDE.md).\n\n" +
-			"Your agents.md is never modified by ExitBox — it is fully user-owned.",
+		Short: "Manage per-workspace agent instructions, master skills and subagents",
+		Long: "Manage what the agents of a workspace are told to do.\n\n" +
+			"agents.md (edit, show, path)\n" +
+			"  Each workspace has its own agents.md file. On container start, ExitBox\n" +
+			"  combines your agents.md with its sandbox instructions into the agent's\n" +
+			"  instruction file (e.g. ~/.claude/CLAUDE.md).\n" +
+			"  Your agents.md is never modified by ExitBox. It is fully user-owned.\n\n" +
+			"Master skill (skill)\n" +
+			"  One SKILL.md per coding agent that tells it which tasks to hand to which\n" +
+			"  subagent or third-party agent. Edit it to set your own routing rules.\n\n" +
+			"Subagents (subagents)\n" +
+			"  The subagents of each coding agent that tasks can be handed to. Same\n" +
+			"  commands as 'exitbox subagents'.",
 	}
 
 	cmd.AddCommand(newAgentsEditCmd())
 	cmd.AddCommand(newAgentsShowCmd())
 	cmd.AddCommand(newAgentsPathCmd())
+	cmd.AddCommand(newAgentsSkillCmd())
+	cmd.AddCommand(newSubagentsCmd())
+	return cmd
+}
+
+func newAgentsSkillCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "skill",
+		Short: "Manage a coding agent's master skill (task routing rules)",
+		Long: `Manage the master skill of a coding agent in a workspace: a SKILL.md that
+tells the agent which tasks to hand to which subagent or third-party agent.
+
+'edit' creates it on first use, with one route for every subagent stored for
+that agent. After that the file is yours; ExitBox never rewrites it.
+
+Each agent has its own master skill, because each has its own subagents.
+Pick the agent with --agent (` + strings.Join(agentNames(hasSkills), ", ") + `); you can leave it
+out when only one enabled agent can have one.
+
+On container start the skill is linked into the agent's skill directory as
+'` + subagents.MasterSkillName + `'. It lives in the workspace's subagent store, which is
+mounted read-only, so a session cannot change the rules the next one follows.`,
+		SilenceUsage: true,
+	}
+	cmd.AddCommand(
+		newAgentsSkillEditCmd(),
+		newAgentsSkillShowCmd(),
+		newAgentsSkillPathCmd(),
+		newAgentsSkillRmCmd(),
+		newAgentsSkillReviewerCmd(),
+	)
+	for _, c := range cmd.Commands() {
+		c.SilenceUsage = true
+	}
+	return cmd
+}
+
+// skillTarget resolves the workspace and coding agent of a skill command.
+func skillTarget(workspace, agent string) (string, *subagents.Harness, error) {
+	ws, err := resolveSubagentsWorkspace(workspace)
+	if err != nil {
+		return "", nil, err
+	}
+	h, err := pickHarness(agent, hasSkills)
+	return ws, h, err
+}
+
+func newAgentsSkillEditCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:   "edit",
+		Short: "Edit the master skill in $EDITOR and validate it",
+		Long: `Open the agent's master skill in $EDITOR (default vi) and validate it when
+the editor exits. Creates the skill first when the agent has none.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			path, created, err := h.EnsureMasterSkill(ws)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if created {
+				_, _ = fmt.Fprintf(out, "Created %s\n", path)
+			}
+			if err := runEditor(path); err != nil {
+				return fmt.Errorf("editor exited with error: %w", err)
+			}
+			fs, err := h.MasterSkillFindings(ws)
+			if err != nil {
+				return err
+			}
+			printFindings(cmd.ErrOrStderr(), "  ", fs)
+			if subagents.HasErrors(fs) {
+				return fmt.Errorf("the master skill has errors; %s will skip it. Fix with: exitbox agents skill edit --agent %s -w %s", h.Label, h.Agent, ws)
+			}
+			_, _ = fmt.Fprintln(out, nextStartNote)
+			return nil
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
+	return cmd
+}
+
+func newAgentsSkillShowCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print the master skill",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			data, err := h.ReadMasterSkill(ws)
+			if errors.Is(err, subagents.ErrNotFound) {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No %s master skill in workspace '%s'.\nCreate one with: exitbox agents skill edit --agent %s -w %s\n",
+					h.Label, ws, h.Agent, ws)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(data)
+			return err
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
+	return cmd
+}
+
+func newAgentsSkillReviewerCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:   "reviewer [subagent|main]",
+		Short: "Show or set who reviews delegated work",
+		Long: `Show or set the Reviewer line of the master skill.
+
+By default the main agent reviews every result its subagents return. Name a
+stored subagent to hand reviews to it instead, or 'main' to take them back.
+Only the Reviewer line changes; the rest of the file stays as you wrote it.`,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSubagentNames,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(args) == 0 {
+				r, err := h.MasterSkillReviewer(ws)
+				if errors.Is(err, subagents.ErrNotFound) {
+					return fmt.Errorf("no %s master skill in workspace '%s'; create one with: exitbox agents skill edit --agent %s -w %s", h.Label, ws, h.Agent, ws)
+				}
+				if err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintln(out, r)
+				return nil
+			}
+			if err := h.SetMasterSkillReviewer(ws, args[0]); err != nil {
+				if errors.Is(err, subagents.ErrNoReviewerLine) {
+					return fmt.Errorf("%w; add a line \"Reviewer: main agent\" with: exitbox agents skill edit --agent %s -w %s", err, h.Agent, ws)
+				}
+				return err
+			}
+			r, err := h.MasterSkillReviewer(ws)
+			if err != nil {
+				return err
+			}
+			if r == subagents.ReviewerSelf {
+				_, _ = fmt.Fprintf(out, "The main agent reviews delegated work. %s\n", nextStartNote)
+			} else {
+				_, _ = fmt.Fprintf(out, "%s reviews delegated work. %s\n", r, nextStartNote)
+			}
+			return nil
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
+	return cmd
+}
+
+func newAgentsSkillPathCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:   "path",
+		Short: "Print the path to the master skill",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), h.MasterSkillPath(ws))
+			return nil
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
+	return cmd
+}
+
+func newAgentsSkillRmCmd() *cobra.Command {
+	var workspace, agent string
+	cmd := &cobra.Command{
+		Use:     "rm",
+		Aliases: []string{"remove"},
+		Short:   "Remove the master skill",
+		Long:    "Remove the agent's master skill. Its link in the container is dropped at the next start.",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ws, h, err := skillTarget(workspace, agent)
+			if err != nil {
+				return err
+			}
+			if err := h.RemoveMasterSkill(ws); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed the %s master skill from workspace '%s'.\n%s\n", h.Label, ws, nextStartNote)
+			return nil
+		},
+	}
+	addWorkspaceFlag(cmd, &workspace)
+	addAgentFlag(cmd, &agent, hasSkills)
 	return cmd
 }
 

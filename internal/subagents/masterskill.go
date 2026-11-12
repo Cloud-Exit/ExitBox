@@ -1,0 +1,309 @@
+// ExitBox - Multi-Agent Container Sandbox
+// Copyright (C) 2026 Cloud Exit B.V.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package subagents
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
+)
+
+// MasterSkillName is the master skill's directory, and the name agents see.
+// The Agent Skills format wants the frontmatter name to match the directory.
+const MasterSkillName = "master-skill"
+
+const (
+	masterSkillFile = "SKILL.md"
+	// maxSkillDescription is the Agent Skills limit on a description.
+	maxSkillDescription = 1024
+)
+
+// MasterSkillDir returns the host directory of the agent's master skill in
+// a workspace. It sits inside the agent's subagent store, so the container
+// sees it read-only.
+func (h *Harness) MasterSkillDir(workspace string) string {
+	return filepath.Join(h.StoreDir(workspace), MasterSkillName)
+}
+
+// MasterSkillPath returns the host path of the agent's master SKILL.md.
+func (h *Harness) MasterSkillPath(workspace string) string {
+	return filepath.Join(h.MasterSkillDir(workspace), masterSkillFile)
+}
+
+// MasterSkillExists reports whether the agent has a master skill.
+func (h *Harness) MasterSkillExists(workspace string) bool {
+	info, err := os.Stat(h.MasterSkillPath(workspace))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// EnsureMasterSkill writes the default master skill when the agent has
+// none, with a route for every stored subagent. An existing file is never
+// touched. It returns the path and whether the file was created.
+func (h *Harness) EnsureMasterSkill(workspace string) (string, bool, error) {
+	if !h.Skills {
+		return "", false, fmt.Errorf("ExitBox does not link skills for %s", h.Label)
+	}
+	path := h.MasterSkillPath(workspace)
+	if _, err := os.Lstat(path); err == nil {
+		return path, false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", false, err
+	}
+	entries, err := h.ListStore(workspace)
+	if err != nil {
+		return "", false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", false, fmt.Errorf("creating master skill: %w", err)
+	}
+	if err := writeFileAtomic(path, h.DefaultMasterSkill(entries)); err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
+
+// ReadMasterSkill returns the agent's master skill, or ErrNotFound.
+func (h *Harness) ReadMasterSkill(workspace string) ([]byte, error) {
+	data, err := readAgentFile(h.MasterSkillPath(workspace))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%s master skill %w", h.Label, ErrNotFound)
+	}
+	return data, err
+}
+
+// RemoveMasterSkill deletes the agent's master skill, or returns ErrNotFound.
+func (h *Harness) RemoveMasterSkill(workspace string) error {
+	dir := h.MasterSkillDir(workspace)
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s master skill %w", h.Label, ErrNotFound)
+	} else if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// MasterSkillFindings validates the agent's master skill. It returns
+// nothing when there is none.
+func (h *Harness) MasterSkillFindings(workspace string) ([]Finding, error) {
+	data, err := h.ReadMasterSkill(workspace)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return CheckMasterSkill(data), nil
+}
+
+// CheckMasterSkill validates a master SKILL.md against the Agent Skills
+// format. Errors are files that agents skip.
+func CheckMasterSkill(data []byte) []Finding {
+	const skipped = "; agents skip a skill without it"
+	fm, _, problem := frontmatterBlock(data)
+	if problem != "" {
+		return []Finding{{Severity: Error, Message: problem + "; agents skip a skill without frontmatter"}}
+	}
+	var fields map[string]any
+	if err := yaml.Unmarshal([]byte(fm), &fields); err != nil {
+		return []Finding{{Severity: Error, Message: "frontmatter YAML does not parse: " + yamlErr(err)}}
+	}
+
+	var out []Finding
+	name, ok := fields["name"].(string)
+	switch {
+	case !ok || strings.TrimSpace(name) == "":
+		out = append(out, Finding{Severity: Error, Field: "name", Message: "missing or not a string" + skipped})
+	case name != MasterSkillName:
+		out = append(out, Finding{Severity: Warning, Field: "name", Message: fmt.Sprintf(
+			"%q differs from the skill's directory %q; some agents skip a skill whose name does not match", name, MasterSkillName)})
+	}
+	desc, ok := fields["description"].(string)
+	switch {
+	case !ok || strings.TrimSpace(desc) == "":
+		out = append(out, Finding{Severity: Error, Field: "description", Message: "missing or not a string" + skipped})
+	case utf8.RuneCountInString(desc) > maxSkillDescription:
+		out = append(out, Finding{Severity: Warning, Field: "description", Message: fmt.Sprintf(
+			"is longer than %d characters; some agents truncate or skip it", maxSkillDescription)})
+	}
+	return out
+}
+
+const masterSkillHead = `---
+name: ` + MasterSkillName + `
+description: How to coordinate work in this workspace. Says which subagent does which task and who reviews the result. Read it before any task with more than one step.
+---
+
+# Master skill
+
+You are the coordinator. The owner of this workspace decides here which
+subagent does which kind of work and who reviews it. These rules come before
+your own judgement about delegation.
+
+## How to work
+
+1. Plan first. Split the request into tasks small enough to hand off, and note which ones depend on each other.
+2. Match each task against the routes below, top to bottom. The first match wins. When no route matches, hand the task to the subagent whose description fits it best. Run independent tasks in parallel.
+3. Write every brief so it stands on its own: the goal, the files involved, the constraints, and what to return. A subagent does not see this conversation.
+4. Do a task yourself only when no route matches and no subagent fits it, or when its subagent is not available in this session. Otherwise keep your own work to planning, coordinating and reviewing.
+5. Send every result to the reviewer below before you rely on it or report it as done.
+6. When you report back, say which subagent did each task and what the review found.
+
+## Routes
+
+| When the task is | Send it to | Notes |
+|:--|:--|:--|
+`
+
+const masterSkillReview = `
+## Review
+
+` + reviewerPrefix + reviewerSelf + `
+
+"` + reviewerSelf + `" means you review every result yourself: read the changes, run
+the tests, and check the work against its brief. Send what fails back to the
+subagent that did it, with the reason, and review again.
+
+To hand reviews to a subagent instead, replace "` + reviewerSelf + `" on the Reviewer line
+with the subagent's name in backticks, such as ` + "`code-reviewer`" + `. Give it the brief,
+the result and the changes, and act on its findings. A subagent never reviews
+its own work: review that task yourself.
+`
+
+const masterSkillTail = `
+## Third-party agents
+
+A third-party agent is a subagent that runs on a model from another provider,
+or a separate agent CLI. When work goes to one:
+
+- Send only what the task needs. Never put secrets, credentials or vault values in the brief.
+- Its result goes through review like any other.
+`
+
+// The Reviewer line of the master skill. ExitBox reads and changes only
+// this line; the rest of the file is the owner's.
+const (
+	reviewerPrefix = "Reviewer: "
+	reviewerSelf   = "main agent"
+)
+
+// ReviewerSelf is the reviewer value that means the main agent reviews.
+const ReviewerSelf = reviewerSelf
+
+// DefaultMasterSkill renders the starting master skill, with one route per
+// loadable subagent in entries.
+func (h *Harness) DefaultMasterSkill(entries []Entry) []byte {
+	var b strings.Builder
+	b.WriteString(masterSkillHead)
+	rows := 0
+	for _, e := range entries {
+		if e.Def == nil || e.Def.Name == "" || SkipErrors(e.Findings) {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("| %s | `%s` | %s |\n", tableCell(e.Def.Description), tableCell(e.Def.Name), h.routeNote(e.Def.Model)))
+		rows++
+	}
+	if rows == 0 {
+		b.WriteString("| _No routes yet: tasks go to the subagent whose description fits best. Add rows to decide yourself._ | | |\n")
+	}
+	b.WriteString(masterSkillReview)
+	b.WriteString(masterSkillTail)
+	return []byte(b.String())
+}
+
+// routeNote describes the model a route runs on.
+func (h *Harness) routeNote(model string) string {
+	switch {
+	case model == "" || model == "inherit":
+		return "main model"
+	case h == Claude && ClassifyModel(model) == ModelOther:
+		return "third-party model " + tableCell(model)
+	}
+	return "model " + tableCell(model)
+}
+
+// tableCell flattens text into one Markdown table cell.
+func tableCell(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.ReplaceAll(s, "|", `\|`)
+}
+
+// ErrNoReviewerLine means the master skill has no "Reviewer:" line to read
+// or change, because its owner removed or reworded it.
+var ErrNoReviewerLine = errors.New("the master skill has no \"" + strings.TrimSpace(reviewerPrefix) + "\" line")
+
+// findReviewer returns the index of the Reviewer line and its value: a
+// subagent name, or ReviewerSelf.
+func findReviewer(lines []string) (int, string) {
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if !strings.HasPrefix(t, reviewerPrefix) {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(t, reviewerPrefix))
+		v = strings.Trim(v, "`*_ ")
+		if v == "" || strings.EqualFold(v, reviewerSelf) {
+			v = reviewerSelf
+		}
+		return i, v
+	}
+	return -1, ""
+}
+
+// MasterSkillReviewer returns who reviews delegated work: a subagent name,
+// or ReviewerSelf for the main agent.
+func (h *Harness) MasterSkillReviewer(workspace string) (string, error) {
+	data, err := h.ReadMasterSkill(workspace)
+	if err != nil {
+		return "", err
+	}
+	if i, v := findReviewer(strings.Split(string(data), "\n")); i >= 0 {
+		return v, nil
+	}
+	return "", ErrNoReviewerLine
+}
+
+// SetMasterSkillReviewer changes the Reviewer line of the master skill.
+// reviewer is a stored subagent's name, or ReviewerSelf (also "" or
+// "main") for the main agent. Nothing else in the file changes.
+func (h *Harness) SetMasterSkillReviewer(workspace, reviewer string) error {
+	reviewer = strings.TrimSpace(reviewer)
+	value := reviewerSelf
+	if reviewer != "" && reviewer != "main" && !strings.EqualFold(reviewer, reviewerSelf) {
+		if _, err := h.Find(workspace, reviewer); err != nil {
+			return err
+		}
+		value = "`" + reviewer + "`"
+	}
+	data, err := h.ReadMasterSkill(workspace)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	i, _ := findReviewer(lines)
+	if i < 0 {
+		return ErrNoReviewerLine
+	}
+	indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+	lines[i] = indent + reviewerPrefix + value
+	return writeFileAtomic(h.MasterSkillPath(workspace), []byte(strings.Join(lines, "\n")))
+}

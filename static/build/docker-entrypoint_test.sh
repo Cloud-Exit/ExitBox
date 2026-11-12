@@ -1815,6 +1815,206 @@ test_link_skills_pi() {
 test_link_skills_pi
 
 # ============================================================================
+# Test: link_subagents links the store into ~/.claude/agents, keeps real
+# files, removes dangling store links, and leaves foreign files alone
+# ============================================================================
+test_link_subagents_claude() {
+    local base home other result
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    other="$(mktemp -d "$TEST_TMPDIR/subother.XXXXXX")"
+    mkdir -p "$base/default/subagents/claude" "$home/claude-real/agents"
+    printf -- '---\nname: reviewer\ndescription: d\n---\n' > "$base/default/subagents/claude/reviewer.md"
+    printf -- '---\nname: mine\ndescription: managed\n---\n' > "$base/default/subagents/claude/mine.md"
+    printf -- 'x' > "$base/default/subagents/claude/notes.txt"
+    mkdir -p "$base/default/subagents/claude/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$base/default/subagents/claude/master-skill/SKILL.md"
+    ln -s "$home/claude-real" "$home/.claude"
+    # Real file created in the container with the same file name as a managed one.
+    printf -- '---\nname: mine\ndescription: container\n---\n' > "$home/claude-real/agents/mine.md"
+    # Stale link into the store (subagent removed on the host).
+    ln -s "$base/default/subagents/claude/gone.md" "$home/claude-real/agents/gone.md"
+    # Foreign files: a real file, a link elsewhere, a dangling link elsewhere.
+    printf -- 'own' > "$home/claude-real/agents/own.md"
+    printf -- 'x' > "$other/elsewhere.md"
+    ln -s "$other/elsewhere.md" "$home/claude-real/agents/elsewhere.md"
+    ln -s "$other/missing.md" "$home/claude-real/agents/foreign-dangling.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="claude"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        link_subagents 2>&1
+        a="$home/claude-real/agents"
+        [[ -L "$a/reviewer.md" && "$(readlink "$a/reviewer.md")" == "$base/default/subagents/claude/reviewer.md" ]] && echo "LINKED"
+        [[ ! -L "$a/mine.md" ]] && grep -q container "$a/mine.md" && echo "REAL_KEPT"
+        [[ ! -e "$a/gone.md" && ! -L "$a/gone.md" ]] && echo "DANGLING_REMOVED"
+        [[ -f "$a/own.md" && ! -L "$a/own.md" ]] && echo "OWN_KEPT"
+        [[ "$(readlink "$a/elsewhere.md")" == "$other/elsewhere.md" ]] && echo "FOREIGN_LINK_KEPT"
+        [[ -L "$a/foreign-dangling.md" ]] && echo "FOREIGN_DANGLING_KEPT"
+        [[ ! -e "$a/notes.txt" ]] && echo "NON_MD_SKIPPED"
+        [[ -z "$(find "$a" -iname '*master-skill*' -o -name 'SKILL.md')" ]] && echo "MASTER_SKILL_SKIPPED"
+    )"
+    assert_contains "link_subagents links store files" "$result" "LINKED"
+    assert_contains "link_subagents keeps a real file with the same name" "$result" "REAL_KEPT"
+    assert_contains "link_subagents warns about the skipped name" "$result" "[WARN] Subagent mine.md"
+    assert_contains "link_subagents removes dangling store links" "$result" "DANGLING_REMOVED"
+    assert_contains "link_subagents leaves real foreign files" "$result" "OWN_KEPT"
+    assert_contains "link_subagents leaves foreign links" "$result" "FOREIGN_LINK_KEPT"
+    assert_contains "link_subagents leaves dangling foreign links" "$result" "FOREIGN_DANGLING_KEPT"
+    assert_contains "link_subagents only links .md files" "$result" "NON_MD_SKIPPED"
+    assert_contains "link_subagents does not link the master skill as a subagent" "$result" "MASTER_SKILL_SKIPPED"
+}
+
+test_link_subagents_claude
+
+# ============================================================================
+# Test: link_subagents does nothing for an agent without stored subagents:
+# another agent's store is not its own
+# ============================================================================
+test_link_subagents_other_agents() {
+    local base home result
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    mkdir -p "$base/default/subagents/claude" "$home/.claude" "$home/.codex"
+    printf -- '---\nname: r\ndescription: d\n---\n' > "$base/default/subagents/claude/r.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        for AGENT in codex opencode pi kimi; do
+            export AGENT
+            link_subagents
+        done
+        [[ -e "$home/.claude/agents" ]] && echo "TOUCHED_CLAUDE"
+        find "$home" -name 'r.md' | grep -q . && echo "LINKED_SOMEWHERE"
+        export AGENT=claude EXITBOX_WORKSPACE_NAME=empty
+        link_subagents
+        [[ -e "$home/.claude/agents" ]] && echo "CREATED_EMPTY_DIR"
+        echo done
+    )" 2>/dev/null
+    assert_eq "link_subagents does nothing for an agent without its own store" "done" "$result"
+}
+
+test_link_subagents_other_agents
+
+# ============================================================================
+# Test: link_subagents copies each other agent's store into that agent's own
+# agents directory, with the agent's own file extension
+# ============================================================================
+test_link_subagents_copy() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    mkdir -p "$home/.codex" "$home/.copilot" "$home/.cursor" "$home/.kimi-code" "$home/.config/opencode" "$home/.qwen" "$home/.pi"
+    for agent in codex copilot cursor kimi opencode qwen pi; do
+        mkdir -p "$base/default/subagents/$agent/master-skill"
+        printf -- 'skill' > "$base/default/subagents/$agent/master-skill/SKILL.md"
+        printf -- 'wrong extension' > "$base/default/subagents/$agent/notes.txt"
+    done
+    printf -- 'name = "x"\n' > "$base/default/subagents/codex/x.toml"
+    printf -- 'not toml' > "$base/default/subagents/codex/x.md"
+    printf -- 'copilot' > "$base/default/subagents/copilot/x.agent.md"
+    printf -- 'plain md is not a copilot agent' > "$base/default/subagents/copilot/y.md"
+    for agent in cursor kimi opencode qwen pi; do
+        printf -- '%s' "$agent" > "$base/default/subagents/$agent/x.md"
+    done
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        for AGENT in codex copilot cursor kimi opencode qwen pi; do
+            export AGENT
+            link_subagents 2>&1
+        done
+        check() { # agent dir file
+            local f="$home/$2/agents/$3"
+            [[ -f "$f" && ! -L "$f" ]] && cmp -s "$f" "$base/default/subagents/$1/$3" \
+                && [[ "$(cat "$home/$2/agents/.exitbox-subagents")" == "$3" ]] && echo "COPIED:$1"
+        }
+        check codex .codex x.toml
+        check copilot .copilot x.agent.md
+        check cursor .cursor x.md
+        check kimi .kimi-code x.md
+        check opencode .config/opencode x.md
+        check qwen .qwen x.md
+        [[ ! -e "$home/.codex/agents/x.md" && ! -e "$home/.copilot/agents/y.md" ]] && echo "OTHER_EXT_SKIPPED"
+        [[ -z "$(find "$home" -name 'notes.txt' -o -name 'SKILL.md' -o -name 'master-skill')" ]] && echo "ONLY_AGENT_FILES"
+        [[ ! -e "$home/.pi/agents" ]] && echo "PI_UNTOUCHED"
+    )"
+    for agent in codex copilot cursor kimi opencode qwen; do
+        assert_contains "link_subagents copies the $agent store into its agents directory" "$result" "COPIED:$agent"
+    done
+    assert_contains "link_subagents copies only files with the agent's extension" "$result" "OTHER_EXT_SKIPPED"
+    assert_contains "link_subagents copies no notes or master skill as subagents" "$result" "ONLY_AGENT_FILES"
+    assert_contains "link_subagents does nothing for Pi, which has no subagents" "$result" "PI_UNTOUCHED"
+}
+
+test_link_subagents_copy
+
+# ============================================================================
+# Test: copied subagents are refreshed and removed on the next start, and
+# the container's own files are never touched
+# ============================================================================
+test_link_subagents_copy_refresh() {
+    local base home result store a
+    base="$(mktemp -d "$TEST_TMPDIR/subws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/subhome.XXXXXX")"
+    store="$base/default/subagents/qwen"
+    a="$home/.qwen/agents"
+    mkdir -p "$store" "$a" "$home/outside"
+    printf -- 'v1' > "$store/keep.md"
+    printf -- 'v1' > "$store/gone.md"
+    printf -- 'managed' > "$store/mine.md"
+    # The container has its own file with a managed file's name, and one of its own.
+    printf -- 'container' > "$a/mine.md"
+    printf -- 'own' > "$a/own.md"
+    printf -- 'safe' > "$home/outside/victim.md"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export AGENT="qwen"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_subagents)"
+        link_subagents 2>&1
+        [[ "$(cat "$a/mine.md")" == "container" ]] && echo "REAL_KEPT"
+        ! grep -qx 'mine.md' "$a/.exitbox-subagents" && echo "REAL_NOT_CLAIMED"
+
+        # Next start: the session edited a copy, one subagent was removed on
+        # the host, one changed, and the manifest was tampered with.
+        printf -- 'edited in the container' > "$a/keep.md"
+        rm "$store/gone.md"
+        printf -- 'v2' > "$store/keep.md"
+        printf -- '../../outside/victim.md\n' >> "$a/.exitbox-subagents"
+        link_subagents 2>/dev/null
+        [[ "$(cat "$a/keep.md")" == "v2" ]] && echo "REFRESHED"
+        [[ ! -e "$a/gone.md" ]] && echo "REMOVED"
+        [[ "$(cat "$a/own.md")" == "own" && "$(cat "$a/mine.md")" == "container" ]] && echo "OWN_KEPT"
+        [[ "$(cat "$home/outside/victim.md")" == "safe" ]] && echo "MANIFEST_CONFINED"
+        [[ "$(cat "$a/.exitbox-subagents")" == "keep.md" ]] && echo "MANIFEST_REWRITTEN"
+
+        # The whole store is removed on the host: the copies go, the rest stays.
+        rm -rf "$store"
+        link_subagents 2>/dev/null
+        [[ ! -e "$a/keep.md" && ! -e "$a/.exitbox-subagents" && -f "$a/own.md" ]] && echo "STORE_GONE_CLEANED"
+    )"
+    assert_contains "link_subagents keeps a container file with a managed name" "$result" "REAL_KEPT"
+    assert_contains "link_subagents warns about the skipped copy" "$result" "[WARN] Subagent mine.md"
+    assert_contains "link_subagents does not claim a file it did not copy" "$result" "REAL_NOT_CLAIMED"
+    assert_contains "link_subagents refreshes a copy from the store" "$result" "REFRESHED"
+    assert_contains "link_subagents removes the copy of a removed subagent" "$result" "REMOVED"
+    assert_contains "link_subagents leaves the container's own files" "$result" "OWN_KEPT"
+    assert_contains "link_subagents ignores manifest entries outside the agents directory" "$result" "MANIFEST_CONFINED"
+    assert_contains "link_subagents rewrites its manifest" "$result" "MANIFEST_REWRITTEN"
+    assert_contains "link_subagents removes its copies when the store is gone" "$result" "STORE_GONE_CLEANED"
+}
+
+test_link_subagents_copy_refresh
+
+# ============================================================================
 # Test: workspace_switch_menu signals the host and never writes config.yaml
 # (mounted read-only; a writable config let agents alter the next run).
 # ============================================================================
@@ -1894,6 +2094,101 @@ test_link_skills_skips_real_dir() {
 }
 
 test_link_skills_skips_real_dir
+
+# ============================================================================
+# Test: link_skills links the master skill from the read-only subagent store
+# into every skill-capable agent, without needing a skills store
+# ============================================================================
+test_link_skills_master_skill() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/masterws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/masterhome.XXXXXX")"
+    mkdir -p "$home/.claude" "$home/.config/opencode" "$home/.pi" "$home/.kimi-code" "$home/.qwen"
+    for agent in claude codex opencode pi kimi qwen; do
+        mkdir -p "$base/default/subagents/$agent/master-skill"
+        printf -- '---\nname: master-skill\ndescription: routes for %s\n---\n' "$agent" > "$base/default/subagents/$agent/master-skill/SKILL.md"
+    done
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        check() { # agent dir
+            [[ "$(readlink "$home/$2/master-skill")" == "$base/default/subagents/$1/master-skill" ]] \
+                && grep -q "routes for $1" "$home/$2/master-skill/SKILL.md" && echo "LINKED:$1:$2"
+        }
+        for AGENT in claude codex opencode pi kimi qwen; do
+            export AGENT
+            link_skills
+            # Each agent gets its own master skill, also in the shared ~/.agents/skills.
+            [[ "$AGENT" != claude && "$AGENT" != qwen ]] && check "$AGENT" .agents/skills
+        done
+        check claude .claude/skills
+        check opencode .config/opencode/skills
+        check pi .pi/agent/skills
+        check kimi .kimi-code/skills
+        [[ ! -e "$home/.qwen/skills" ]] && echo "QWEN_UNTOUCHED"
+    )" 2>/dev/null
+    assert_contains "link_skills links Claude's master skill" "$result" "LINKED:claude:.claude/skills"
+    assert_contains "link_skills links Codex's master skill into ~/.agents/skills" "$result" "LINKED:codex:.agents/skills"
+    assert_contains "link_skills links OpenCode's master skill" "$result" "LINKED:opencode:.config/opencode/skills"
+    assert_contains "link_skills links Pi's master skill" "$result" "LINKED:pi:.pi/agent/skills"
+    assert_contains "link_skills links Kimi's master skill" "$result" "LINKED:kimi:.kimi-code/skills"
+    assert_contains "link_skills creates no skill dir for an agent without skill support" "$result" "QWEN_UNTOUCHED"
+}
+
+test_link_skills_master_skill
+
+# ============================================================================
+# Test: a removed master skill loses its link, and a skill of the same name
+# from another source is kept
+# ============================================================================
+test_link_skills_master_skill_conflicts() {
+    local base home result agent
+    base="$(mktemp -d "$TEST_TMPDIR/masterws.XXXXXX")"
+    home="$(mktemp -d "$TEST_TMPDIR/masterhome.XXXXXX")"
+    mkdir -p "$base/default/subagents" "$home/.claude/skills" "$home/.kimi-code/skills/master-skill" "$home/.pi/agent/skills"
+    # Claude: a link left behind by a master skill that was removed on the host.
+    ln -s "$base/default/subagents/claude/master-skill" "$home/.claude/skills/master-skill"
+    # Pi: a link to somebody else's skill.
+    mkdir -p "$home/other-skill"
+    ln -s "$home/other-skill" "$home/.pi/agent/skills/master-skill"
+    result="$(
+        export GLOBAL_WORKSPACE_ROOT="$base"
+        export HOME="$home"
+        export EXITBOX_WORKSPACE_NAME="default"
+        eval "$(extract_func link_skills)"
+        AGENT=claude link_skills 2>&1
+        [[ ! -e "$home/.claude/skills/master-skill" && ! -L "$home/.claude/skills/master-skill" ]] && echo "STALE_REMOVED"
+        AGENT=pi link_skills 2>&1
+        [[ "$(readlink "$home/.pi/agent/skills/master-skill")" == "$home/other-skill" ]] && echo "UNRELATED_LINK_UNTOUCHED"
+
+        for agent in claude kimi pi; do
+            mkdir -p "$base/default/subagents/$agent/master-skill"
+            printf -- '---\nname: master-skill\ndescription: routes\n---\n' > "$base/default/subagents/$agent/master-skill/SKILL.md"
+        done
+        AGENT=kimi link_skills 2>&1
+        [[ -d "$home/.kimi-code/skills/master-skill" && ! -L "$home/.kimi-code/skills/master-skill" ]] && echo "REAL_DIR_KEPT"
+        [[ ! -e "$home/.kimi-code/skills/master-skill/master-skill" ]] && echo "NOT_NESTED"
+        AGENT=pi link_skills 2>/dev/null
+        [[ "$(readlink "$home/.pi/agent/skills/master-skill")" == "$home/other-skill" ]] && echo "FOREIGN_LINK_KEPT"
+
+        # A skill installed with `exitbox skills install` under the same name wins.
+        mkdir -p "$base/default/skills/master-skill"
+        printf -- '---\nname: master-skill\n---\n' > "$base/default/skills/master-skill/SKILL.md"
+        AGENT=claude link_skills 2>/dev/null
+        [[ "$(readlink "$home/.claude/skills/master-skill")" == "$base/default/skills/master-skill/" ]] && echo "INSTALLED_SKILL_WINS"
+    )"
+    assert_contains "link_skills drops the link of a removed master skill" "$result" "STALE_REMOVED"
+    assert_contains "link_skills leaves a foreign link alone when there is no master skill" "$result" "UNRELATED_LINK_UNTOUCHED"
+    assert_contains "link_skills keeps a real skill dir named master-skill" "$result" "REAL_DIR_KEPT"
+    assert_contains "link_skills does not nest the master skill in a real dir" "$result" "NOT_NESTED"
+    assert_contains "link_skills warns when another master-skill is in the way" "$result" "[WARN] Master skill"
+    assert_contains "link_skills keeps a foreign link named master-skill" "$result" "FOREIGN_LINK_KEPT"
+    assert_contains "link_skills lets an installed skill of the same name win" "$result" "INSTALLED_SKILL_WINS"
+}
+
+test_link_skills_master_skill_conflicts
 
 # ============================================================================
 # Test: setup_graphify installs/removes the /graphify skill per agent
@@ -2221,6 +2516,305 @@ test_codex_router_state_dir_per_agent() {
         "/home/user/.codex/codex-router /home/user/.claude/codex-router /home/user/.cursor/codex-router" "$out"
 }
 
+# ---- claude-router ----------------------------------------------------------
+
+SETUP_CLAUDE_ROUTER_FUNC="$(extract_func setup_claude_router)"
+CLAUDE_ROUTER_DIR_FUNC="$(extract_func claude_router_dir)"
+
+# make_router_stub writes a stand-in for exitbox-router and exitbox-vault
+# into a bin dir and prints that dir. The stand-in records what it was
+# started with in $ROUTER_STUB_DIR and reports healthy once "up" exists.
+make_router_stub() {
+    local bin
+    bin="$(mktemp -d "$TEST_TMPDIR/crbin.XXXXXX")"
+    cat > "$bin/exitbox-router" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-serve}" in
+    vault-keys)
+        if [[ "$EXITBOX_ROUTER_ROUTES" == *not-a-route* ]]; then
+            echo "exitbox-router: bad route" >&2
+            exit 2
+        fi
+        for k in $ROUTER_STUB_KEYS; do echo "$k"; done
+        ;;
+    health)
+        echo "${2:-}" >> "$ROUTER_STUB_DIR/health-ports"
+        [[ -f "$ROUTER_STUB_DIR/up" ]]
+        ;;
+    serve)
+        env | grep '^EXITBOX_ROUTER_' | sort > "$ROUTER_STUB_DIR/env"
+        if [[ -n "${ROUTER_STUB_FAIL:-}" ]]; then
+            echo "listen tcp 127.0.0.1: address already in use" >&2
+            exit 1
+        fi
+        touch "$ROUTER_STUB_DIR/up"
+        ;;
+esac
+STUB
+    cat > "$bin/exitbox-vault" <<'STUB'
+#!/usr/bin/env bash
+# get <KEY>: one key is missing from the vault.
+[[ "$1" == "get" ]] || exit 1
+[[ "$2" == "KEY_MISSING" ]] && exit 1
+echo "secret-for-$2"
+STUB
+    chmod +x "$bin/exitbox-router" "$bin/exitbox-vault"
+    echo "$bin"
+}
+
+# run_claude_router runs setup_claude_router in a clean shell and prints its
+# output followed by what the calling shell ends up with.
+#   $1 home dir, $2 stub state dir, further args: VAR=value settings
+run_claude_router() {
+    local home="$1" state="$2" bin
+    shift 2
+    bin="$(make_router_stub)"
+    (
+        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY
+        unset EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES EXITBOX_PLUGIN_CLAUDE_ROUTER_PORT
+        unset EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE
+        unset ROUTER_STUB_KEYS ROUTER_STUB_FAIL
+        export HOME="$home" AGENT="claude" ROUTER_STUB_DIR="$state"
+        export PATH="$bin:$PATH"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START="true"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE="true"
+        local kv
+        for kv in "$@"; do export "$kv"; done
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+        echo "AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-unset}"
+        echo "API_KEY=${ANTHROPIC_API_KEY:-unset}"
+        echo "LEAKED=$(env | grep -c 'secret-for-')"
+    ) 2>&1
+}
+
+assert_not_contains() {
+    local desc="$1" haystack="$2" needle="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: $desc: output must not contain '$needle'")
+    fi
+}
+
+test_setup_claude_router_starts_and_points_claude_at_it() {
+    local home state out env
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A,gemma=http://10.0.0.22:8000=vault:KEY_MISSING,phi=http://10.0.0.23:8000=vault:KEY_C" \
+        "ROUTER_STUB_KEYS=KEY_A KEY_MISSING KEY_C")"
+    env="$(cat "$state/env" 2>/dev/null)"
+
+    assert_contains "setup_claude_router exports the base URL on the default port" "$out" "BASE_URL=http://127.0.0.1:4203"
+    assert_contains "setup_claude_router leaves ANTHROPIC_AUTH_TOKEN alone" "$out" "AUTH_TOKEN=unset"
+    assert_contains "setup_claude_router leaves ANTHROPIC_API_KEY alone" "$out" "API_KEY=unset"
+    assert_contains "setup_claude_router keeps tokens out of the agent's environment" "$out" "LEAKED=0"
+    assert_contains "setup_claude_router passes the routes to the router" "$env" \
+        "EXITBOX_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A,gemma=http://10.0.0.22:8000=vault:KEY_MISSING,phi=http://10.0.0.23:8000=vault:KEY_C"
+    assert_contains "setup_claude_router passes the port" "$env" "EXITBOX_ROUTER_PORT=4203"
+    assert_contains "setup_claude_router passes sanitize" "$env" "EXITBOX_ROUTER_SANITIZE=true"
+    assert_contains "setup_claude_router logs into the Claude config dir" "$env" "EXITBOX_ROUTER_LOG=$home/.claude/exitbox-router/router.log"
+    # Tokens go by position, so a missing key must leave its slot empty and
+    # not shift the next token onto it.
+    assert_contains "setup_claude_router hands over the first token" "$env" "EXITBOX_ROUTER_SECRET_0=secret-for-KEY_A"
+    assert_not_contains "setup_claude_router leaves the slot of a missing key empty" "$env" "EXITBOX_ROUTER_SECRET_1="
+    assert_contains "setup_claude_router keeps the third token in its slot" "$env" "EXITBOX_ROUTER_SECRET_2=secret-for-KEY_C"
+    assert_contains "setup_claude_router warns about a missing vault key" "$out" "vault key 'KEY_MISSING' is not available"
+    assert_not_contains "setup_claude_router never prints a token" "$out" "secret-for-"
+}
+
+test_setup_claude_router_uses_the_configured_port() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_PORT=4999" "EXITBOX_PLUGIN_CLAUDE_ROUTER_SANITIZE=false")"
+    assert_contains "setup_claude_router exports the configured port" "$out" "BASE_URL=http://127.0.0.1:4999"
+    assert_contains "setup_claude_router starts the router on the configured port" "$(cat "$state/env")" "EXITBOX_ROUTER_PORT=4999"
+    assert_contains "setup_claude_router passes sanitize=false on" "$(cat "$state/env")" "EXITBOX_ROUTER_SANITIZE=false"
+    assert_contains "setup_claude_router checks health on the configured port" "$(cat "$state/health-ports")" "4999"
+}
+
+test_setup_claude_router_without_routes() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state")"
+    assert_contains "setup_claude_router asks for routes when none are configured" "$out" "no routes configured"
+    assert_contains "setup_claude_router sets no base URL without routes" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing without routes" "$state/env"
+}
+
+test_setup_claude_router_auto_start_off() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "EXITBOX_PLUGIN_CLAUDE_ROUTER_AUTO_START=false")"
+    assert_contains "setup_claude_router sets no base URL with auto_start off" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing with auto_start off" "$state/env"
+}
+
+test_setup_claude_router_failed_start_leaves_claude_alone() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "ROUTER_STUB_FAIL=1")"
+    assert_contains "setup_claude_router leaves the base URL unset when the router fails" "$out" "BASE_URL=unset"
+    assert_contains "setup_claude_router says the router did not start" "$out" "did not start"
+    assert_contains "setup_claude_router names the log file" "$out" "$home/.claude/exitbox-router/start.log"
+    assert_contains "setup_claude_router keeps the router's own error in that log" \
+        "$(cat "$home/.claude/exitbox-router/start.log" 2>/dev/null)" "address already in use"
+}
+
+test_setup_claude_router_respects_an_existing_base_url() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080" "ANTHROPIC_BASE_URL=https://gateway.example.com")"
+    assert_contains "setup_claude_router keeps a base URL that is already set" "$out" "BASE_URL=https://gateway.example.com"
+    assert_contains "setup_claude_router says why it did not start" "$out" "ANTHROPIC_BASE_URL is already set"
+    assert_file_missing "setup_claude_router starts nothing next to another base URL" "$state/env"
+}
+
+test_setup_claude_router_rejects_invalid_routes() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    out="$(run_claude_router "$home" "$state" "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=not-a-route")"
+    assert_contains "setup_claude_router reports routes that do not parse" "$out" "routes setting is not valid"
+    assert_contains "setup_claude_router sets no base URL for invalid routes" "$out" "BASE_URL=unset"
+    assert_file_missing "setup_claude_router starts nothing for invalid routes" "$state/env"
+}
+
+test_setup_claude_router_reuses_a_running_router() {
+    local home state out
+    home="$(mktemp -d "$TEST_TMPDIR/cr.XXXXXX")"; state="$(mktemp -d "$TEST_TMPDIR/crs.XXXXXX")"
+    touch "$state/up"
+    out="$(run_claude_router "$home" "$state" \
+        "EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES=qwen=http://10.0.0.21:8080=vault:KEY_A" "ROUTER_STUB_KEYS=KEY_A")"
+    assert_contains "setup_claude_router points at a router that already runs" "$out" "BASE_URL=http://127.0.0.1:4203"
+    assert_file_missing "setup_claude_router does not start a second router" "$state/env"
+}
+
+test_setup_claude_router_only_for_claude() {
+    local out
+    out="$(
+        unset ANTHROPIC_BASE_URL
+        export AGENT="codex" EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES="qwen=http://10.0.0.21:8080"
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+    )" 2>&1
+    assert_eq "setup_claude_router leaves other agents alone" "BASE_URL=unset" "$out"
+}
+
+test_setup_claude_router_requires_installed_binary() {
+    local out
+    out="$(
+        unset ANTHROPIC_BASE_URL
+        export AGENT="claude" PATH="/nonexistent-dir"
+        export EXITBOX_PLUGIN_CLAUDE_ROUTER_ROUTES="qwen=http://10.0.0.21:8080"
+        eval "$PLUGIN_ENV_VAR_FUNC"; eval "$PLUGIN_SETTING_FUNC"
+        eval "$CLAUDE_ROUTER_DIR_FUNC"; eval "$SETUP_CLAUDE_ROUTER_FUNC"
+        setup_claude_router 2>&1
+        echo "BASE_URL=${ANTHROPIC_BASE_URL:-unset}"
+    )"
+    assert_contains "setup_claude_router reports a missing install" "$out" "not installed in this image"
+    assert_contains "setup_claude_router sets no base URL without the binary" "$out" "BASE_URL=unset"
+}
+
+test_setup_plugins_dispatches_claude_router() {
+    local out
+    out="$(
+        export EXITBOX_PLUGINS="codex-router,claude-router"
+        eval "$SETUP_PLUGINS_FUNC"
+        setup_codex_router() { echo "CODEX"; }
+        setup_claude_router() { echo "CLAUDE"; }
+        setup_plugins
+    )"
+    assert_eq "setup_plugins dispatches claude-router" "CODEX
+CLAUDE" "$out"
+}
+
+# ---- coordination block -----------------------------------------------------
+
+SUBAGENT_FIELD_FUNC="$(extract_func subagent_field)"
+COORDINATION_FUNC="$(extract_func coordination_instructions)"
+
+test_coordination_instructions() {
+    local root out
+    root="$(mktemp -d "$TEST_TMPDIR/coord.XXXXXX")"
+    local store="$root/work/subagents/claude"
+    mkdir -p "$store/master-skill" "$root/work/subagents/codex"
+    printf -- '---\nname: meshai\ndescription: "Coding agent on ExitMesh. Use for implementation."\nmodel: x\n---\nBody mentions description: nothing\n' > "$store/meshai.md"
+    printf -- '---\ndescription: no name field\n---\n' > "$store/nameless.md"
+    printf 'not frontmatter\nname: fake\n' > "$store/plain.md"
+
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_eq "coordination block is empty without a master skill" "" "$out"
+
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$store/master-skill/SKILL.md"
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_contains "coordination block has markers" "$out" "<!-- BEGIN-EXITBOX-COORDINATION -->"
+    assert_contains "coordination block tells the agent to load the skill" "$out" 'load
+the `master-skill` skill and follow it'
+    assert_contains "coordination block forbids doing routed work itself" "$out" "do not make those changes yourself"
+    assert_contains "coordination block lists a subagent with its description" "$out" '- `meshai`: Coding agent on ExitMesh. Use for implementation.'
+    assert_contains "coordination block names a file without a name field by file" "$out" '- `nameless`: no name field'
+    assert_contains "coordination block does not read past the frontmatter" "$out" '- `plain`'
+    assert_not_contains "coordination block reads frontmatter only" "$out" 'fake'
+
+    # Codex: TOML agent files and its own store.
+    mkdir -p "$root/work/subagents/codex/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$root/work/subagents/codex/master-skill/SKILL.md"
+    printf 'name = "pr_explorer"\ndescription = "Read-only explorer"\ndeveloper_instructions = "x"\n' > "$root/work/subagents/codex/pr.toml"
+    out="$(
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=codex
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        coordination_instructions
+    )"
+    assert_contains "coordination block reads Codex TOML" "$out" '- `pr_explorer`: Read-only explorer'
+    assert_not_contains "coordination block lists only the agent's own subagents" "$out" "meshai"
+}
+
+test_inject_sandbox_instructions_adds_coordination() {
+    local root home out
+    root="$(mktemp -d "$TEST_TMPDIR/coord2.XXXXXX")"; home="$(mktemp -d "$TEST_TMPDIR/coordhome.XXXXXX")"
+    mkdir -p "$root/work/subagents/claude/master-skill"
+    printf -- '---\nname: master-skill\ndescription: d\n---\n' > "$root/work/subagents/claude/master-skill/SKILL.md"
+    printf 'User rules.\n' > "$root/work/agents.md"
+    (
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude HOME="$home"
+        SANDBOX_INSTRUCTIONS="<!-- BEGIN-EXITBOX-SANDBOX -->sandbox<!-- END-EXITBOX-SANDBOX -->"
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        eval "$(extract_func inject_sandbox_instructions)"
+        inject_sandbox_instructions
+    )
+    out="$(cat "$home/.claude/CLAUDE.md" 2>/dev/null)"
+    assert_contains "CLAUDE.md keeps the user's rules" "$out" "User rules."
+    assert_contains "CLAUDE.md keeps the sandbox block" "$out" "END-EXITBOX-SANDBOX"
+    assert_contains "CLAUDE.md gets the coordination block" "$out" "BEGIN-EXITBOX-COORDINATION"
+    rm -rf "$root/work/subagents/claude/master-skill"
+    (
+        export GLOBAL_WORKSPACE_ROOT="$root" EXITBOX_WORKSPACE_NAME=work AGENT=claude HOME="$home"
+        SANDBOX_INSTRUCTIONS="sandbox"
+        eval "$SUBAGENT_FIELD_FUNC"; eval "$COORDINATION_FUNC"
+        eval "$(extract_func inject_sandbox_instructions)"
+        inject_sandbox_instructions
+    )
+    assert_not_contains "CLAUDE.md drops the block once the master skill is removed" "$(cat "$home/.claude/CLAUDE.md")" "COORDINATION"
+}
+
 test_codex_router_state_dir_per_agent
 test_plugin_env_var_naming
 test_plugin_setting_plain_value
@@ -2233,6 +2827,19 @@ test_setup_codex_router_requires_installed_binary
 test_setup_codex_router_skips_unsupported_agent
 test_setup_codex_router_configures_and_starts
 test_setup_codex_router_without_providers
+test_setup_claude_router_starts_and_points_claude_at_it
+test_setup_claude_router_uses_the_configured_port
+test_setup_claude_router_without_routes
+test_setup_claude_router_auto_start_off
+test_setup_claude_router_failed_start_leaves_claude_alone
+test_setup_claude_router_respects_an_existing_base_url
+test_setup_claude_router_rejects_invalid_routes
+test_setup_claude_router_reuses_a_running_router
+test_setup_claude_router_only_for_claude
+test_setup_claude_router_requires_installed_binary
+test_setup_plugins_dispatches_claude_router
+test_coordination_instructions
+test_inject_sandbox_instructions_adds_coordination
 
 # ============================================================================
 # Results

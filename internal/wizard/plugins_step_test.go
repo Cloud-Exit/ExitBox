@@ -64,6 +64,15 @@ func TestStepAfterAgents(t *testing.T) {
 	}
 }
 
+// A step missing from View shows a blank screen.
+func TestView_RendersPluginsStep(t *testing.T) {
+	m := modelWithAgents("codex")
+	m.step = stepPlugins
+	if view := m.View(); !strings.Contains(view, "Agent plugins") {
+		t.Errorf("View() at the plugins step = %q, want the plugin list", view)
+	}
+}
+
 func TestPluginRowsCoverSelectedAgents(t *testing.T) {
 	rows := modelWithAgents("codex", "claude").pluginRows()
 	seen := map[string]bool{}
@@ -192,5 +201,94 @@ func TestPluginSummaryHidesSecretValues(t *testing.T) {
 	}
 	if strings.Contains(pluginSummary(p, config.PluginEntry{}), "vault") {
 		t.Error("an unconfigured plugin should just prompt for configuration")
+	}
+}
+
+// pluginRowIndex returns the row of a plugin in the plugins step.
+func pluginRowIndex(t *testing.T, m Model, agentName, pluginName string) int {
+	t.Helper()
+	for i, row := range m.pluginRows() {
+		if row.Agent == agentName && row.Plugin.Name == pluginName {
+			return i
+		}
+	}
+	t.Fatalf("no row for %s / %s", agentName, pluginName)
+	return -1
+}
+
+// claude-router and codex-router both set Claude Code's base URL, so the
+// step lets only one of them be enabled for Claude at a time.
+func TestPluginsStepRefusesTwoRoutersForClaude(t *testing.T) {
+	m := modelWithAgents("claude", "codex")
+	m.step = stepPlugins
+	toggle := func(agentName, pluginName string) {
+		t.Helper()
+		m.pluginCursor = pluginRowIndex(t, m, agentName, pluginName)
+		updated, _ := m.updatePlugins(key(" "))
+		m = updated.(Model)
+	}
+
+	toggle("claude", "claude-router")
+	if !m.pluginEntry("claude", "claude-router").Enabled || m.pluginNote != "" {
+		t.Fatalf("claude-router alone must enable, note %q", m.pluginNote)
+	}
+	toggle("claude", "codex-router")
+	if m.pluginEntry("claude", "codex-router").Enabled {
+		t.Error("codex-router was enabled next to claude-router")
+	}
+	if !strings.Contains(m.pluginNote, "cannot be enabled together") {
+		t.Errorf("no reason shown: %q", m.pluginNote)
+	}
+	if !strings.Contains(m.viewPlugins(), "cannot be enabled together") {
+		t.Error("the reason is not on screen")
+	}
+
+	// The same plugin for another agent is a different matter.
+	toggle("codex", "codex-router")
+	if !m.pluginEntry("codex", "codex-router").Enabled || m.pluginNote != "" {
+		t.Errorf("codex-router for codex must enable, note %q", m.pluginNote)
+	}
+
+	// Turning the first one off frees the second.
+	toggle("claude", "claude-router")
+	toggle("claude", "codex-router")
+	if !m.pluginEntry("claude", "codex-router").Enabled || m.pluginNote != "" {
+		t.Errorf("codex-router must enable once claude-router is off, note %q", m.pluginNote)
+	}
+	toggle("claude", "claude-router")
+	if m.pluginEntry("claude", "claude-router").Enabled || m.pluginNote == "" {
+		t.Error("claude-router was enabled next to codex-router")
+	}
+}
+
+// Enabling from inside the configuration menu is the same switch.
+func TestPluginsStepRefusesTwoRoutersFromTheForm(t *testing.T) {
+	m := modelWithAgents("claude")
+	m.step = stepPlugins
+	m.setPluginEntry("claude", "codex-router", config.PluginEntry{Enabled: true})
+	m.pluginCursor = pluginRowIndex(t, m, "claude", "claude-router")
+
+	updated, _ := m.updatePlugins(key("e"))
+	m = updated.(Model)
+	if m.pluginForm == nil {
+		t.Fatal("the configuration menu did not open")
+	}
+	m.pluginForm.enabled = true
+	m.pluginForm.settings["routes"] = "qwen=http://10.0.0.21:8080"
+	updated, _ = m.updatePlugins(key("s")) // save
+	m = updated.(Model)
+	if m.pluginForm != nil {
+		t.Fatal("saving did not close the menu")
+	}
+
+	entry := m.pluginEntry("claude", "claude-router")
+	if entry.Enabled {
+		t.Error("claude-router was enabled from its menu next to codex-router")
+	}
+	if entry.Settings["routes"] != "qwen=http://10.0.0.21:8080" {
+		t.Errorf("the settings typed in the menu were lost: %v", entry.Settings)
+	}
+	if m.pluginNote == "" {
+		t.Error("no reason shown")
 	}
 }

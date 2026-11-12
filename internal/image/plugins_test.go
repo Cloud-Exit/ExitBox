@@ -17,6 +17,9 @@
 package image
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -96,5 +99,47 @@ func TestWorkspaceHashIncludesGPU(t *testing.T) {
 
 	if WorkspaceHash(base, "codex", dir, "") == WorkspaceHash(withGPU, "codex", dir, "") {
 		t.Error("WorkspaceHash should change when GPU passthrough is enabled")
+	}
+}
+
+func TestPluginsDockerfileForABuiltInPlugin(t *testing.T) {
+	ws := &config.Workspace{Name: "default"}
+	ws.SetPluginEntry("claude", "claude-router", config.PluginEntry{Enabled: true})
+	df := PluginsDockerfile(ws, "claude", "exitbox-claude-tools", plugins.BuildHash(ws, "claude"), distro.Default())
+	for _, want := range []string{"FROM exitbox-claude-tools", "COPY exitbox-router /usr/local/bin/exitbox-router"} {
+		if !strings.Contains(df, want) {
+			t.Errorf("Dockerfile missing %q:\n%s", want, df)
+		}
+	}
+}
+
+func TestWritePluginFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePluginFiles(dir, map[string][]byte{"exitbox-router": []byte("binary")}); err != nil {
+		t.Fatalf("writePluginFiles: %v", err)
+	}
+	path := filepath.Join(dir, "exitbox-router")
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "binary" {
+		t.Fatalf("file = %q, %v", data, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0111 == 0 {
+			t.Errorf("mode = %v, the copied binary must be executable", info.Mode())
+		}
+	}
+	// A plugin cannot write outside the build context or replace the
+	// Dockerfile it is copied by.
+	for _, name := range []string{"../escape", "sub/file", "", "Dockerfile", ".."} {
+		if err := writePluginFiles(dir, map[string][]byte{name: []byte("x")}); err == nil {
+			t.Errorf("file name %q was accepted", name)
+		}
+	}
+	if err := writePluginFiles(dir, nil); err != nil {
+		t.Errorf("no files: %v", err)
 	}
 }
