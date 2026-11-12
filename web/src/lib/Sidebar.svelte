@@ -225,7 +225,7 @@
 					<span class={['truncate text-[13px]', r.kind === 'saved' ? 'font-medium text-ink-2' : 'font-semibold']}>{name}</span>
 					<span class={['truncate font-mono text-[10.5px]', r.kind === 'saved' ? 'text-ink-3' : 'text-ink-2']}>
 						{#if r.kind === 'window'}
-							{r.win.info.agent} · {app.tilde(r.win.info.dir)}{r.win.attached ? ' · terminal' : ''}{r.win.info.exited ? (r.win.attached ? ' · detached' : ' · ended') : r.win.min ? ' · hidden' : ''}
+							{r.win.info.agent} · {app.tilde(r.win.info.dir)}{app.tabs.length > 1 ? ' · ' + (app.tabs.find((t) => t.id === r.win.tab)?.name ?? '') : ''}{r.win.attached ? ' · terminal' : ''}{r.win.info.exited ? (r.win.attached ? ' · detached' : ' · ended') : r.win.min ? ' · hidden' : ''}
 						{:else if r.kind === 'terminal'}
 							{r.run.agent} · {app.tilde(r.run.dir)} · terminal
 						{:else}

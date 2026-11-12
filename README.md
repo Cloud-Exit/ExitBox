@@ -376,6 +376,7 @@ All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format w
 `exitbox web` runs your agent sessions in the browser. Each session is an `exitbox run` in its own terminal window.
 
 - **Tiling**: windows tile themselves like in a tiling window manager such as Hyprland, in a grid by default. They re-tile when a window opens, closes or hides and when the browser resizes, and they never overlap. Drag a title bar onto another window to swap them. Drag an edge to move the split with its neighbour; the neighbour gives way. Grid, Columns and Main + stack are the layouts, and Free turns tiling off so windows float where you put them. Maximize covers the whole page, sidebar included. Your browser remembers the layout, the order and the splits.
+- **Tabs**: each tab is its own tiled desktop, for many more sessions than fit on one screen. Add one with `+`, rename it with a double-click, and drag a window's title bar onto a tab to move it there. Closing a tab moves its windows to the tab next to it; clicking a session in the sidebar opens its tab.
 - **Sidebar**: collapse it to a narrow rail of numbered window buttons with the button at its top.
 - **Focus**: the window you type into is bright with an accent border; the others are dimmed until you hover them.
 

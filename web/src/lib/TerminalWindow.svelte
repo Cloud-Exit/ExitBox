@@ -275,12 +275,29 @@
 					home = { x: win.x, y: win.y, w: win.w, h: win.h };
 				}
 				win.place(ox + ev.clientX - sx, oy + ev.clientY - sy, win.w, win.h);
+				// Over a tab: the window moves there on release.
+				const tabEl = document
+					.elementsFromPoint(ev.clientX, ev.clientY)
+					.map((el) => (el as HTMLElement).closest<HTMLElement>('[data-tab-id]'))
+					.find(Boolean);
+				app.dropTab = tabEl && tabEl.dataset.tabId !== win.tab ? (tabEl.dataset.tabId ?? null) : null;
+				if (app.dropTab) {
+					app.dropTarget = null;
+					return;
+				}
 				if (docking) {
 					const slot = slotAt(ev.clientX, ev.clientY, desk);
 					app.dropTarget = slot && slot !== win ? slot.id : null;
 				}
 			},
 			() => {
+				if (moved && app.dropTab) {
+					const to = app.dropTab;
+					app.dropTab = null;
+					app.dropTarget = null;
+					app.moveToTab(win, to);
+					return;
+				}
 				if (!moved || !docking) return;
 				const target = app.windows.find((w) => w.id === app.dropTarget);
 				app.dropTarget = null;
@@ -409,7 +426,7 @@
 		focused ? 'border-brand shadow-float ring-1 ring-brand' : 'border-line-1 opacity-60 shadow-panel saturate-50 hover:opacity-100 hover:saturate-100',
 		app.dropTarget === win.id && 'outline-2 outline-offset-2 outline-accent',
 		!busy && tiled ? 'transition-[left,top,width,height,opacity] duration-150' : 'transition-opacity duration-150',
-		win.min && 'hidden',
+		(win.min || win.tab !== app.activeTab) && 'hidden',
 		!focused && 'max-md:hidden',
 		'max-md:!inset-0 max-md:!size-full max-md:rounded-none'
 	]}

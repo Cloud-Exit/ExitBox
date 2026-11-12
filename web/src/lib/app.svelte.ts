@@ -13,6 +13,7 @@ interface Geometry {
 	h: number;
 	max?: boolean;
 	min?: boolean;
+	tab?: string;
 }
 
 /** One session window on the desktop. */
@@ -26,6 +27,8 @@ export class Win {
 	min = $state(false);
 	z = $state(0);
 	connected = $state(false);
+	/** The tab the window lives in. */
+	tab = $state('');
 
 	constructor(info: SessionInfo) {
 		this.info = info;
@@ -71,7 +74,7 @@ export class Win {
 	}
 
 	save() {
-		setLocal('win.' + this.id, { x: this.x, y: this.y, w: this.w, h: this.h, max: this.max, min: this.min });
+		setLocal('win.' + this.id, { x: this.x, y: this.y, w: this.w, h: this.h, max: this.max, min: this.min, tab: this.tab });
 	}
 
 	restore(index: number) {
@@ -80,6 +83,7 @@ export class Win {
 			this.place(g.x, g.y, g.w, g.h);
 			this.max = !!g.max;
 			this.min = !!g.min;
+			if (g.tab) this.tab = g.tab;
 			return;
 		}
 		const size = defaultWindowSize();
@@ -121,6 +125,11 @@ export type View = 'loading' | 'login' | 'sessions' | 'settings' | 'offline';
 
 export type DockLayout = 'stack' | 'columns' | 'grid';
 
+export interface Tab {
+	id: string;
+	name: string;
+}
+
 class App {
 	me = $state.raw<Me | null>(null);
 	data = $state.raw<State | null>(null);
@@ -150,6 +159,12 @@ class App {
 	private dockOrder: string[] = local<string[]>('dockOrder') ?? [];
 	/** The window a dragged window would swap with. */
 	dropTarget = $state<string | null>(null);
+	/** Tabs are separate desktops, each tiling its own windows. */
+	tabs = $state<Tab[]>(local<Tab[]>('tabs')?.length ? local<Tab[]>('tabs')! : [{ id: 'main', name: 'Main' }]);
+	activeTab = $state(local<string>('activeTab') ?? 'main');
+	/** The tab a dragged window would move to. */
+	dropTab = $state<string | null>(null);
+
 	/** The sidebar shrinks to a rail of window buttons. */
 	sidebarCollapsed = $state(local<boolean>('sidebarCollapsed') ?? false);
 
@@ -208,8 +223,8 @@ class App {
 		this.view = 'sessions';
 		this.sync(this.data.sessions);
 		this.forgetDock(this.windows.map((w) => w.id));
-		const top = this.windows.filter((w) => !w.min).at(-1);
-		if (top) this.focus(top);
+		this.currentTab();
+		this.focusTop();
 		this.startPolling();
 	}
 
@@ -287,6 +302,10 @@ class App {
 	private addWindow(info: SessionInfo) {
 		const w = new Win(info);
 		w.restore(this.windows.length);
+		if (!this.tabs.some((t) => t.id === w.tab)) {
+			w.tab = this.currentTab();
+			w.save();
+		}
 		w.z = ++this.zTop;
 		this.windows.push(w);
 		if (!this.dockOrder.includes(w.id)) {
@@ -331,6 +350,7 @@ class App {
 	}
 
 	show(w: Win) {
+		if (w.tab !== this.activeTab) this.setTab(w.tab);
 		if (w.min) {
 			w.min = false;
 			w.save();
@@ -344,9 +364,86 @@ class App {
 		w.save();
 		this.retile();
 		if (this.focusedId === w.id) {
-			const next = this.windows.filter((x) => !x.min).sort((a, b) => b.z - a.z)[0];
-			this.focusedId = next ? next.id : null;
+			this.focusTop();
 		}
+	}
+
+	/** Focuses the topmost visible window of the current tab. */
+	private focusTop() {
+		const next = this.windows.filter((x) => !x.min && x.tab === this.activeTab).sort((a, b) => b.z - a.z)[0];
+		if (next) this.focus(next);
+		else this.focusedId = null;
+	}
+
+	// ---------- tabs ----------
+
+	/** The active tab, repaired when it no longer exists. */
+	private currentTab() {
+		if (!this.tabs.some((t) => t.id === this.activeTab)) this.activeTab = this.tabs[0].id;
+		return this.activeTab;
+	}
+
+	private saveTabs() {
+		setLocal('tabs', this.tabs);
+		setLocal('activeTab', this.activeTab);
+	}
+
+	setTab(id: string) {
+		if (!this.tabs.some((t) => t.id === id)) return;
+		this.activeTab = id;
+		this.saveTabs();
+		this.view = 'sessions';
+		this.retile();
+		this.focusTop();
+	}
+
+	addTab() {
+		const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+		let n = this.tabs.length + 1;
+		while (this.tabs.some((t) => t.name === 'Tab ' + n)) n++;
+		this.tabs.push({ id, name: 'Tab ' + n });
+		this.setTab(id);
+		return id;
+	}
+
+	renameTab(id: string, name: string) {
+		const t = this.tabs.find((x) => x.id === id);
+		if (!t || !name.trim()) return;
+		t.name = name.trim().slice(0, 40);
+		this.saveTabs();
+	}
+
+	/** Closes a tab; its windows move to the tab before it (or after, for the first). */
+	closeTab(id: string) {
+		if (this.tabs.length < 2) return;
+		const i = this.tabs.findIndex((t) => t.id === id);
+		if (i < 0) return;
+		const to = this.tabs[i === 0 ? 1 : i - 1].id;
+		for (const w of this.windows) {
+			if (w.tab === id) {
+				w.tab = to;
+				w.save();
+			}
+		}
+		this.tabs.splice(i, 1);
+		if (this.activeTab === id) this.activeTab = to;
+		this.saveTabs();
+		this.retile();
+		this.focusTop();
+	}
+
+	/** Moves a window to another tab; the current tab closes the gap. */
+	moveToTab(w: Win, id: string) {
+		if (w.tab === id || !this.tabs.some((t) => t.id === id)) return;
+		w.tab = id;
+		w.max = false;
+		w.save();
+		this.retile();
+		if (this.focusedId === w.id) this.focusTop();
+	}
+
+	tabWindows(id: string) {
+		return this.windows.filter((w) => w.tab === id);
 	}
 
 	toggleMax(w: Win, force?: boolean) {
@@ -371,7 +468,7 @@ class App {
 	async restart(w: Win, cols: number, rows: number) {
 		try {
 			const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', { cols, rows });
-			setLocal('win.' + info.id, { x: w.x, y: w.y, w: w.w, h: w.h, max: w.max, min: false });
+			setLocal('win.' + info.id, { x: w.x, y: w.y, w: w.w, h: w.h, max: w.max, min: false, tab: w.tab });
 			// The new window takes the old one's dock slot.
 			this.dockOrder = this.dockOrder.map((id) => (id === w.id ? info.id : id));
 			for (const store of [this.colWeights, this.stackWeights]) {
@@ -423,11 +520,11 @@ class App {
 		w.save();
 	}
 
-	/** The windows the layout tiles: every visible one that is not maximized. */
+	/** The windows the layout tiles: the visible ones of the active tab that are not maximized. */
 	tiledWindows() {
 		const rank = new Map(this.dockOrder.map((id, i) => [id, i]));
 		return this.windows
-			.filter((w) => !w.min && !w.max)
+			.filter((w) => !w.min && !w.max && w.tab === this.activeTab)
 			.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
 	}
 
