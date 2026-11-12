@@ -135,7 +135,9 @@ func Open(workspace, password string) (*Store, error) {
 			return nil, ErrWrongPassword
 		}
 		// Badger flattens the lock error to text, so match it here only.
-		if strings.Contains(err.Error(), "Cannot acquire directory lock") {
+		// Unix says "Cannot acquire directory lock", Windows "Cannot create
+		// lock file"; both go on with this sentence.
+		if strings.Contains(err.Error(), "Another process is using this Badger database") {
 			return nil, fmt.Errorf("%w: %v", ErrLocked, err)
 		}
 		return nil, fmt.Errorf("opening database: %w", err)
