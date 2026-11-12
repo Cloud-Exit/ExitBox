@@ -82,6 +82,8 @@ type Session struct {
 	conn   net.Conn
 	replay []byte
 	subs   map[*subscriber]struct{}
+	// queries lets one browser answer each terminal query.
+	queries queryTracker
 
 	wmu      sync.Mutex // serialises frames to the host
 	done     chan struct{}
@@ -151,6 +153,16 @@ func (s *Session) Write(p []byte) error {
 	return s.frame(frameInput, p)
 }
 
+// Input sends what a browser typed. Answers to terminal queries pass only
+// when the output asked and no other browser answered first.
+func (s *Session) Input(p []byte) error {
+	p = s.queries.filterInput(p)
+	if len(p) == 0 {
+		return nil
+	}
+	return s.Write(p)
+}
+
 // Resize sets the terminal size. The process gets SIGWINCH.
 func (s *Session) Resize(cols, rows int) error {
 	if cols < 2 || rows < 2 || cols > 1000 || rows > 1000 {
@@ -192,7 +204,13 @@ func (s *Session) read(conn net.Conn) {
 			return
 		}
 		switch kind {
-		case frameOutput:
+		case frameOutput, frameReplay:
+			// Count the queries before any browser sees them. The host's
+			// replay (after a restart of exitbox web) holds queries that
+			// were answered long ago: answers to those are dropped.
+			if kind == frameOutput {
+				s.queries.sawOutput(payload)
+			}
 			s.mu.Lock()
 			s.replay = append(s.replay, payload...)
 			if over := len(s.replay) - replayBytes; over > 0 {

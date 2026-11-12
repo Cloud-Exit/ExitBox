@@ -32,7 +32,8 @@ const (
 	frameQuit   = 'q' // the window is closed: stop if needed, clean up, exit
 	// host -> web
 	frameHello  = 'h' // first frame after connecting, no payload
-	frameOutput = 'o' // terminal output; the replay arrives as output too
+	frameOutput = 'o' // live terminal output
+	frameReplay = 'p' // recent output for a server that took over; already answered
 	frameExit   = 'x' // the process ended; int32 exit code
 )
 

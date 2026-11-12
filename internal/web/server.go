@@ -404,7 +404,7 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 			}
 			switch msg.T {
 			case "i":
-				if err := sess.Write([]byte(msg.D)); err != nil {
+				if err := sess.Input([]byte(msg.D)); err != nil {
 					return
 				}
 			case "r":

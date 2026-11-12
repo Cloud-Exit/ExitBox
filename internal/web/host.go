@@ -138,6 +138,7 @@ type host struct {
 	replay   []byte
 	client   net.Conn
 	code     int
+	served   bool // a server has connected before
 	exited   chan struct{}
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -216,8 +217,15 @@ func (h *host) accept(ln net.Listener) {
 		h.client = conn
 		h.send(frameHello, nil)
 		if len(h.replay) > 0 {
-			h.send(frameOutput, h.replay)
+			// The first server gets it as fresh output: nobody has
+			// answered its queries yet. A later one gets a replay.
+			kind := byte(frameOutput)
+			if h.served {
+				kind = frameReplay
+			}
+			h.send(kind, h.replay)
 		}
+		h.served = true
 		select {
 		case <-h.exited:
 			h.send(frameExit, exitPayload(h.code))
