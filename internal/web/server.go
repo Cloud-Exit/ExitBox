@@ -206,6 +206,7 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/sessions", s.handleStartSession)
 	api.HandleFunc("DELETE /api/sessions/{id}", s.handleCloseSession)
 	api.HandleFunc("POST /api/sessions/{id}/restart", s.handleRestartSession)
+	api.HandleFunc("POST /api/sessions/{id}/terminate", s.handleTerminateSession)
 	api.HandleFunc("POST /api/sessions/{id}/rename", s.handleRenameSession)
 	api.HandleFunc("POST /api/attach", s.handleAttach)
 	api.HandleFunc("POST /api/saved/rename", s.handleRenameSaved)

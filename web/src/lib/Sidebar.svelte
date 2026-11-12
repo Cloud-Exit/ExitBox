@@ -2,6 +2,7 @@
 	import { app, OPEN_DRAG, sessionLabel, type SidebarDrop, type Win } from './app.svelte';
 	import { sessionKey, type Folder, type RunningDoc, type SavedDoc } from './api';
 	import Brand from './ui/Brand.svelte';
+	import Button from './ui/Button.svelte';
 	import Icon from './ui/Icon.svelte';
 	import IconButton from './ui/IconButton.svelte';
 	import SectionLabel from './ui/SectionLabel.svelte';
@@ -333,6 +334,7 @@
 {#if app.sidebarCollapsed}
 	<nav aria-label="Sessions" class="flex min-h-0 w-12 shrink-0 flex-col items-center gap-1 border-r border-line-1 bg-surface-1 py-2 max-md:w-full max-md:flex-row max-md:border-r-0 max-md:border-b max-md:px-2">
 		<IconButton icon="panelOpen" label="Show the sidebar" onclick={() => app.toggleSidebar()} />
+		<IconButton icon="plus" label="New session" onclick={() => (app.newSessionOpen = true)} />
 		<div class="my-1 h-px w-6 bg-line-1 max-md:hidden"></div>
 		<div class="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-auto max-md:flex-row">
 			{#each app.windows as w (w.id)}
@@ -373,6 +375,9 @@
 		<button type="button" aria-label="Close menu" tabindex="-1" class="fixed inset-0 z-10 cursor-default" onclick={() => (moving = null)}></button>
 	{/if}
 
+	<div class="shrink-0 px-2 pt-2">
+		<Button variant="primary" icon="plus" class="w-full justify-center" onclick={() => (app.newSessionOpen = true)}>New session</Button>
+	</div>
 	<div class="flex flex-1 flex-col gap-0.5 overflow-auto p-2">
 		<div class="flex items-center gap-2 px-2 pt-1 pb-1">
 			<SectionLabel>Folders</SectionLabel>

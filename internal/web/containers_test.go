@@ -191,3 +191,34 @@ func TestRenameSessions(t *testing.T) {
 		t.Fatalf("flag as name: %d", resp.StatusCode)
 	}
 }
+
+func TestTerminateStopsTheContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(&recorder{}, "sleep 60")})
+	st.ctrs = []containerDoc{{Container: "exitbox-claude-p-0a1b2c3d", Agent: "claude", Dir: st.dirs[0], Workspace: "work", Session: "from-terminal", Started: time.Now()}}
+
+	// Detach (close) leaves the terminal session running.
+	resp, out := do(t, ts, "POST", "/api/attach", map[string]any{"container": "exitbox-claude-p-0a1b2c3d"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("attach: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := do(t, ts, "DELETE", "/api/sessions/"+out["id"].(string), nil, ""); resp.StatusCode != 200 || len(st.stopped) != 0 {
+		t.Fatalf("detach: %d, stopped %v", resp.StatusCode, st.stopped)
+	}
+
+	// Terminate stops the container.
+	s.ctrAt = time.Time{}
+	resp, out = do(t, ts, "POST", "/api/attach", map[string]any{"container": "exitbox-claude-p-0a1b2c3d"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("attach again: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	if resp, out := do(t, ts, "POST", "/api/sessions/"+id+"/terminate", map[string]any{}, ""); resp.StatusCode != 200 {
+		t.Fatalf("terminate: %d %v", resp.StatusCode, out)
+	}
+	if !reflect.DeepEqual(st.stopped, []string{"exitbox-claude-p-0a1b2c3d"}) || s.sessions.Get(id) != nil {
+		t.Fatalf("stopped %v, session kept: %v", st.stopped, s.sessions.Get(id) != nil)
+	}
+}

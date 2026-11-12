@@ -51,6 +51,7 @@ type fakeStore struct {
 	ctrs  []containerDoc
 	// renames records renameSaved calls as "old->new".
 	renames []string
+	stopped []string
 }
 
 func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
@@ -70,6 +71,20 @@ func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
 		}
 	}
 	return errors.New("no saved session named '" + oldName + "'")
+}
+
+func (f *fakeStore) stopContainer(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, name)
+	kept := f.ctrs[:0]
+	for _, c := range f.ctrs {
+		if c.Container != name {
+			kept = append(kept, c)
+		}
+	}
+	f.ctrs = kept
+	return nil
 }
 
 func (f *fakeStore) containers() ([]containerDoc, error) {

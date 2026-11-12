@@ -53,6 +53,8 @@ type store interface {
 	runtime() string
 	// containers lists the agent containers that run now.
 	containers() ([]containerDoc, error)
+	// stopContainer stops an agent container.
+	stopContainer(name string) error
 	home() string
 }
 
@@ -119,6 +121,14 @@ func (configStore) renameSaved(workspace, agent, dir, oldName, newName string) e
 	}
 	defer func() { _ = kv.Close() }()
 	return session.Rename(kv, workspace, agent, dir, oldName, newName)
+}
+
+func (configStore) stopContainer(name string) error {
+	rt := container.Detect()
+	if rt == nil {
+		return errors.New("no container runtime found")
+	}
+	return rt.Stop(name)
 }
 
 func (configStore) containers() ([]containerDoc, error) {
@@ -595,6 +605,43 @@ func (s *Server) handleCloseSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logf("web: closed session %s", id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleTerminateSession ends a session for good, wherever it was started:
+// its agent container is stopped (so the exitbox run in a terminal ends
+// too), and its window's process goes. Closing a window without this only
+// detaches.
+func (s *Server) handleTerminateSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess := s.sessions.Get(id)
+	if sess == nil {
+		writeError(w, http.StatusNotFound, errors.New("no such session"))
+		return
+	}
+	// Learn the container if the last poll has not yet.
+	s.liveSessions()
+	info := sess.Info()
+	if info.Container != "" && containerNameRe.MatchString(info.Container) {
+		if err := s.store.stopContainer(info.Container); err != nil {
+			s.logf("web: stop container %s: %v", info.Container, err)
+			if info.Kind == KindAttach {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("stopping the session's container: %w", err))
+				return
+			}
+		}
+	} else if info.Kind == KindAttach {
+		writeError(w, http.StatusConflict, errors.New("the session's container is not known; detach instead"))
+		return
+	}
+	if err := s.sessions.Close(id); err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	s.ctrMu.Lock()
+	s.ctrAt = time.Time{}
+	s.ctrMu.Unlock()
+	s.logf("web: terminated session %s (%s)", id, info.Container)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

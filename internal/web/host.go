@@ -87,6 +87,11 @@ func RunHost(dir, id string) error {
 		h.cleanup()
 		return err
 	}
+	// Closing the listener would unlink the socket at once; cleanup removes
+	// it last instead, so its presence means the session's files exist.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
 	if err := os.Chmod(sockPath(dir, id), 0o600); err != nil {
 		_ = ln.Close()
 		kill(cmd)

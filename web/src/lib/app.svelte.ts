@@ -509,6 +509,20 @@ class App {
 		this.refresh();
 	}
 
+	/** Ends a session for good, also when it was started in a terminal. */
+	async terminate(w: Win) {
+		try {
+			await api('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/terminate', {});
+		} catch (e) {
+			if (!(e instanceof ApiError && e.status === 404)) {
+				this.notify((e as Error).message, true);
+				return;
+			}
+		}
+		this.dropWindow(w);
+		this.refresh();
+	}
+
 	async restart(w: Win, cols: number, rows: number) {
 		try {
 			const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', { cols, rows });

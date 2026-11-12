@@ -416,26 +416,31 @@
 		node.select();
 	}
 
+	/** Closing a window always asks: terminate the session, or only detach. */
 	async function askStop() {
-		if (win.attached) {
-			// Detaching leaves the session running in its terminal.
+		if (info.exited && !win.attached) {
+			// Nothing runs any more: closing just removes the window.
 			app.stop(win);
 			return;
 		}
-		if (info.exited) {
-			app.stop(win);
-			return;
-		}
+		const agent = app.agentDisplay(info.agent);
 		const choice = await app.ask(
-			'Stop this session?',
-			`Stopping ends ${app.agentDisplay(info.agent)} and its container. Named sessions can be resumed later from the sidebar. Hiding keeps it running.`,
+			'Close this window?',
+			win.attached
+				? `Terminate stops ${agent} and its container; the exitbox run in its terminal ends too. Detach closes this window and leaves the session running in its terminal.`
+				: `Terminate ends ${agent} and stops its container; a named session can be resumed later from the sidebar. Detach closes this window and keeps the session running in the sidebar.`,
 			[
-				{ label: 'Stop session', value: 'stop', tone: 'danger' },
-				{ label: 'Hide window', value: 'hide', tone: 'secondary' }
+				{ label: 'Terminate session', value: 'terminate', tone: 'danger' },
+				{ label: 'Detach', value: 'detach', tone: 'secondary' }
 			]
 		);
-		if (choice === 'stop') app.stop(win);
-		else if (choice === 'hide') app.hide(win);
+		if (choice === 'terminate') app.terminate(win);
+		else if (choice === 'detach') {
+			// An attached window is only a view: closing it detaches. A web
+			// session keeps running without a window, listed in the sidebar.
+			if (win.attached) app.stop(win);
+			else app.hide(win);
+		}
 	}
 </script>
 
@@ -514,7 +519,7 @@
 		>
 		<IconButton icon="minus" label="Hide window" onclick={() => app.hide(win)} />
 		<IconButton icon={win.max ? 'restore' : 'maximize'} label={win.max ? 'Restore size' : 'Maximize'} onclick={() => app.toggleMax(win)} />
-		<IconButton icon="x" label={win.attached ? 'Detach (keeps running in its terminal)' : 'Stop session'} onclick={askStop} />
+		<IconButton icon="x" label="Close window" onclick={askStop} />
 	</header>
 
 	<div
