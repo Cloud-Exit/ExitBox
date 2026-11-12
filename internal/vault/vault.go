@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,6 +48,13 @@ const (
 	// verifyKey is a sentinel key used to verify the password is correct.
 	verifyKey   = "__vault_verify__"
 	verifyValue = "exitbox-vault-v1"
+)
+
+var (
+	// ErrWrongPassword means the password does not unlock the vault.
+	ErrWrongPassword = errors.New("wrong vault password")
+	// ErrLocked means another process has the vault open.
+	ErrLocked = errors.New("the vault is open in another process")
 )
 
 // Store wraps a Badger database for encrypted secret storage.
@@ -122,6 +130,14 @@ func Open(workspace, password string) (*Store, error) {
 
 	db, err := openDB(filepath.Join(dir, "db"), key)
 	if err != nil {
+		// Badger checks the key before the verify entry is ever read.
+		if errors.Is(err, badger.ErrEncryptionKeyMismatch) {
+			return nil, ErrWrongPassword
+		}
+		// Badger flattens the lock error to text, so match it here only.
+		if strings.Contains(err.Error(), "Cannot acquire directory lock") {
+			return nil, fmt.Errorf("%w: %v", ErrLocked, err)
+		}
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
@@ -139,7 +155,10 @@ func Open(workspace, password string) (*Store, error) {
 	})
 	if err != nil || !verified {
 		db.Close()
-		return nil, fmt.Errorf("wrong password or corrupted vault")
+		if err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
+			return nil, fmt.Errorf("corrupted vault: %w", err)
+		}
+		return nil, ErrWrongPassword
 	}
 
 	return &Store{db: db}, nil

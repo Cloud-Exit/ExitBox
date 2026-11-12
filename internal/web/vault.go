@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -54,7 +53,7 @@ func (diskVault) open(workspace, password string) (*vault.Store, error) {
 		if st, err = vault.Open(workspace, password); err == nil {
 			return st, nil
 		}
-		if !strings.Contains(err.Error(), "directory lock") {
+		if !errors.Is(err, vault.ErrLocked) {
 			return nil, err
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -121,7 +120,12 @@ type vaultGuard struct {
 	failures map[string][]time.Time
 }
 
-func (g *vaultGuard) check(ws string) error {
+// vaultSlots bounds concurrent Argon2id derivations (64 MB each).
+var vaultSlots = make(chan struct{}, 2)
+
+// begin counts an attempt before it runs, so parallel guesses cannot
+// all pass the limit; release takes it back when it was not a wrong password.
+func (g *vaultGuard) begin(ws string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.failures == nil {
@@ -134,17 +138,23 @@ func (g *vaultGuard) check(ws string) error {
 			recent = append(recent, t)
 		}
 	}
-	g.failures[ws] = recent
 	if len(recent) >= maxFailures {
+		g.failures[ws] = recent
 		return errors.New("too many wrong vault passwords; wait a few minutes")
 	}
+	g.failures[ws] = append(recent, now)
 	return nil
 }
 
-func (g *vaultGuard) failed(ws string) {
+func (g *vaultGuard) release(ws string) {
 	g.mu.Lock()
-	g.failures[ws] = append(g.failures[ws], time.Now())
-	g.mu.Unlock()
+	defer g.mu.Unlock()
+	if n := len(g.failures[ws]); n > 0 {
+		g.failures[ws] = g.failures[ws][:n-1]
+	}
+	if len(g.failures[ws]) == 0 {
+		delete(g.failures, ws)
+	}
 }
 
 type vaultDoc struct {
@@ -188,18 +198,28 @@ func (s *Server) handleVault(w http.ResponseWriter, r *http.Request) {
 
 	// Actions that need the vault password, and count wrong ones.
 	withPassword := func(fn func() error) {
-		if err := s.vaultGuard.check(ws); err != nil {
-			writeError(w, http.StatusTooManyRequests, err)
-			return
-		}
 		if !s.vault.initialized(ws) {
 			writeError(w, http.StatusConflict, errors.New("this workspace has no vault yet"))
 			return
 		}
-		if err := fn(); err != nil {
+		if err := s.vaultGuard.begin(ws); err != nil {
+			writeError(w, http.StatusTooManyRequests, err)
+			return
+		}
+		select {
+		case vaultSlots <- struct{}{}:
+		case <-r.Context().Done():
+			s.vaultGuard.release(ws)
+			return
+		}
+		err := fn()
+		<-vaultSlots
+		if !errors.Is(err, vault.ErrWrongPassword) {
+			s.vaultGuard.release(ws)
+		}
+		if err != nil {
 			status := http.StatusBadRequest
-			if strings.Contains(err.Error(), "wrong password") {
-				s.vaultGuard.failed(ws)
+			if errors.Is(err, vault.ErrWrongPassword) {
 				// Not 401: that means "sign in to exitbox web" to the page.
 				status = http.StatusForbidden
 				err = errors.New("wrong vault password")

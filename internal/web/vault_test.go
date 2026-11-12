@@ -21,7 +21,11 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/cloud-exit/exitbox/internal/vault"
 )
 
 // memVault is an in-memory vault backend.
@@ -42,7 +46,7 @@ func (m *memVault) open(ws, pw string) (map[string]string, error) {
 		return nil, errVaultBusy
 	}
 	if m.pw[ws] != pw {
-		return nil, errors.New("wrong password or corrupted vault")
+		return nil, vault.ErrWrongPassword
 	}
 	return m.data[ws], nil
 }
@@ -183,6 +187,88 @@ func TestVaultPasswordLimit(t *testing.T) {
 		do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "wrong"}, "")
 	}
 	if resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "vault pass"}, ""); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("after %d wrong passwords: %d", maxFailures, resp.StatusCode)
+	}
+}
+
+// slowVault answers every password as wrong, after a delay.
+type slowVault struct{ memVault }
+
+func (sv *slowVault) list(string, string) ([]string, error) {
+	time.Sleep(20 * time.Millisecond)
+	return nil, vault.ErrWrongPassword
+}
+
+func TestVaultPasswordLimitParallel(t *testing.T) {
+	s, _, ts := newTestServer(t, Options{})
+	s.vault = &slowVault{memVault{pw: map[string]string{"work": "vault pass"}, data: map[string]map[string]string{"work": {}}}}
+	const n = 3 * maxFailures
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "wrong"}, "")
+			mu.Lock()
+			codes[resp.StatusCode]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if codes[http.StatusForbidden] != maxFailures || codes[http.StatusTooManyRequests] != n-maxFailures {
+		t.Fatalf("parallel wrong passwords: %v", codes)
+	}
+}
+
+func TestVaultLimitIgnoresOtherErrors(t *testing.T) {
+	s, _, ts := newTestServer(t, Options{})
+	mv := &memVault{pw: map[string]string{"work": "vault pass"}, data: map[string]map[string]string{"work": {}}, busy: true}
+	s.vault = mv
+	for i := 0; i < maxFailures+2; i++ {
+		if resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "vault pass"}, ""); resp.StatusCode != http.StatusConflict {
+			t.Fatalf("busy vault %d: %d", i, resp.StatusCode)
+		}
+	}
+	mv.busy = false
+	if resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "vault pass"}, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("right password after busy errors: %d", resp.StatusCode)
+	}
+}
+
+// TestVaultRealWrongPassword runs the real encrypted vault in a temp dir.
+func TestVaultRealWrongPassword(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s, _, ts := newTestServer(t, Options{})
+	s.vault = diskVault{}
+	if resp, out := do(t, ts, "POST", "/api/vault/work/create", map[string]any{"password": "right pass"}, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("create: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "right pass"}, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("keys: %d %v", resp.StatusCode, out)
+	}
+	st, err := vault.Open("work", "right pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "right pass"}, ""); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("vault held by another process: %d", resp.StatusCode)
+	}
+	if time.Since(start) < 500*time.Millisecond {
+		t.Fatal("did not wait for the lock")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFailures; i++ {
+		resp, out := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "wrong pass"}, "")
+		if resp.StatusCode != http.StatusForbidden || out["error"] != "wrong vault password" {
+			t.Fatalf("wrong password %d: %d %v", i, resp.StatusCode, out)
+		}
+	}
+	if resp, _ := do(t, ts, "POST", "/api/vault/work/keys", map[string]any{"password": "right pass"}, ""); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("after %d wrong passwords: %d", maxFailures, resp.StatusCode)
 	}
 }

@@ -666,6 +666,14 @@ func (s *Server) handleRemoveSaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("unknown saved session"))
 		return
 	}
+	switch s.savedInUse(req.Agent, req.Dir, req.Name) {
+	case inUseWindow:
+		writeError(w, http.StatusConflict, errors.New("this session is open in a window; close it first"))
+		return
+	case inUseRunning:
+		writeError(w, http.StatusConflict, errors.New("this session is running; remove it once it has ended"))
+		return
+	}
 	ok, err := s.store.removeSaved(req.Workspace, req.Agent, req.Dir, req.Name)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -904,18 +912,13 @@ func (s *Server) handleRenameSaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("unknown saved session"))
 		return
 	}
-	_, others := s.liveSessions()
-	for _, c := range others {
-		if c.Agent == req.Agent && c.Dir == req.Dir && c.Session == req.Name {
-			writeError(w, http.StatusConflict, errors.New("this session is running; rename it once it has ended"))
-			return
-		}
-	}
-	for _, info := range s.sessions.List() {
-		if !info.Exited && info.Agent == req.Agent && info.Dir == req.Dir && info.Name == req.Name {
-			writeError(w, http.StatusConflict, errors.New("this session is open in a window; rename it there"))
-			return
-		}
+	switch s.savedInUse(req.Agent, req.Dir, req.Name) {
+	case inUseWindow:
+		writeError(w, http.StatusConflict, errors.New("this session is open in a window; rename it there"))
+		return
+	case inUseRunning:
+		writeError(w, http.StatusConflict, errors.New("this session is running; rename it once it has ended"))
+		return
 	}
 	if err := s.store.renameSaved(req.Workspace, req.Agent, req.Dir, req.Name, newName); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -923,6 +926,31 @@ func (s *Server) handleRenameSaved(w http.ResponseWriter, r *http.Request) {
 	}
 	s.noteRename(req.Workspace, req.Agent, req.Dir, req.Name, newName)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// Why a saved session cannot be changed now.
+const (
+	inUseNone    = iota
+	inUseWindow  // a running web session shows it
+	inUseRunning // its container runs, started in a terminal
+)
+
+// savedInUse reports whether a saved session is running: its saved state
+// is still being written, so it must not be renamed or removed.
+func (s *Server) savedInUse(agent, dir, name string) int {
+	// liveSessions names the web sessions after their containers first.
+	sessions, others := s.liveSessions()
+	for _, info := range sessions {
+		if !info.Exited && info.Agent == agent && info.Dir == dir && info.Name == name {
+			return inUseWindow
+		}
+	}
+	for _, c := range others {
+		if c.Agent == agent && c.Dir == dir && c.Session == name {
+			return inUseRunning
+		}
+	}
+	return inUseNone
 }
 
 func hasFlag(args []string, flag string) bool {

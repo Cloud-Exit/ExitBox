@@ -74,6 +74,8 @@ Service:
   exitbox web --service
   exitbox web --service --listen 0.0.0.0:4848 --username me`,
 		Args: cobra.NoArgs,
+		// Runtime errors (a server already running, a busy port) are not usage errors.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWeb(cmd, o)
 		},
@@ -123,10 +125,14 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 				return err
 			}
 		}
-		if hash, err = web.HashPassword(pw); err != nil {
-			return err
-		}
 		username = strings.TrimSpace(o.username)
+		// Reuse the saved hash for the same login: a fresh salt would sign
+		// every browser out on each restart.
+		if username != cfg.Web.Username || !web.PasswordMatches(cfg.Web.PasswordHash, pw) {
+			if hash, err = web.HashPassword(pw); err != nil {
+				return err
+			}
+		}
 	}
 
 	exe, err := os.Executable()
@@ -147,15 +153,6 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 	if err != nil {
 		return err
 	}
-	if !o.service && !o.removeService {
-		n, err := srv.Restore()
-		if err != nil {
-			ui.Warnf("Could not reconnect to running sessions: %v", err)
-		} else if n > 0 {
-			ui.Infof("Reconnected to %d running session(s)", n)
-		}
-	}
-
 	if o.service {
 		if o.listen != "" || o.username != "" {
 			cfg.Web.Listen = listen
@@ -184,9 +181,22 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		return nil
 	}
 
+	// One server owns the sessions: a second one would take every host
+	// over and then fail to listen.
+	lock, err := srv.Lock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
+	}
+	n, err := srv.Restore()
+	if err != nil {
+		ui.Warnf("Could not reconnect to running sessions: %v", err)
+	} else if n > 0 {
+		ui.Infof("Reconnected to %d running session(s)", n)
 	}
 	url := webURL(ln.Addr().String())
 	ui.Successf("ExitBox web runs at %s", url)
@@ -207,21 +217,27 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 }
 
 // spawnHost starts a session host: this binary in web-session-host mode,
-// detached so it outlives exitbox web.
+// detached so it outlives exitbox web. The channel closes when it exits.
 func spawnHost(exe string) web.SpawnFunc {
-	return func(dir, id string) error {
+	return func(dir, id string) (<-chan struct{}, error) {
 		logFile, err := os.OpenFile(filepath.Join(dir, id+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer func() { _ = logFile.Close() }()
 		c := exec.Command(exe, "web-session-host", "--state", dir, "--id", id)
 		c.Stdout, c.Stderr = logFile, logFile
 		web.DetachProcess(c)
 		if err := c.Start(); err != nil {
-			return err
+			return nil, err
 		}
-		return c.Process.Release()
+		exited := make(chan struct{})
+		// Reap it, or an ended host stays a zombie of this server.
+		go func() {
+			defer close(exited)
+			_ = c.Wait()
+		}()
+		return exited, nil
 	}
 }
 
@@ -232,6 +248,9 @@ func newWebSessionHostCmd() *cobra.Command {
 		Short:  "Run one exitbox web session (started by exitbox web)",
 		Hidden: true,
 		Args:   cobra.NoArgs,
+		// The error goes to the host's log for exitbox web to show; usage
+		// would only bury it.
+		SilenceUsage: true,
 		RunE: func(*cobra.Command, []string) error {
 			return web.RunHost(dir, id)
 		},

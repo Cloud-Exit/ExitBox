@@ -17,6 +17,7 @@
 package web
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -85,10 +86,17 @@ type Session struct {
 	// queries lets one browser answer each terminal query.
 	queries queryTracker
 
+	// gone: this server let go of the session (Disconnect, close); no
+	// more reconnects or info writes.
+	gone bool
+
 	wmu      sync.Mutex // serialises frames to the host
 	done     chan struct{}
 	doneOnce sync.Once
 	settled  chan struct{} // closed when the manager's exit hook has run
+
+	saveMu    sync.Mutex // serialises info writes
+	lastSaved []byte
 }
 
 type subscriber struct {
@@ -130,6 +138,9 @@ func (s *Session) Detach(sub *subscriber) {
 	sub.drop()
 }
 
+// hostWriteTimeout bounds one frame to a host; a var for tests.
+var hostWriteTimeout = 10 * time.Second
+
 func (s *Session) frame(kind byte, payload []byte) error {
 	s.mu.Lock()
 	conn := s.conn
@@ -138,11 +149,53 @@ func (s *Session) frame(kind byte, payload []byte) error {
 		return errors.New("session host is gone")
 	}
 	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
+	err := conn.SetWriteDeadline(time.Now().Add(hostWriteTimeout))
+	if err == nil {
+		err = writeFrame(conn, kind, payload)
 	}
-	return writeFrame(conn, kind, payload)
+	s.wmu.Unlock()
+	if err != nil {
+		// Part of the frame may have gone out: the host would read the rest
+		// of the stream from the middle of a payload.
+		s.lost(conn)
+	}
+	return err
+}
+
+// lost drops a connection that can no longer carry frames and dials the
+// host again, as a restarted server would. A host that does not answer is
+// gone, and so is the session.
+func (s *Session) lost(conn net.Conn) {
+	s.mu.Lock()
+	if s.conn != conn || s.gone {
+		s.mu.Unlock()
+		return
+	}
+	s.conn = nil
+	// The host sends its replay on the new connection; viewers reattach to it.
+	s.replay = nil
+	for sub := range s.subs {
+		delete(s.subs, sub)
+		sub.drop()
+	}
+	id := s.info.ID
+	s.mu.Unlock()
+	_ = conn.Close()
+	nc, err := net.DialTimeout("unix", sockPath(s.m.dir, id), 2*time.Second)
+	if err != nil {
+		s.m.logf("web: session %s: host unreachable after a failed write: %v", id, err)
+		s.ended(-1)
+		return
+	}
+	s.mu.Lock()
+	if s.gone || s.conn != nil {
+		s.mu.Unlock()
+		_ = nc.Close()
+		return
+	}
+	s.conn = nc
+	s.mu.Unlock()
+	go s.read(nc)
 }
 
 // Write sends keyboard input to the process.
@@ -182,9 +235,36 @@ func (s *Session) Resize(cols, rows int) error {
 func (s *Session) update(fn func(*SessionInfo)) {
 	s.mu.Lock()
 	fn(&s.info)
+	s.mu.Unlock()
+	s.save()
+}
+
+// save writes the session's current info. Writes are serialised and each
+// takes the latest state, so an older snapshot never lands last.
+func (s *Session) save() {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	gone := s.gone
 	info := s.info
 	s.mu.Unlock()
-	s.m.saveInfo(info)
+	if gone {
+		return
+	}
+	info.Viewers = 0
+	data, err := json.Marshal(info)
+	if err != nil {
+		s.m.logf("web: session %s: %v", info.ID, err)
+		return
+	}
+	if bytes.Equal(data, s.lastSaved) {
+		return
+	}
+	if err := s.m.writeInfo(info.ID, data); err != nil {
+		s.m.logf("web: saving session %s: %v", info.ID, err)
+		return
+	}
+	s.lastSaved = data
 }
 
 // read follows the host: output to the viewers, then the exit.
@@ -257,8 +337,9 @@ func (s *Session) ended(code int) {
 type CommandFunc func(info SessionInfo) *exec.Cmd
 
 // SpawnFunc starts the host of session id in dir, detached from exitbox
-// web (RunHost in another process). Tests run it in-process.
-type SpawnFunc func(dir, id string) error
+// web (RunHost in another process). Tests run it in-process. The channel,
+// which may be nil, closes when the host has exited.
+type SpawnFunc func(dir, id string) (<-chan struct{}, error)
 
 // Manager owns the sessions: their hosts, files and connections.
 type Manager struct {
@@ -267,6 +348,7 @@ type Manager struct {
 	dir     string
 	// onExit runs after a session's process has ended.
 	onExit func(*Session)
+	logf   func(format string, args ...any)
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -274,20 +356,30 @@ type Manager struct {
 
 // NewManager returns a manager keeping its session files in dir.
 func NewManager(command CommandFunc, spawn SpawnFunc, dir string) *Manager {
-	return &Manager{command: command, spawn: spawn, dir: dir, sessions: make(map[string]*Session), onExit: func(*Session) {}}
+	return &Manager{command: command, spawn: spawn, dir: dir, sessions: make(map[string]*Session), onExit: func(*Session) {}, logf: func(string, ...any) {}}
 }
 
-func (m *Manager) saveInfo(info SessionInfo) {
-	info.Viewers = 0
-	data, err := json.Marshal(info)
+// writeInfo replaces a session's info file through a temp file of its own,
+// so concurrent writers never share one.
+func (m *Manager) writeInfo(id string, data []byte) error {
+	f, err := os.CreateTemp(m.dir, id+".info.*.tmp")
 	if err != nil {
-		return
+		return err
 	}
-	tmp := infoPath(m.dir, info.ID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	_ = os.Rename(tmp, infoPath(m.dir, info.ID))
+	if err == nil {
+		err = os.Rename(tmp, infoPath(m.dir, id))
+	}
+	if err != nil {
+		if rerr := os.Remove(tmp); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			m.logf("web: %v", rerr)
+		}
+	}
+	return err
 }
 
 // Start launches a session in a new host. args are the exitbox arguments,
@@ -324,28 +416,47 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 		return nil, err
 	}
 	s := m.newSession(info)
-	m.saveInfo(info)
-	if err := m.spawn(m.dir, id); err != nil {
+	s.save()
+	exited, err := m.spawn(m.dir, id)
+	if err != nil {
 		m.forget(id)
 		return nil, fmt.Errorf("starting the session host: %w", err)
 	}
-	// The host listens once its process runs.
-	var conn net.Conn
-	for i := 0; i < 200; i++ {
-		if conn, err = net.Dial("unix", sockPath(m.dir, id)); err == nil {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+	conn, err := m.dialNew(id, exited)
 	if err != nil {
+		// Read the host's log before forget removes it.
+		err = m.hostError(id, err)
 		m.forget(id)
-		return nil, fmt.Errorf("the session did not start: %w", m.hostError(id, err))
+		return nil, fmt.Errorf("the session did not start: %w", err)
 	}
 	m.mu.Lock()
 	m.sessions[id] = s
 	m.mu.Unlock()
 	s.connect(conn)
 	return s, nil
+}
+
+// hostStartTimeout is how long a new host has to listen.
+const hostStartTimeout = 5 * time.Second
+
+// dialNew connects to a new host once it listens, and gives up as soon as
+// its process has exited.
+func (m *Manager) dialNew(id string, exited <-chan struct{}) (net.Conn, error) {
+	deadline := time.Now().Add(hostStartTimeout)
+	for {
+		conn, err := net.Dial("unix", sockPath(m.dir, id))
+		if err == nil {
+			return conn, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-exited:
+			return nil, errors.New("the session host exited")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 // hostError prefers what the host wrote to its log.
@@ -370,6 +481,16 @@ func (s *Session) connect(conn net.Conn) {
 // Restore reconnects to the hosts left by an earlier exitbox web and
 // removes the files of hosts that are gone.
 func (m *Manager) Restore() (int, error) {
+	// Left by a server that died mid-write; no other server writes now.
+	tmps, err := filepath.Glob(filepath.Join(m.dir, "*.info.*.tmp"))
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range tmps {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			m.logf("web: %v", err)
+		}
+	}
 	paths, err := filepath.Glob(filepath.Join(m.dir, "*.info.json"))
 	if err != nil {
 		return 0, err
@@ -405,7 +526,9 @@ func (m *Manager) Restore() (int, error) {
 // forget removes a session's files when its host never came up or is gone.
 func (m *Manager) forget(id string) {
 	for _, p := range []string{sockPath(m.dir, id), specPath(m.dir, id), infoPath(m.dir, id), logPath(m.dir, id)} {
-		_ = os.Remove(p)
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			m.logf("web: %v", err)
+		}
 	}
 }
 
@@ -447,6 +570,7 @@ func (m *Manager) Close(id string) error {
 }
 
 func (s *Session) close() {
+	id := s.Info().ID
 	if err := s.frame(frameStop, nil); err == nil {
 		select {
 		case <-s.done:
@@ -458,9 +582,23 @@ func (s *Session) close() {
 	case <-s.settled:
 	case <-time.After(10 * time.Second):
 	}
-	_ = s.frame(frameQuit, nil)
-	// The server writes the info file, so it removes it too.
-	_ = os.Remove(infoPath(s.m.dir, s.Info().ID))
+	quitErr := s.frame(frameQuit, nil)
+	if quitErr != nil {
+		// A failed write reconnects if the host still listens: try once more.
+		quitErr = s.frame(frameQuit, nil)
+	}
+	s.saveMu.Lock()
+	s.mu.Lock()
+	s.gone = true
+	s.mu.Unlock()
+	if quitErr != nil {
+		// The host is gone (killed, crashed): nobody else removes its files.
+		s.m.forget(id)
+	} else if err := os.Remove(infoPath(s.m.dir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The server writes the info file, so it removes it too.
+		s.m.logf("web: %v", err)
+	}
+	s.saveMu.Unlock()
 	s.mu.Lock()
 	for sub := range s.subs {
 		delete(s.subs, sub)
@@ -486,6 +624,7 @@ func (m *Manager) Disconnect() {
 	m.mu.Unlock()
 	for _, s := range list {
 		s.mu.Lock()
+		s.gone = true
 		conn := s.conn
 		s.conn = nil
 		for sub := range s.subs {

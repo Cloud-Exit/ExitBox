@@ -17,6 +17,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,11 +92,13 @@ func TestRename(t *testing.T) {
 		}
 	}
 
-	if err := Rename(store, "work", "codex", dir, "2026-11-12 14:05:09", "other"); err == nil {
-		t.Fatal("rename onto an existing session accepted")
+	// Refusals are typed: a queued rename drops them instead of retrying.
+	var refused *RefusedError
+	if err := Rename(store, "work", "codex", dir, "2026-11-12 14:05:09", "other"); !errors.As(err, &refused) {
+		t.Fatalf("rename onto an existing session: %v", err)
 	}
-	if err := Rename(store, "work", "codex", dir, "missing", "x"); err == nil {
-		t.Fatal("rename of a missing session accepted")
+	if err := Rename(store, "work", "codex", dir, "missing", "x"); !errors.As(err, &refused) || err.Error() != "no saved session named 'missing'" {
+		t.Fatalf("rename of a missing session: %v", err)
 	}
 	if err := Rename(store, "work", "codex", dir, "2026-11-12 14:05:09", "invoice export"); err != nil {
 		t.Fatal(err)

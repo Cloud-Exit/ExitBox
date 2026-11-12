@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -37,6 +36,7 @@ import (
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/session"
 	"golang.org/x/net/websocket"
 )
 
@@ -52,15 +52,22 @@ type fakeStore struct {
 	// renames records renameSaved calls as "old->new".
 	renames []string
 	stopped []string
+	// renameErr fails renameSaved; renameCalls counts its calls.
+	renameErr   error
+	renameCalls int
 }
 
 func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.renameCalls++
+	if f.renameErr != nil {
+		return f.renameErr
+	}
 	k := ws + "/" + agent + "/" + dir
 	for _, n := range f.saved[k] {
 		if n == newName {
-			return errors.New("a session named '" + newName + "' already exists")
+			return &session.RefusedError{Msg: "a session named '" + newName + "' already exists"}
 		}
 	}
 	for i, n := range f.saved[k] {
@@ -70,7 +77,7 @@ func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
 			return nil
 		}
 	}
-	return errors.New("no saved session named '" + oldName + "'")
+	return &session.RefusedError{Msg: "no saved session named '" + oldName + "'"}
 }
 
 func (f *fakeStore) stopContainer(name string) error {
@@ -203,6 +210,9 @@ func newTestServer(t *testing.T, opts Options) (*Server, *fakeStore, *httptest.S
 	if opts.StateDir == "" {
 		opts.StateDir = shortTempDir(t)
 	}
+	if opts.SessionsFile == "" {
+		opts.SessionsFile = filepath.Join(t.TempDir(), "sessions.json")
+	}
 	s, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -220,9 +230,13 @@ func newTestServer(t *testing.T, opts Options) (*Server, *fakeStore, *httptest.S
 }
 
 // inProcessHosts runs session hosts as goroutines of the test.
-func inProcessHosts(dir, id string) error {
-	go func() { _ = RunHost(dir, id) }()
-	return nil
+func inProcessHosts(dir, id string) (<-chan struct{}, error) {
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		_ = RunHost(dir, id)
+	}()
+	return exited, nil
 }
 
 // shortTempDir is a temp dir with a path short enough for Unix sockets.
@@ -270,13 +284,13 @@ func do(t *testing.T, ts *httptest.Server, method, path string, body any, cookie
 
 func TestNewRefusesPublicListenWithoutLogin(t *testing.T) {
 	cmd := shellCommand(&recorder{}, "true")
-	if _, err := New(Options{Listen: "0.0.0.0:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err == nil {
+	if _, err := New(Options{Listen: "0.0.0.0:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t), SessionsFile: filepath.Join(t.TempDir(), "sessions.json")}); err == nil {
 		t.Fatal("public address without a login was accepted")
 	}
-	if _, err := New(Options{Listen: "0.0.0.0:4848", Username: "me", PasswordHash: "$2a$x", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err != nil {
+	if _, err := New(Options{Listen: "0.0.0.0:4848", Username: "me", PasswordHash: "$2a$x", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t), SessionsFile: filepath.Join(t.TempDir(), "sessions.json")}); err != nil {
 		t.Fatalf("public address with a login refused: %v", err)
 	}
-	if _, err := New(Options{Listen: "127.0.0.1:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err != nil {
+	if _, err := New(Options{Listen: "127.0.0.1:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t), SessionsFile: filepath.Join(t.TempDir(), "sessions.json")}); err != nil {
 		t.Fatalf("loopback without a login refused: %v", err)
 	}
 }
@@ -865,13 +879,19 @@ func TestSessionsSurviveServerRestart(t *testing.T) {
 func TestRestoreDropsDeadHosts(t *testing.T) {
 	dir := shortTempDir(t)
 	m := NewManager(shellCommand(&recorder{}, "true"), inProcessHosts, dir)
-	m.saveInfo(SessionInfo{ID: "0123456789abcdef", Agent: "claude"})
+	if err := m.writeInfo("0123456789abcdef", []byte(`{"id":"0123456789abcdef","agent":"claude"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A temp file of a server that died mid-write.
+	if err := os.WriteFile(filepath.Join(dir, "0123456789abcdef.info.123.tmp"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	n, err := m.Restore()
 	if err != nil || n != 0 {
 		t.Fatalf("restored %d, %v", n, err)
 	}
-	if _, err := os.Stat(infoPath(dir, "0123456789abcdef")); !os.IsNotExist(err) {
-		t.Fatal("files of a dead host left behind")
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Fatalf("files left behind: %v", left)
 	}
 }
 

@@ -95,6 +95,16 @@ func kvKeyOf(store *kvstore.Store, agentName, projectKey, name string) (string, 
 	return found, err
 }
 
+// RefusedError is a rename that cannot succeed as asked; trying again does
+// not help.
+type RefusedError struct{ Msg string }
+
+func (e *RefusedError) Error() string { return e.Msg }
+
+func refused(format string, args ...any) error {
+	return &RefusedError{Msg: fmt.Sprintf(format, args...)}
+}
+
 // Rename gives a saved session a new name. It moves the session's files,
 // its KV entries (store may be nil when the KV store cannot be opened), the
 // active-session pointer and Codex's per-session state, so `--name new`
@@ -102,7 +112,7 @@ func kvKeyOf(store *kvstore.Store, agentName, projectKey, name string) (string, 
 func Rename(store *kvstore.Store, workspaceName, agentName, projectDir, oldName, newName string) error {
 	oldName, newName = strings.TrimSpace(oldName), strings.TrimSpace(newName)
 	if oldName == "" || newName == "" {
-		return errors.New("session name cannot be empty")
+		return refused("session name cannot be empty")
 	}
 	if oldName == newName {
 		return nil
@@ -121,10 +131,10 @@ func Rename(store *kvstore.Store, workspaceName, agentName, projectDir, oldName,
 		return err
 	}
 	if len(clash) > 0 {
-		return fmt.Errorf("a session named '%s' already exists", newName)
+		return refused("a session named '%s' already exists", newName)
 	}
 	if _, err := os.Stat(filepath.Join(sessionsDir, newKey)); err == nil {
-		return fmt.Errorf("a session named '%s' already exists", newName)
+		return refused("a session named '%s' already exists", newName)
 	}
 	oldKVKey := ""
 	if store != nil {
@@ -134,11 +144,11 @@ func Rename(store *kvstore.Store, workspaceName, agentName, projectDir, oldName,
 		if k, err := kvKeyOf(store, agentName, projectKey, newName); err != nil {
 			return err
 		} else if k != "" {
-			return fmt.Errorf("a session named '%s' already exists", newName)
+			return refused("a session named '%s' already exists", newName)
 		}
 	}
 	if len(oldDirs) == 0 && oldKVKey == "" {
-		return fmt.Errorf("no saved session named '%s'", oldName)
+		return refused("no saved session named '%s'", oldName)
 	}
 	var codexMoves [][2]string
 	if agentName == "codex" {
@@ -149,7 +159,7 @@ func Rename(store *kvstore.Store, workspaceName, agentName, projectDir, oldName,
 				continue
 			}
 			if _, err := os.Stat(to[i]); err == nil {
-				return fmt.Errorf("codex state for '%s' already exists at %s", newName, to[i])
+				return refused("codex state for '%s' already exists at %s", newName, to[i])
 			}
 			codexMoves = append(codexMoves, [2]string{from[i], to[i]})
 		}

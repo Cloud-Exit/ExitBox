@@ -60,6 +60,10 @@ func RunHost(dir, id string) error {
 	if err != nil {
 		return err
 	}
+	// The spec holds the server's environment: keep it only in memory.
+	if err := os.Remove(specPath(dir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	var spec hostSpec
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return err
@@ -75,16 +79,18 @@ func RunHost(dir, id string) error {
 	cmd.Args = spec.Args
 	cmd.Env = spec.Env
 	cmd.Dir = spec.Dir
-	h := &host{dir: dir, id: id, cmd: cmd, quit: make(chan struct{}), exited: make(chan struct{})}
+	h := &host{dir: dir, id: id, cmd: cmd, quit: make(chan struct{}), exited: make(chan struct{}), closed: make(chan struct{}), input: make(chan []byte, hostInputQueue)}
+	// On failure the log stays: the error is printed into it after we
+	// return, and exitbox web shows it.
 	if h.pty, err = pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(spec.Cols), Rows: uint16(spec.Rows)}); err != nil {
-		h.cleanup()
+		h.cleanup(true)
 		return err
 	}
 	_ = os.Remove(sockPath(dir, id))
 	ln, err := net.Listen("unix", sockPath(dir, id))
 	if err != nil {
 		kill(cmd)
-		h.cleanup()
+		h.cleanup(true)
 		return err
 	}
 	// Closing the listener would unlink the socket at once; cleanup removes
@@ -95,10 +101,11 @@ func RunHost(dir, id string) error {
 	if err := os.Chmod(sockPath(dir, id), 0o600); err != nil {
 		_ = ln.Close()
 		kill(cmd)
-		h.cleanup()
+		h.cleanup(true)
 		return err
 	}
 	go h.pump()
+	go h.writeInput()
 	go h.wait()
 	go h.accept(ln)
 
@@ -109,7 +116,7 @@ func RunHost(dir, id string) error {
 		case <-h.quit:
 			_ = ln.Close()
 			h.stop(5 * time.Second)
-			h.cleanup()
+			h.cleanup(false)
 			return nil
 		case <-idle.C:
 			h.mu.Lock()
@@ -119,7 +126,7 @@ func RunHost(dir, id string) error {
 			case <-h.exited:
 				if alone {
 					_ = ln.Close()
-					h.cleanup()
+					h.cleanup(false)
 					return nil
 				}
 			default:
@@ -142,6 +149,29 @@ type host struct {
 	exited   chan struct{}
 	quit     chan struct{}
 	quitOnce sync.Once
+
+	// input queues keys for the terminal, so a process that does not read
+	// them holds up only the writer, not resize, stop and quit.
+	input     chan []byte
+	closed    chan struct{} // closed by cleanup
+	closeOnce sync.Once
+}
+
+// hostInputQueue is how many input frames may wait for the terminal before
+// the frame reader waits too.
+const hostInputQueue = 64
+
+func (h *host) writeInput() {
+	for {
+		select {
+		case p := <-h.input:
+			if _, err := h.pty.Write(p); err != nil && errors.Is(err, os.ErrClosed) {
+				return
+			}
+		case <-h.closed:
+			return
+		}
+	}
 }
 
 // send writes a frame to the connected server, dropping it on error.
@@ -250,7 +280,12 @@ func (h *host) serve(conn net.Conn) {
 		}
 		switch kind {
 		case frameInput:
-			_, _ = h.pty.Write(payload)
+			select {
+			case h.input <- payload:
+			case <-h.closed:
+				_ = conn.Close()
+				return
+			}
 		case frameResize:
 			if len(payload) == 8 {
 				c, r := binary.BigEndian.Uint32(payload[:4]), binary.BigEndian.Uint32(payload[4:])
@@ -286,12 +321,20 @@ func (h *host) stop(grace time.Duration) {
 	}
 }
 
-func (h *host) cleanup() {
+// cleanup closes the terminal and removes the session's files; keepLog
+// leaves the log for exitbox web to read why the host failed.
+func (h *host) cleanup(keepLog bool) {
+	h.closeOnce.Do(func() { close(h.closed) })
 	if h.pty != nil {
 		_ = h.pty.Close()
 	}
+	files := []string{specPath(h.dir, h.id), infoPath(h.dir, h.id)}
+	if !keepLog {
+		files = append(files, logPath(h.dir, h.id))
+	}
 	// The socket goes last: while it exists, the session's files do too.
-	for _, p := range []string{specPath(h.dir, h.id), infoPath(h.dir, h.id), logPath(h.dir, h.id), sockPath(h.dir, h.id)} {
+	files = append(files, sockPath(h.dir, h.id))
+	for _, p := range files {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(os.Stderr, "exitbox web host: %v\n", err)
 		}

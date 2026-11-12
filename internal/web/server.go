@@ -77,6 +77,9 @@ type Options struct {
 	// StateDir holds the session hosts' sockets and files; empty uses
 	// DefaultStateDir.
 	StateDir string
+	// SessionsFile keeps logins across restarts; empty uses the web
+	// config dir.
+	SessionsFile string
 }
 
 // Server is the exitbox web HTTP server.
@@ -96,6 +99,8 @@ type Server struct {
 	folders *folderStore
 	layout  *layoutStore
 	renames *renameQueue
+	// renameMu lets one poll at a time apply the queued renames.
+	renameMu sync.Mutex
 
 	vault      vaultBackend
 	vaultGuard vaultGuard
@@ -137,7 +142,16 @@ func New(opts Options) (*Server, error) {
 	if opts.Logger != nil {
 		s.logf = opts.Logger.Printf
 	}
+	if opts.SessionsFile == "" {
+		opts.SessionsFile = sessionsFile()
+		s.opts.SessionsFile = opts.SessionsFile
+	}
+	s.auth.logf = s.logf
+	if err := s.auth.persist(opts.SessionsFile); err != nil {
+		s.logf("web: login sessions not restored: %v", err)
+	}
 	s.sessions.onExit = s.renameOnExit
+	s.sessions.logf = s.logf
 	s.handler = s.routes()
 	return s, nil
 }

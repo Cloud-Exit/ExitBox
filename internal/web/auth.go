@@ -18,16 +18,22 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cloud-exit/exitbox/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -41,6 +47,11 @@ const (
 	maxFailures   = 10
 	failureWindow = 10 * time.Minute
 )
+
+// PasswordMatches reports whether password matches a stored bcrypt hash.
+func PasswordMatches(hash, password string) bool {
+	return hash != "" && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
 
 // HashPassword returns the bcrypt hash stored in the config.
 func HashPassword(password string) (string, error) {
@@ -59,26 +70,131 @@ func HashPassword(password string) (string, error) {
 
 // auth checks logins and remembers signed-in browsers.
 type auth struct {
-	mu       sync.Mutex
-	username string
-	hash     string
-	tokens   map[string]time.Time // cookie value -> expiry
-	failures map[string][]time.Time
-	now      func() time.Time
+	mu        sync.Mutex
+	username  string
+	hash      string
+	tokens    map[string]time.Time // sha256 of the cookie value -> expiry
+	failures  map[string][]time.Time
+	lastSweep time.Time
+	now       func() time.Time
+	// path keeps the sessions across restarts; empty keeps them in memory.
+	path string
+	logf func(format string, args ...any)
 }
 
+// maxFailureClients caps the failure map; the stalest client goes first.
+const maxFailureClients = 4096
+
 func newAuth(username, hash string) *auth {
-	a := &auth{tokens: map[string]time.Time{}, failures: map[string][]time.Time{}, now: time.Now}
-	a.set(username, hash)
+	a := &auth{tokens: map[string]time.Time{}, failures: map[string][]time.Time{}, now: time.Now, logf: func(string, ...any) {}}
+	a.username, a.hash = username, hash
 	return a
 }
 
-// set replaces the credentials and signs everyone out.
+// sessionsFile keeps signed-in browsers across restarts.
+func sessionsFile() string {
+	return filepath.Join(config.Home, "web", "sessions.json")
+}
+
+// sessionsDoc is the sessions file. Only token hashes are stored, so the
+// file cannot be replayed as cookies.
+type sessionsDoc struct {
+	// Credential fingerprints the login the sessions belong to.
+	Credential string               `json:"credential"`
+	Sessions   map[string]time.Time `json:"sessions"`
+}
+
+func tokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func credentialKey(username, hash string) string {
+	sum := sha256.Sum256([]byte(username + "\x00" + hash))
+	return hex.EncodeToString(sum[:])
+}
+
+// persist loads the sessions saved at path and keeps saving them there.
+// Sessions of other credentials, or past their expiry, are dropped.
+func (a *auth) persist(path string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.path = path
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var doc sessionsDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if a.username == "" || a.hash == "" || doc.Credential != credentialKey(a.username, a.hash) {
+		return a.saveLocked()
+	}
+	now := a.now()
+	for k, exp := range doc.Sessions {
+		if now.Before(exp) {
+			a.tokens[k] = exp
+		}
+	}
+	if len(a.tokens) != len(doc.Sessions) {
+		return a.saveLocked()
+	}
+	return nil
+}
+
+// saveLocked writes the sessions file; a.mu must be held.
+func (a *auth) saveLocked() error {
+	if a.path == "" {
+		return nil
+	}
+	doc := sessionsDoc{Sessions: a.tokens}
+	if a.username != "" && a.hash != "" {
+		doc.Credential = credentialKey(a.username, a.hash)
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(a.path), 0o700); err != nil {
+		return err
+	}
+	tmp := a.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, a.path)
+}
+
+// save writes the sessions file. A failure keeps the sessions working in
+// memory; they just do not outlive this process.
+func (a *auth) save() {
+	if err := a.saveLocked(); err != nil {
+		a.logf("web: saving login sessions: %v", err)
+	}
+}
+
+// set replaces the credentials. New credentials sign everyone out; the
+// same ones keep the sessions.
 func (a *auth) set(username, hash string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if username == a.username && hash == a.hash {
+		return
+	}
 	a.username, a.hash = username, hash
 	a.tokens = map[string]time.Time{}
+	a.save()
+}
+
+// credentials returns the active login, which flags may have given.
+func (a *auth) credentials() (username, hash string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.username, a.hash
 }
 
 func (a *auth) enabled() bool {
@@ -99,24 +215,67 @@ var errTooManyFailures = errors.New("too many failed logins; wait a few minutes"
 // tens of milliseconds of CPU at cost 12.
 var bcryptSlots = make(chan struct{}, 2)
 
-// login checks the credentials and returns a new cookie value.
-func (a *auth) login(remote, username, password string) (string, error) {
-	a.mu.Lock()
-	now := a.now()
-	recent := a.failures[remote][:0]
-	for _, t := range a.failures[remote] {
+// clientKey is what failed logins count against: the address, or the /64
+// of an IPv6 one, since a single host usually holds the whole /64.
+func clientKey(remote string) string {
+	ip := net.ParseIP(remote)
+	if ip == nil || ip.To4() != nil {
+		return remote
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// recentFailures drops the failures of a client past failureWindow.
+func recentFailures(times []time.Time, now time.Time) []time.Time {
+	recent := times[:0]
+	for _, t := range times {
 		if now.Sub(t) < failureWindow {
 			recent = append(recent, t)
 		}
 	}
+	return recent
+}
+
+// sweepFailuresLocked forgets expired failures and keeps the map under
+// maxFailureClients; a.mu must be held.
+func (a *auth) sweepFailuresLocked(now time.Time, key string) {
+	if _, ok := a.failures[key]; (!ok && len(a.failures) >= maxFailureClients) || now.Sub(a.lastSweep) >= failureWindow {
+		a.lastSweep = now
+		for k, times := range a.failures {
+			if recent := recentFailures(times, now); len(recent) > 0 {
+				a.failures[k] = recent
+			} else {
+				delete(a.failures, k)
+			}
+		}
+	}
+	if _, ok := a.failures[key]; ok || len(a.failures) < maxFailureClients {
+		return
+	}
+	stalest, at := "", now
+	for k, times := range a.failures {
+		if last := times[len(times)-1]; last.Before(at) || stalest == "" {
+			stalest, at = k, last
+		}
+	}
+	delete(a.failures, stalest)
+}
+
+// login checks the credentials and returns a new cookie value.
+func (a *auth) login(remote, username, password string) (string, error) {
+	key := clientKey(remote)
+	a.mu.Lock()
+	now := a.now()
+	a.sweepFailuresLocked(now, key)
+	recent := recentFailures(a.failures[key], now)
 	if len(recent) >= maxFailures {
-		a.failures[remote] = recent
+		a.failures[key] = recent
 		a.mu.Unlock()
 		return "", errTooManyFailures
 	}
 	// Count the attempt before checking it, so parallel requests cannot
 	// all pass the limit; a success takes it back.
-	a.failures[remote] = append(recent, now)
+	a.failures[key] = append(recent, now)
 	wantUser, hash := a.username, a.hash
 	a.mu.Unlock()
 
@@ -135,21 +294,31 @@ func (a *auth) login(remote, username, password string) (string, error) {
 	}
 	token := hex.EncodeToString(b)
 	a.mu.Lock()
-	delete(a.failures, remote)
-	a.tokens[token] = now.Add(cookieTTL)
+	defer a.mu.Unlock()
+	delete(a.failures, key)
+	// Credentials changed while bcrypt ran: this login is for the old ones.
+	if a.username != wantUser || a.hash != hash {
+		return "", errors.New("the login changed; sign in again")
+	}
+	a.tokens[tokenKey(token)] = now.Add(cookieTTL)
 	for t, exp := range a.tokens {
 		if now.After(exp) {
 			delete(a.tokens, t)
 		}
 	}
-	a.mu.Unlock()
+	a.save()
 	return token, nil
 }
 
 func (a *auth) logout(token string) {
 	a.mu.Lock()
-	delete(a.tokens, token)
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	k := tokenKey(token)
+	if _, ok := a.tokens[k]; !ok {
+		return
+	}
+	delete(a.tokens, k)
+	a.save()
 }
 
 // valid reports whether the request carries a live session cookie.
@@ -160,12 +329,13 @@ func (a *auth) valid(r *http.Request) bool {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	exp, ok := a.tokens[c.Value]
+	k := tokenKey(c.Value)
+	exp, ok := a.tokens[k]
 	if !ok {
 		return false
 	}
 	if a.now().After(exp) {
-		delete(a.tokens, c.Value)
+		delete(a.tokens, k)
 		return false
 	}
 	return true

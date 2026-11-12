@@ -17,8 +17,12 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/web"
 )
@@ -63,5 +67,33 @@ func TestWebAttachCommand(t *testing.T) {
 	got := strings.Join(c.Args[1:], " ")
 	if got != "exec -it -e TERM=xterm-256color exitbox-claude-x_1-0a1b2c3d tmux attach-session -t exitbox-claude" {
 		t.Fatalf("attach command %q", got)
+	}
+}
+
+// A host that exits is reaped, and what it printed stays in its log.
+func TestSpawnHostReapsAndKeepsLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script host")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(t.TempDir(), "fake-exitbox")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho \"host failed: $*\" >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exited, err := spawnHost(exe)(dir, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("host never reaped")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "abc.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "host failed: web-session-host --state "+dir+" --id abc") {
+		t.Fatalf("log %q", data)
 	}
 }

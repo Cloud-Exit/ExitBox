@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/session"
 )
 
 // pendingRename is a rename asked for while the session runs. A running
@@ -97,16 +98,18 @@ func (q *renameQueue) add(p pendingRename) error {
 	return q.saveLocked(out)
 }
 
-func (q *renameQueue) remove(key string) {
+// done drops a rename once it is applied or refused. A rename asked for
+// again meanwhile (another target) stays.
+func (q *renameQueue) done(p pendingRename) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var out []pendingRename
 	for _, x := range q.loadLocked() {
-		if x.key() != key {
+		if x != p {
 			out = append(out, x)
 		}
 	}
-	_ = q.saveLocked(out)
+	return q.saveLocked(out)
 }
 
 // pendingFor returns the queued new name of a session, or "".
@@ -123,6 +126,12 @@ func (s *Server) pendingFor(workspace, agent, dir, name string) string {
 // applyPendingRenames renames the sessions that have ended since a rename
 // was asked for.
 func (s *Server) applyPendingRenames(ctrs []containerDoc, sessions []SessionInfo) {
+	// Concurrent polls would try the same rename twice; the next poll
+	// catches up.
+	if !s.renameMu.TryLock() {
+		return
+	}
+	defer s.renameMu.Unlock()
 	for _, p := range s.renames.list() {
 		running := false
 		for _, c := range ctrs {
@@ -138,13 +147,22 @@ func (s *Server) applyPendingRenames(ctrs []containerDoc, sessions []SessionInfo
 		if running {
 			continue
 		}
-		s.renames.remove(p.key())
-		if err := s.store.renameSaved(p.Workspace, p.Agent, p.Dir, p.Name, p.To); err != nil {
+		err := s.store.renameSaved(p.Workspace, p.Agent, p.Dir, p.Name, p.To)
+		var refused *session.RefusedError
+		switch {
+		case err == nil:
+			s.noteRename(p.Workspace, p.Agent, p.Dir, p.Name, p.To)
+			s.logf("web: renamed session %q to %q", p.Name, p.To)
+		case errors.As(err, &refused):
+			s.logf("web: rename session %q to %q refused: %v", p.Name, p.To, err)
+		default:
+			// Kept for the next poll: the workspace store may be busy.
 			s.logf("web: rename session %q to %q: %v", p.Name, p.To, err)
 			continue
 		}
-		s.noteRename(p.Workspace, p.Agent, p.Dir, p.Name, p.To)
-		s.logf("web: renamed session %q to %q", p.Name, p.To)
+		if err := s.renames.done(p); err != nil {
+			s.logf("web: rename queue: %v", err)
+		}
 	}
 }
 

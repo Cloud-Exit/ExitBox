@@ -53,8 +53,24 @@ func TestOpenWrongPassword(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	_, err := Open("test-ws", "wrong")
-	if err == nil {
-		t.Error("expected error for wrong password")
+	if !errors.Is(err, ErrWrongPassword) {
+		t.Errorf("wrong password: got %v, want ErrWrongPassword", err)
+	}
+}
+
+func TestOpenLocked(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if err := Init("test-ws", "correct"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	s, err := Open("test-ws", "correct")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := Open("test-ws", "correct"); !errors.Is(err, ErrLocked) {
+		t.Errorf("second open: got %v, want ErrLocked", err)
 	}
 }
 

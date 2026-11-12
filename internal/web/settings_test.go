@@ -152,7 +152,7 @@ func TestWebSettings(t *testing.T) {
 func TestPutWebSettingsSignsOut(t *testing.T) {
 	s, st, ts := newTestServer(t, Options{})
 	resp, out := do(t, ts, "PUT", "/api/settings/web", map[string]any{"username": "me", "password": "correct horse"}, "")
-	if resp.StatusCode != 200 || out["authEnabled"] != true {
+	if resp.StatusCode != 200 || out["authEnabled"] != true || out["signedOut"] != true {
 		t.Fatalf("put web: %d %v", resp.StatusCode, out)
 	}
 	if !st.cfg.Web.AuthEnabled() || !s.auth.enabled() {
@@ -161,6 +161,42 @@ func TestPutWebSettingsSignsOut(t *testing.T) {
 	resp, _ = do(t, ts, "GET", "/api/state", nil, "")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("state after turning on login: %d", resp.StatusCode)
+	}
+}
+
+func TestPutWebSettingsKeepsFlagLogin(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// --username/--password: active, but not in config.yaml.
+	s, st, ts := newTestServer(t, Options{Username: "me", PasswordHash: hash})
+	cookie := loginCookie(t, ts, "me", "correct horse")
+	_, doc := do(t, ts, "GET", "/api/settings", nil, cookie)
+	web, _ := doc["web"].(map[string]any)
+	if web["username"] != "me" || web["authEnabled"] != true {
+		t.Fatalf("web settings %v, want the active login", web)
+	}
+
+	// The page sends the username back with an empty password.
+	resp, out := do(t, ts, "PUT", "/api/settings/web", map[string]any{"listen": "127.0.0.1:4849", "username": "me", "password": ""}, cookie)
+	if resp.StatusCode != 200 || out["authEnabled"] != true || out["signedOut"] != false {
+		t.Fatalf("put web: %d %v", resp.StatusCode, out)
+	}
+	if user, h := s.auth.credentials(); user != "me" || h != hash {
+		t.Fatal("the active login changed")
+	}
+	if st.cfg.Web.Username != "me" || st.cfg.Web.PasswordHash != hash || st.cfg.Web.Listen != "127.0.0.1:4849" {
+		t.Fatalf("saved web %+v", st.cfg.Web)
+	}
+	if resp, _ := do(t, ts, "GET", "/api/state", nil, cookie); resp.StatusCode != 200 {
+		t.Fatalf("this browser was signed out: %d", resp.StatusCode)
+	}
+
+	// No username at all is refused, never a silent logout.
+	resp, _ = do(t, ts, "PUT", "/api/settings/web", map[string]any{"listen": "127.0.0.1:4848"}, cookie)
+	if resp.StatusCode != http.StatusBadRequest || !s.auth.enabled() {
+		t.Fatalf("empty edit: %d, login on %v", resp.StatusCode, s.auth.enabled())
 	}
 }
 

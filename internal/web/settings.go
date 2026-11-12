@@ -113,7 +113,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 		},
 		Web: &webSettingsDoc{
 			Listen: cfg.Web.ListenOrDefault(), ListenActive: s.opts.Listen,
-			Username: cfg.Web.Username, AuthEnabled: s.auth.enabled(),
+			Username: s.auth.user(), AuthEnabled: s.auth.enabled(),
 		},
 		Defaults: &keybindingsDoc{WorkspaceMenu: kbDef.WorkspaceMenu, SessionMenu: kbDef.SessionMenu},
 	}
@@ -336,6 +336,11 @@ func (s *Server) handlePutWebSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.store.loadConfig()
+	// Start from the active login, which --username/--password may have
+	// given without saving it, so an unrelated edit never drops it.
+	if user, hash := s.auth.credentials(); user != "" && hash != "" {
+		cfg.Web.Username, cfg.Web.PasswordHash = user, hash
+	}
 	if err := applyWebSettings(cfg, req, s.opts.Listen); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -345,11 +350,14 @@ func (s *Server) handlePutWebSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// New credentials sign everyone out, this browser included.
+	oldUser, oldHash := s.auth.credentials()
 	s.auth.set(cfg.Web.Username, cfg.Web.PasswordHash)
+	signedOut := oldUser != cfg.Web.Username || oldHash != cfg.Web.PasswordHash
 	s.logf("web: login settings changed (login %v)", cfg.Web.AuthEnabled())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":            true,
 		"authEnabled":   cfg.Web.AuthEnabled(),
+		"signedOut":     signedOut && cfg.Web.AuthEnabled(),
 		"restartNeeded": cfg.Web.ListenOrDefault() != s.opts.Listen,
 		"listen":        cfg.Web.ListenOrDefault(),
 	})

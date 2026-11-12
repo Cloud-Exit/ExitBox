@@ -17,11 +17,17 @@
 package web
 
 import (
+	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestHashPasswordLimits(t *testing.T) {
@@ -68,10 +74,193 @@ func TestLoginAndCookie(t *testing.T) {
 		t.Fatal("request with the login cookie is not valid")
 	}
 
-	// New credentials sign everyone out.
+	// The same credentials keep the sessions; new ones sign everyone out.
 	a.set("me", hash)
+	if !a.valid(r) {
+		t.Fatal("cookie invalid after setting the same credentials")
+	}
+	hash2, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.set("me", hash2)
 	if a.valid(r) {
 		t.Fatal("cookie still valid after the credentials changed")
+	}
+}
+
+func cookieRequest(token string) *http.Request {
+	r := httptest.NewRequest("GET", "/api/state", nil)
+	r.Header.Set("Cookie", cookieName+"="+token)
+	return r
+}
+
+func restartedAuth(t *testing.T, user, hash, path string) *auth {
+	t.Helper()
+	a := newAuth(user, hash)
+	if err := a.persist(path); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestSessionsSurviveRestart(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "web", "sessions.json")
+	a := restartedAuth(t, "me", hash, path)
+	token, err := a.login("1.2.3.4", "me", "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := a.login("1.2.3.4", "me", "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("sessions file mode %v, want 0600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), token) || strings.Contains(string(data), hash) {
+		t.Fatal("the sessions file holds a cookie value or the password hash")
+	}
+
+	b := restartedAuth(t, "me", hash, path)
+	if !b.valid(cookieRequest(token)) || !b.valid(cookieRequest(other)) {
+		t.Fatal("login lost across a restart")
+	}
+	if b.valid(cookieRequest(token + "0")) {
+		t.Fatal("unknown cookie accepted")
+	}
+
+	b.logout(token)
+	c := restartedAuth(t, "me", hash, path)
+	if c.valid(cookieRequest(token)) {
+		t.Fatal("logged out cookie valid after a restart")
+	}
+	if !c.valid(cookieRequest(other)) {
+		t.Fatal("logout of one browser signed out another")
+	}
+
+	// Expired sessions are dropped on load.
+	d := newAuth("me", hash)
+	d.now = func() time.Time { return time.Now().Add(cookieTTL + time.Minute) }
+	if err := d.persist(path); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.tokens) != 0 {
+		t.Fatal("expired session loaded")
+	}
+}
+
+func TestSessionsDroppedWhenCredentialsChange(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2, err := HashPassword("battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	a := restartedAuth(t, "me", hash, path)
+	token, err := a.login("1.2.3.4", "me", "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Changed while the server was stopped (exitbox setup).
+	if restartedAuth(t, "me", hash2, path).valid(cookieRequest(token)) {
+		t.Fatal("session kept across a password change")
+	}
+	if restartedAuth(t, "me", hash, path).valid(cookieRequest(token)) {
+		t.Fatal("loading with other credentials did not clear the file")
+	}
+
+	b := restartedAuth(t, "me", hash, path)
+	token, err = b.login("1.2.3.4", "me", "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.set("you", hash)
+	if restartedAuth(t, "me", hash, path).valid(cookieRequest(token)) {
+		t.Fatal("session kept after the username changed at runtime")
+	}
+}
+
+func TestSessionsFileCorruptStartsEmpty(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := newAuth("me", hash)
+	if err := a.persist(path); err == nil {
+		t.Fatal("corrupt sessions file not reported")
+	}
+	token, err := a.login("1.2.3.4", "me", "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restartedAuth(t, "me", hash, path).valid(cookieRequest(token)) {
+		t.Fatal("a login after a corrupt file was not saved")
+	}
+}
+
+func TestLoginFailuresPerIPv6Slash64(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAuth("me", string(hash))
+	for i := 0; i < maxFailures; i++ {
+		if _, err := a.login(fmt.Sprintf("2001:db8:1:2::%x", i+1), "me", "nope"); err == nil {
+			t.Fatal("wrong password accepted")
+		}
+	}
+	if _, err := a.login("2001:db8:1:2:ffff::1", "me", "correct horse"); err != errTooManyFailures {
+		t.Fatalf("same /64: got %v, want errTooManyFailures", err)
+	}
+	if _, err := a.login("2001:db8:1:3::1", "me", "correct horse"); err != nil {
+		t.Fatalf("another /64 is locked out too: %v", err)
+	}
+	if got := clientKey("10.0.0.1"); got != "10.0.0.1" {
+		t.Fatalf("IPv4 key %q", got)
+	}
+}
+
+func TestLoginFailuresPrunedAndCapped(t *testing.T) {
+	a := newAuth("me", "x")
+	now := time.Now()
+	a.lastSweep = now
+	for i := 0; i < maxFailureClients; i++ {
+		a.failures[fmt.Sprintf("10.%d.%d.1", i/256, i%256)] = []time.Time{now.Add(-time.Duration(maxFailureClients-i) * time.Millisecond)}
+	}
+	// Full map: a new client pushes out the stalest one.
+	a.sweepFailuresLocked(now, "192.0.2.1")
+	if len(a.failures) != maxFailureClients-1 {
+		t.Fatalf("%d clients after the cap, want %d", len(a.failures), maxFailureClients-1)
+	}
+	if _, ok := a.failures["10.0.0.1"]; ok {
+		t.Fatal("the stalest client was kept")
+	}
+	// Past the window everything expired goes.
+	later := now.Add(failureWindow + time.Second)
+	a.failures["192.0.2.2"] = []time.Time{later}
+	a.sweepFailuresLocked(later, "192.0.2.3")
+	if len(a.failures) != 1 {
+		t.Fatalf("%d clients after the window, want 1", len(a.failures))
 	}
 }
 
@@ -181,5 +370,56 @@ func TestLoginLimitHoldsUnderParallelAttempts(t *testing.T) {
 	wg.Wait()
 	if checked > maxFailures {
 		t.Fatalf("%d passwords checked in parallel, limit %d", checked, maxFailures)
+	}
+}
+
+func loginCookie(t *testing.T, ts *httptest.Server, user, password string) string {
+	t.Helper()
+	resp, out := do(t, ts, "POST", "/api/login", map[string]string{"username": user, "password": password}, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: %d %v", resp.StatusCode, out)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName {
+			return c.Name + "=" + c.Value
+		}
+	}
+	t.Fatal("no session cookie")
+	return ""
+}
+
+func TestServerRestartKeepsLogin(t *testing.T) {
+	hash, err := HashPassword("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	_, _, ts := newTestServer(t, Options{Username: "me", PasswordHash: hash, SessionsFile: path})
+	cookie := loginCookie(t, ts, "me", "correct horse")
+	ts.Close()
+
+	_, _, ts2 := newTestServer(t, Options{Username: "me", PasswordHash: hash, SessionsFile: path})
+	if resp, _ := do(t, ts2, "GET", "/api/state", nil, cookie); resp.StatusCode != http.StatusOK {
+		t.Fatalf("state after a restart: %d", resp.StatusCode)
+	}
+	do(t, ts2, "POST", "/api/logout", map[string]string{}, cookie)
+	ts2.Close()
+
+	_, _, ts3 := newTestServer(t, Options{Username: "me", PasswordHash: hash, SessionsFile: path})
+	if resp, _ := do(t, ts3, "GET", "/api/state", nil, cookie); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("state after logout and a restart: %d", resp.StatusCode)
+	}
+}
+
+func TestPasswordMatches(t *testing.T) {
+	hash, err := HashPassword("s3cret-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !PasswordMatches(hash, "s3cret-pass") {
+		t.Fatal("right password does not match its hash")
+	}
+	if PasswordMatches(hash, "wrong") || PasswordMatches("", "s3cret-pass") {
+		t.Fatal("wrong password or empty hash matched")
 	}
 }
