@@ -18,15 +18,19 @@ package web
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/creack/pty"
 )
 
 // replayBytes is how much recent output a session keeps for a browser that
@@ -67,18 +71,22 @@ type SessionInfo struct {
 	RenameError string `json:"renameError,omitempty"`
 }
 
-// Session is one `exitbox run` process on a pseudo terminal.
+// Session is one session, run by its host process (RunHost) and reached
+// over the host's socket. The host outlives exitbox web, so a restart of
+// the server reconnects instead of ending the session.
 type Session struct {
-	info SessionInfo
+	m *Manager
 
-	mu      sync.Mutex
-	pty     *os.File
-	cmd     *exec.Cmd
-	replay  []byte
-	subs    map[*subscriber]struct{}
-	pumped  chan struct{} // closed when all output has been read
-	done    chan struct{} // closed when the process has exited
-	settled chan struct{} // closed when the manager's exit hook has run
+	mu     sync.Mutex
+	info   SessionInfo
+	conn   net.Conn
+	replay []byte
+	subs   map[*subscriber]struct{}
+
+	wmu      sync.Mutex // serialises frames to the host
+	done     chan struct{}
+	doneOnce sync.Once
+	settled  chan struct{} // closed when the manager's exit hook has run
 }
 
 type subscriber struct {
@@ -120,17 +128,27 @@ func (s *Session) Detach(sub *subscriber) {
 	sub.drop()
 }
 
+func (s *Session) frame(kind byte, payload []byte) error {
+	s.mu.Lock()
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		return errors.New("session host is gone")
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	return writeFrame(conn, kind, payload)
+}
+
 // Write sends keyboard input to the process.
 func (s *Session) Write(p []byte) error {
-	s.mu.Lock()
-	f := s.pty
-	exited := s.info.Exited
-	s.mu.Unlock()
-	if exited || f == nil {
+	if s.Info().Exited {
 		return errors.New("session has ended")
 	}
-	_, err := f.Write(p)
-	return err
+	return s.frame(frameInput, p)
 }
 
 // Resize sets the terminal size. The process gets SIGWINCH.
@@ -138,31 +156,51 @@ func (s *Session) Resize(cols, rows int) error {
 	if cols < 2 || rows < 2 || cols > 1000 || rows > 1000 {
 		return errors.New("terminal size out of range")
 	}
-	s.mu.Lock()
-	f := s.pty
-	exited := s.info.Exited
-	s.mu.Unlock()
-	if exited || f == nil {
+	if s.Info().Exited {
 		return nil
 	}
-	return pty.Setsize(f, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint32(b[:4], uint32(cols))
+	binary.BigEndian.PutUint32(b[4:], uint32(rows))
+	return s.frame(frameResize, b)
 }
 
-// pump copies process output to the replay buffer and every viewer.
-func (s *Session) pump() {
-	buf := make([]byte, 32<<10)
+// update changes the session's info under its lock and saves it, so a
+// restarted server knows the session.
+func (s *Session) update(fn func(*SessionInfo)) {
+	s.mu.Lock()
+	fn(&s.info)
+	info := s.info
+	s.mu.Unlock()
+	s.m.saveInfo(info)
+}
+
+// read follows the host: output to the viewers, then the exit.
+func (s *Session) read(conn net.Conn) {
 	for {
-		n, err := s.pty.Read(buf)
-		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
+		kind, payload, err := readFrame(conn)
+		if err != nil {
 			s.mu.Lock()
-			s.replay = append(s.replay, chunk...)
+			ours := s.conn == conn
+			s.mu.Unlock()
+			// Not ours any more: exitbox web let go on purpose (Disconnect,
+			// close). Otherwise the host went away without reporting an
+			// exit: it crashed or was killed, and the session is over.
+			if ours {
+				s.ended(-1)
+			}
+			return
+		}
+		switch kind {
+		case frameOutput:
+			s.mu.Lock()
+			s.replay = append(s.replay, payload...)
 			if over := len(s.replay) - replayBytes; over > 0 {
 				s.replay = append([]byte(nil), s.replay[over:]...)
 			}
 			for sub := range s.subs {
 				select {
-				case sub.out <- chunk:
+				case sub.out <- payload:
 				default:
 					// Too far behind: drop it; it reattaches with the replay.
 					delete(s.subs, sub)
@@ -170,53 +208,45 @@ func (s *Session) pump() {
 				}
 			}
 			s.mu.Unlock()
-		}
-		if err != nil {
-			// io.EOF, or EIO on Linux once the process closed the terminal.
-			close(s.pumped)
-			return
+		case frameExit:
+			code := -1
+			if len(payload) == 4 {
+				code = int(int32(binary.BigEndian.Uint32(payload)))
+			}
+			s.ended(code)
 		}
 	}
 }
 
-func (s *Session) wait() {
-	err := s.cmd.Wait()
-	code := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			code = exitErr.ExitCode()
-		} else {
-			code = -1
-		}
-	}
-	// Let the last output reach the viewers before reporting the exit. A
-	// leftover child can keep the terminal open, so do not wait forever.
-	select {
-	case <-s.pumped:
-	case <-time.After(2 * time.Second):
-	}
-	s.mu.Lock()
-	s.info.Exited = true
-	s.info.ExitCode = code
-	s.mu.Unlock()
-	close(s.done)
-}
-
-// update changes the session's info under its lock.
-func (s *Session) update(fn func(*SessionInfo)) {
-	s.mu.Lock()
-	fn(&s.info)
-	s.mu.Unlock()
+// ended records the exit once and runs the manager's exit hook.
+func (s *Session) ended(code int) {
+	s.doneOnce.Do(func() {
+		s.update(func(i *SessionInfo) {
+			if !i.Exited {
+				i.Exited, i.ExitCode = true, code
+			}
+		})
+		close(s.done)
+		go func() {
+			defer close(s.settled)
+			s.m.onExit(s)
+		}()
+	})
 }
 
 // CommandFunc builds the process of a session: `exitbox <Args>` in Dir for
 // KindRun, or an exec into Container's tmux for KindAttach.
 type CommandFunc func(info SessionInfo) *exec.Cmd
 
-// Manager owns the running sessions.
+// SpawnFunc starts the host of session id in dir, detached from exitbox
+// web (RunHost in another process). Tests run it in-process.
+type SpawnFunc func(dir, id string) error
+
+// Manager owns the sessions: their hosts, files and connections.
 type Manager struct {
 	command CommandFunc
+	spawn   SpawnFunc
+	dir     string
 	// onExit runs after a session's process has ended.
 	onExit func(*Session)
 
@@ -224,13 +254,26 @@ type Manager struct {
 	sessions map[string]*Session
 }
 
-// NewManager returns a manager that starts processes with command.
-func NewManager(command CommandFunc) *Manager {
-	return &Manager{command: command, sessions: make(map[string]*Session), onExit: func(*Session) {}}
+// NewManager returns a manager keeping its session files in dir.
+func NewManager(command CommandFunc, spawn SpawnFunc, dir string) *Manager {
+	return &Manager{command: command, spawn: spawn, dir: dir, sessions: make(map[string]*Session), onExit: func(*Session) {}}
 }
 
-// Start launches a session. args are the exitbox arguments, e.g.
-// ["run", "claude", "--name", "x"].
+func (m *Manager) saveInfo(info SessionInfo) {
+	info.Viewers = 0
+	data, err := json.Marshal(info)
+	if err != nil {
+		return
+	}
+	tmp := infoPath(m.dir, info.ID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, infoPath(m.dir, info.ID))
+}
+
+// Start launches a session in a new host. args are the exitbox arguments,
+// e.g. ["run", "claude", "--name", "x"].
 func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 	if cols < 2 || rows < 2 || cols > 1000 || rows > 1000 {
 		cols, rows = 120, 36
@@ -251,21 +294,101 @@ func (m *Manager) Start(info SessionInfo, cols, rows int) (*Session, error) {
 		run.Args = append(append([]string(nil), info.Args...), "--env", WebSessionEnv+"="+id)
 	}
 	cmd := m.command(run)
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	spec, err := json.Marshal(hostSpec{Path: cmd.Path, Args: cmd.Args, Env: env, Dir: cmd.Dir, Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{info: info, pty: f, cmd: cmd, subs: make(map[*subscriber]struct{}), pumped: make(chan struct{}), done: make(chan struct{}), settled: make(chan struct{})}
+	if err := os.WriteFile(specPath(m.dir, id), spec, 0o600); err != nil {
+		return nil, err
+	}
+	s := m.newSession(info)
+	m.saveInfo(info)
+	if err := m.spawn(m.dir, id); err != nil {
+		m.forget(id)
+		return nil, fmt.Errorf("starting the session host: %w", err)
+	}
+	// The host listens once its process runs.
+	var conn net.Conn
+	for i := 0; i < 200; i++ {
+		if conn, err = net.Dial("unix", sockPath(m.dir, id)); err == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err != nil {
+		m.forget(id)
+		return nil, fmt.Errorf("the session did not start: %w", m.hostError(id, err))
+	}
 	m.mu.Lock()
 	m.sessions[id] = s
 	m.mu.Unlock()
-	go s.pump()
-	go func() {
-		defer close(s.settled)
-		s.wait()
-		m.onExit(s)
-	}()
+	s.connect(conn)
 	return s, nil
+}
+
+// hostError prefers what the host wrote to its log.
+func (m *Manager) hostError(id string, err error) error {
+	if data, rerr := os.ReadFile(logPath(m.dir, id)); rerr == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return errors.New(strings.TrimSpace(string(data)))
+	}
+	return err
+}
+
+func (m *Manager) newSession(info SessionInfo) *Session {
+	return &Session{m: m, info: info, subs: map[*subscriber]struct{}{}, done: make(chan struct{}), settled: make(chan struct{})}
+}
+
+func (s *Session) connect(conn net.Conn) {
+	s.mu.Lock()
+	s.conn = conn
+	s.mu.Unlock()
+	go s.read(conn)
+}
+
+// Restore reconnects to the hosts left by an earlier exitbox web and
+// removes the files of hosts that are gone.
+func (m *Manager) Restore() (int, error) {
+	paths, err := filepath.Glob(filepath.Join(m.dir, "*.info.json"))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range paths {
+		id := strings.TrimSuffix(filepath.Base(p), ".info.json")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var info SessionInfo
+		if err := json.Unmarshal(data, &info); err != nil || info.ID != id {
+			continue
+		}
+		// The host reports an exit itself right after hello.
+		info.Exited, info.ExitCode = false, 0
+		conn, err := net.Dial("unix", sockPath(m.dir, id))
+		if err != nil {
+			m.forget(id)
+			continue
+		}
+		s := m.newSession(info)
+		m.mu.Lock()
+		m.sessions[id] = s
+		m.mu.Unlock()
+		s.connect(conn)
+		n++
+	}
+	return n, nil
+}
+
+// forget removes a session's files when its host never came up or is gone.
+func (m *Manager) forget(id string) {
+	for _, p := range []string{sockPath(m.dir, id), specPath(m.dir, id), infoPath(m.dir, id), logPath(m.dir, id)} {
+		_ = os.Remove(p)
+	}
 }
 
 // Get returns a session by id.
@@ -291,7 +414,8 @@ func (m *Manager) List() []SessionInfo {
 	return out
 }
 
-// Close stops a session if it still runs and forgets it.
+// Close ends a session for good: its window was closed. The process is
+// hung up if it still runs, and the host removes itself.
 func (m *Manager) Close(id string) error {
 	m.mu.Lock()
 	s := m.sessions[id]
@@ -300,12 +424,41 @@ func (m *Manager) Close(id string) error {
 	if s == nil {
 		return errors.New("no such session")
 	}
-	s.stop(5 * time.Second)
+	s.close()
 	return nil
 }
 
-// Shutdown stops every session.
-func (m *Manager) Shutdown(grace time.Duration) {
+func (s *Session) close() {
+	if err := s.frame(frameStop, nil); err == nil {
+		select {
+		case <-s.done:
+		case <-time.After(15 * time.Second):
+		}
+	}
+	// A rename asked for while the session ran happens in the exit hook.
+	select {
+	case <-s.settled:
+	case <-time.After(10 * time.Second):
+	}
+	_ = s.frame(frameQuit, nil)
+	// The server writes the info file, so it removes it too.
+	_ = os.Remove(infoPath(s.m.dir, s.Info().ID))
+	s.mu.Lock()
+	for sub := range s.subs {
+		delete(s.subs, sub)
+		sub.drop()
+	}
+	conn := s.conn
+	s.conn = nil
+	s.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+// Disconnect lets go of every host without stopping it: exitbox web is
+// going away and the next one takes the sessions over.
+func (m *Manager) Disconnect() {
 	m.mu.Lock()
 	list := make([]*Session, 0, len(m.sessions))
 	for id, s := range m.sessions {
@@ -313,45 +466,38 @@ func (m *Manager) Shutdown(grace time.Duration) {
 		delete(m.sessions, id)
 	}
 	m.mu.Unlock()
-	var wg sync.WaitGroup
 	for _, s := range list {
-		wg.Add(1)
-		go func(s *Session) {
-			defer wg.Done()
-			s.stop(grace)
-		}(s)
-	}
-	wg.Wait()
-}
-
-// stop hangs up the process group, then kills it after grace. exitbox run
-// stops its container when its terminal hangs up.
-func (s *Session) stop(grace time.Duration) {
-	select {
-	case <-s.done:
-	default:
-		hangup(s.cmd)
-		select {
-		case <-s.done:
-		case <-time.After(grace):
-			kill(s.cmd)
-			<-s.done
+		s.mu.Lock()
+		conn := s.conn
+		s.conn = nil
+		for sub := range s.subs {
+			delete(s.subs, sub)
+			sub.drop()
+		}
+		s.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
 		}
 	}
-	// A rename asked for while the session ran happens in the exit hook;
-	// let it finish before the server goes away.
-	select {
-	case <-s.settled:
-	case <-time.After(10 * time.Second):
+}
+
+// CloseAll ends every session, as closing every window would.
+func (m *Manager) CloseAll() {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.sessions))
+	for id := range m.sessions {
+		ids = append(ids, id)
 	}
-	s.mu.Lock()
-	for sub := range s.subs {
-		delete(s.subs, sub)
-		sub.drop()
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_ = m.Close(id)
+		}(id)
 	}
-	f := s.pty
-	s.mu.Unlock()
-	_ = f.Close()
+	wg.Wait()
 }
 
 func newID() (string, error) {

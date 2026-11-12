@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,18 +182,42 @@ func newTestServer(t *testing.T, opts Options) (*Server, *fakeStore, *httptest.S
 	if opts.Command == nil {
 		opts.Command = shellCommand(&recorder{}, "true")
 	}
+	if opts.Spawn == nil {
+		opts.Spawn = inProcessHosts
+	}
+	if opts.StateDir == "" {
+		opts.StateDir = shortTempDir(t)
+	}
 	s, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.store = st
 	s.folders = &folderStore{path: filepath.Join(t.TempDir(), "folders.json")}
+	s.layout = &layoutStore{path: filepath.Join(t.TempDir(), "layout.json")}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(func() {
 		ts.Close()
-		s.sessions.Shutdown(time.Second)
+		s.sessions.CloseAll()
 	})
 	return s, st, ts
+}
+
+// inProcessHosts runs session hosts as goroutines of the test.
+func inProcessHosts(dir, id string) error {
+	go func() { _ = RunHost(dir, id) }()
+	return nil
+}
+
+// shortTempDir is a temp dir with a path short enough for Unix sockets.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "xw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func do(t *testing.T, ts *httptest.Server, method, path string, body any, cookie string) (*http.Response, map[string]any) {
@@ -229,13 +254,13 @@ func do(t *testing.T, ts *httptest.Server, method, path string, body any, cookie
 
 func TestNewRefusesPublicListenWithoutLogin(t *testing.T) {
 	cmd := shellCommand(&recorder{}, "true")
-	if _, err := New(Options{Listen: "0.0.0.0:4848", Command: cmd}); err == nil {
+	if _, err := New(Options{Listen: "0.0.0.0:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err == nil {
 		t.Fatal("public address without a login was accepted")
 	}
-	if _, err := New(Options{Listen: "0.0.0.0:4848", Username: "me", PasswordHash: "$2a$x", Command: cmd}); err != nil {
+	if _, err := New(Options{Listen: "0.0.0.0:4848", Username: "me", PasswordHash: "$2a$x", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err != nil {
 		t.Fatalf("public address with a login refused: %v", err)
 	}
-	if _, err := New(Options{Listen: "127.0.0.1:4848", Command: cmd}); err != nil {
+	if _, err := New(Options{Listen: "127.0.0.1:4848", Command: cmd, Spawn: inProcessHosts, StateDir: shortTempDir(t)}); err != nil {
 		t.Fatalf("loopback without a login refused: %v", err)
 	}
 }
@@ -588,12 +613,12 @@ func TestReplayIsBounded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no pty on Windows")
 	}
-	m := NewManager(shellCommand(&recorder{}, `head -c 1200000 /dev/zero | tr '\0' x; echo; echo END`))
+	m := NewManager(shellCommand(&recorder{}, `head -c 1200000 /dev/zero | tr '\0' x; echo; echo END`), inProcessHosts, shortTempDir(t))
 	sess, err := m.Start(SessionInfo{Agent: "claude", Dir: t.TempDir()}, 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Shutdown(time.Second)
+	defer m.CloseAll()
 	select {
 	case <-sess.Done():
 	case <-time.After(10 * time.Second):
@@ -706,5 +731,115 @@ func TestLoginCookieSecureBehindTLSProxy(t *testing.T) {
 		if c.Name == cookieName && !c.Secure {
 			t.Fatal("cookie not Secure behind a TLS proxy")
 		}
+	}
+}
+
+// A restart of exitbox web leaves sessions running; the next server takes
+// them over with their output, and only closing the window ends them.
+func TestSessionsSurviveServerRestart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	dir := shortTempDir(t)
+	script := `echo started; while IFS= read -r l; do echo "got:$l"; done`
+	s1, st, ts1 := newTestServer(t, Options{Command: shellCommand(&recorder{}, script), StateDir: dir})
+	resp, out := do(t, ts1, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude", "name": "keep"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	keep := out["id"].(string)
+	resp, out = do(t, ts1, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude", "name": "ends"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	ends := out["id"].(string)
+	ws, err := dialSession(t, ts1, keep, ts1.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, ws, "started")
+	_ = ws.Close()
+
+	// The server stops: hosts keep running.
+	s1.sessions.Disconnect()
+	ts1.Close()
+
+	// While nobody is connected, one session ends.
+	c, err := net.Dial("unix", sockPath(dir, ends))
+	if err != nil {
+		t.Fatalf("host of an unwatched session is gone: %v", err)
+	}
+	if err := writeFrame(c, frameStop, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the host to report the exit (after the hang-up, or the kill
+	// that follows its grace period).
+	_ = c.SetReadDeadline(time.Now().Add(15 * time.Second))
+	for {
+		k, _, err := readFrame(c)
+		if err != nil {
+			t.Fatalf("no exit from the stopped session: %v", err)
+		}
+		if k == frameExit {
+			break
+		}
+	}
+	_ = c.Close()
+
+	// A new server takes both over.
+	s2, _, ts2 := newTestServer(t, Options{Command: shellCommand(&recorder{}, script), StateDir: dir})
+	n, err := s2.Restore()
+	if err != nil || n != 2 {
+		t.Fatalf("restored %d, %v", n, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !s2.sessions.Get(ends).Info().Exited && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !s2.sessions.Get(ends).Info().Exited {
+		t.Fatal("the session that ended meanwhile is not reported as ended")
+	}
+	if info := s2.sessions.Get(keep).Info(); info.Exited || info.Name != "keep" {
+		t.Fatalf("restored session %+v", info)
+	}
+	ws2, err := dialSession(t, ts2, keep, ts2.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws2.Close() }()
+	readUntil(t, ws2, "started") // the replay came along
+	if err := websocket.Message.Send(ws2, `{"t":"i","d":"hello\r"}`); err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, ws2, "got:hello")
+
+	// Closing the window ends the session and its host cleans up.
+	if resp, _ := do(t, ts2, "DELETE", "/api/sessions/"+keep, nil, ""); resp.StatusCode != 200 {
+		t.Fatalf("close: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sockPath(dir, keep)); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, p := range []string{sockPath(dir, keep), specPath(dir, keep), infoPath(dir, keep)} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s left behind", p)
+		}
+	}
+}
+
+func TestRestoreDropsDeadHosts(t *testing.T) {
+	dir := shortTempDir(t)
+	m := NewManager(shellCommand(&recorder{}, "true"), inProcessHosts, dir)
+	m.saveInfo(SessionInfo{ID: "0123456789abcdef", Agent: "claude"})
+	n, err := m.Restore()
+	if err != nil || n != 0 {
+		t.Fatalf("restored %d, %v", n, err)
+	}
+	if _, err := os.Stat(infoPath(dir, "0123456789abcdef")); !os.IsNotExist(err) {
+		t.Fatal("files of a dead host left behind")
 	}
 }

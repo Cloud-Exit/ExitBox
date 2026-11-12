@@ -72,6 +72,11 @@ type Options struct {
 	Command CommandFunc
 	// Logger receives one line per notable event. Nil logs nowhere.
 	Logger *log.Logger
+	// Spawn starts a session host (RunHost) detached from this process.
+	Spawn SpawnFunc
+	// StateDir holds the session hosts' sockets and files; empty uses
+	// DefaultStateDir.
+	StateDir string
 }
 
 // Server is the exitbox web HTTP server.
@@ -89,6 +94,7 @@ type Server struct {
 	ctrAt   time.Time
 
 	folders *folderStore
+	layout  *layoutStore
 
 	vault      vaultBackend
 	vaultGuard vaultGuard
@@ -106,15 +112,23 @@ func New(opts Options) (*Server, error) {
 	if !isLoopbackListen(opts.Listen) && (opts.Username == "" || opts.PasswordHash == "") {
 		return nil, errors.New("listening on " + opts.Listen + " reaches beyond this machine; set a username and password first (exitbox setup, or --username and --password)")
 	}
-	if opts.Command == nil {
+	if opts.Command == nil || opts.Spawn == nil {
 		return nil, errors.New("no session command")
+	}
+	if opts.StateDir == "" {
+		dir, err := DefaultStateDir()
+		if err != nil {
+			return nil, err
+		}
+		opts.StateDir = dir
 	}
 	s := &Server{
 		opts:     opts,
 		auth:     newAuth(opts.Username, opts.PasswordHash),
-		sessions: NewManager(opts.Command),
+		sessions: NewManager(opts.Command, opts.Spawn, opts.StateDir),
 		store:    configStore{},
 		folders:  &folderStore{path: foldersFile()},
+		layout:   &layoutStore{path: layoutFile()},
 		vault:    diskVault{},
 		logf:     func(string, ...any) {},
 	}
@@ -126,10 +140,14 @@ func New(opts Options) (*Server, error) {
 	return s, nil
 }
 
+// Restore takes over the sessions an earlier exitbox web left running.
+func (s *Server) Restore() (int, error) { return s.sessions.Restore() }
+
 // Handler returns the HTTP handler, for tests.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// Serve runs until ctx ends, then stops every session.
+// Serve runs until ctx ends. Sessions keep running in their hosts; the
+// next exitbox web takes them over.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.handler,
@@ -139,15 +157,15 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	go func() { errc <- srv.Serve(ln) }()
 	select {
 	case err := <-errc:
-		s.sessions.Shutdown(5 * time.Second)
+		s.sessions.Disconnect()
 		return err
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Hijacked WebSocket connections are not tracked by Shutdown; stopping
-	// the sessions ends them.
-	s.sessions.Shutdown(5 * time.Second)
+	// Hijacked WebSocket connections are not tracked by Shutdown; letting
+	// go of the sessions ends them.
+	s.sessions.Disconnect()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -192,6 +210,8 @@ func (s *Server) routes() http.Handler {
 	api.HandleFunc("POST /api/attach", s.handleAttach)
 	api.HandleFunc("POST /api/saved/rename", s.handleRenameSaved)
 	api.HandleFunc("PUT /api/folders", s.handlePutFolders)
+	api.HandleFunc("GET /api/layout", s.handleGetLayout)
+	api.HandleFunc("PUT /api/layout", s.handlePutLayout)
 	api.HandleFunc("GET /api/vault", s.handleVaultList)
 	api.HandleFunc("POST /api/vault/{workspace}/{action}", s.handleVault)
 	api.Handle("GET /api/sessions/{id}/attach", s.attachHandler())

@@ -1,6 +1,6 @@
 // App state shared by the components. The app is client-only (ssr = false),
 // so one module-level instance is safe.
-import { api, ApiError, local, setLocal, setUnauthorizedHandler } from './api';
+import { api, ApiError, loadLayout, local, setLocal, setUnauthorizedHandler } from './api';
 import type { Folder, Me, RunningDoc, SavedDoc, SessionInfo, SettingsDoc, State } from './api';
 
 export const MIN_W = 280;
@@ -216,6 +216,12 @@ class App {
 			// The fallback font works too.
 		}
 		try {
+			await loadLayout();
+		} catch {
+			// The localStorage copy of the layout serves meanwhile.
+		}
+		this.applyLayout();
+		try {
 			this.data = await api<State>('GET', '/api/state');
 		} catch {
 			return;
@@ -373,6 +379,24 @@ class App {
 		const next = this.windows.filter((x) => !x.min && x.tab === this.activeTab).sort((a, b) => b.z - a.z)[0];
 		if (next) this.focus(next);
 		else this.focusedId = null;
+	}
+
+	/** Takes the tabs and tiling from the loaded layout. */
+	private applyLayout() {
+		const tabs = local<Tab[]>('tabs');
+		if (tabs?.length) this.tabs = tabs;
+		this.activeTab = local<string>('activeTab') ?? this.tabs[0].id;
+		this.autoDock = local<boolean>('autoDock') ?? true;
+		this.dockLayout = local<DockLayout>('dockLayout') ?? 'grid';
+		this.dockOrder = local<string[]>('dockOrder') ?? [];
+		this.colWeights = local<Record<string, number>>('colWeights') ?? {};
+		this.rowWeights = local<number[]>('rowWeights') ?? [];
+		this.stackWeights = local<Record<string, number>>('stackWeights') ?? {};
+		this.mainRatio = local<number>('mainRatio') ?? 0.56;
+		// Save once, so a layout kept only in this browser reaches the server.
+		this.saveTabs();
+		setLocal('autoDock', this.autoDock);
+		setLocal('dockLayout', this.dockLayout);
 	}
 
 	// ---------- tabs ----------

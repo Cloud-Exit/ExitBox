@@ -68,3 +68,22 @@ func TestFolders(t *testing.T) {
 		t.Fatalf("folder items after rename: %v", items)
 	}
 }
+
+func TestLayoutDocument(t *testing.T) {
+	_, _, ts := newTestServer(t, Options{})
+	resp, out := do(t, ts, "GET", "/api/layout", nil, "")
+	if resp.StatusCode != 200 || len(out) != 0 {
+		t.Fatalf("empty layout: %d %v", resp.StatusCode, out)
+	}
+	doc := map[string]any{"tabs": []any{map[string]any{"id": "main", "name": "Main"}}, "win.abc": map[string]any{"tab": "main"}}
+	if resp, _ := do(t, ts, "PUT", "/api/layout", doc, ""); resp.StatusCode != 200 {
+		t.Fatalf("put: %d", resp.StatusCode)
+	}
+	_, out = do(t, ts, "GET", "/api/layout", nil, "")
+	if out["win.abc"] == nil || out["tabs"] == nil {
+		t.Fatalf("layout after put: %v", out)
+	}
+	if resp, _ := do(t, ts, "PUT", "/api/layout", []int{1}, ""); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-object layout: %d", resp.StatusCode)
+	}
+}

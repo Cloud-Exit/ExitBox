@@ -99,8 +99,10 @@ func SystemdUnit(spec ServiceSpec) string {
 		b.WriteString("Environment=" + systemdQuote(k+"="+spec.Env[k]) + "\n")
 	}
 	b.WriteString("Restart=on-failure\n")
+	// Stop only exitbox web itself: the session hosts it started keep the
+	// sessions running, and the next start takes them over.
+	b.WriteString("KillMode=process\n")
 	b.WriteString("RestartSec=3\n")
-	// Stopping the service hangs up the sessions; give their containers time.
 	b.WriteString("TimeoutStopSec=30\n\n")
 	b.WriteString("[Install]\n")
 	b.WriteString("WantedBy=default.target\n")
@@ -140,7 +142,10 @@ func LaunchdPlist(spec ServiceSpec, logFile string) string {
 	if spec.Home != "" {
 		b.WriteString("  <key>WorkingDirectory</key>\n  <string>" + xmlEscape(spec.Home) + "</string>\n")
 	}
-	b.WriteString(`  <key>RunAtLoad</key>
+	// Leave the session hosts running when the agent stops.
+	b.WriteString(`  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <dict>

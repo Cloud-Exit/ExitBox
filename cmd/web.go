@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -138,12 +139,21 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		PasswordHash: hash,
 		Version:      Version,
 		Command:      sessionCommand(exe),
+		Spawn:        spawnHost(exe),
 		Logger:       log.New(os.Stderr, "", log.LstdFlags),
 	}
 	// New validates the address and refuses a public one without a login.
 	srv, err := web.New(opts)
 	if err != nil {
 		return err
+	}
+	if !o.service && !o.removeService {
+		n, err := srv.Restore()
+		if err != nil {
+			ui.Warnf("Could not reconnect to running sessions: %v", err)
+		} else if n > 0 {
+			ui.Infof("Reconnected to %d running session(s)", n)
+		}
 	}
 
 	if o.service {
@@ -183,7 +193,7 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 	if username != "" {
 		ui.Infof("Login required for user %s", username)
 	}
-	ui.Info("Press Ctrl+C to stop. Stopping ends every session.")
+	ui.Info("Press Ctrl+C to stop. Sessions keep running; close a window to end its session.")
 	if o.open {
 		openBrowser(url)
 	}
@@ -194,6 +204,41 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		return err
 	}
 	return nil
+}
+
+// spawnHost starts a session host: this binary in web-session-host mode,
+// detached so it outlives exitbox web.
+func spawnHost(exe string) web.SpawnFunc {
+	return func(dir, id string) error {
+		logFile, err := os.OpenFile(filepath.Join(dir, id+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = logFile.Close() }()
+		c := exec.Command(exe, "web-session-host", "--state", dir, "--id", id)
+		c.Stdout, c.Stderr = logFile, logFile
+		web.DetachProcess(c)
+		if err := c.Start(); err != nil {
+			return err
+		}
+		return c.Process.Release()
+	}
+}
+
+func newWebSessionHostCmd() *cobra.Command {
+	var dir, id string
+	cmd := &cobra.Command{
+		Use:    "web-session-host",
+		Short:  "Run one exitbox web session (started by exitbox web)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return web.RunHost(dir, id)
+		},
+	}
+	cmd.Flags().StringVar(&dir, "state", "", "Session state directory")
+	cmd.Flags().StringVar(&id, "id", "", "Session id")
+	return cmd
 }
 
 // sessionCommand runs `exitbox run ...` for a browser session, or attaches
@@ -281,4 +326,5 @@ func openBrowser(url string) {
 
 func init() {
 	rootCmd.AddCommand(newWebCmd())
+	rootCmd.AddCommand(newWebSessionHostCmd())
 }

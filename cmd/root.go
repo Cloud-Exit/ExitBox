@@ -38,7 +38,8 @@ var skipWizardCommands = map[string]bool{
 	"update":     true,
 	"tools":      true,
 	// A service has no terminal for the wizard; the UI works without config.
-	"web": true,
+	"web":              true,
+	"web-session-host": true,
 }
 
 var rootCmd = &cobra.Command{

@@ -18,7 +18,11 @@
 
 package web
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+)
 
 func hangup(cmd *exec.Cmd) { kill(cmd) }
 
@@ -27,4 +31,17 @@ func kill(cmd *exec.Cmd) {
 		return
 	}
 	_ = cmd.Process.Kill()
+}
+
+// DetachProcess is a no-op on Windows, where exitbox web has no sessions.
+func DetachProcess(*exec.Cmd) {}
+
+// DefaultStateDir is where session hosts keep their files.
+func DefaultStateDir() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "exitbox-web")
+	return dir, os.MkdirAll(dir, 0o700)
 }

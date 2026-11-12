@@ -214,8 +214,30 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 	return data as T;
 }
 
-/** Per-browser conveniences: window places, theme, last folder. */
+// The desktop layout (tabs, tiling, window places) lives on the server so
+// it survives restarts and matches in every browser. Other keys (theme,
+// sidebar state, last folder) are per-browser conveniences in localStorage.
+const LAYOUT_KEYS = new Set(['tabs', 'activeTab', 'autoDock', 'dockLayout', 'dockOrder', 'colWeights', 'rowWeights', 'stackWeights', 'mainRatio']);
+const isLayoutKey = (key: string) => LAYOUT_KEYS.has(key) || key.startsWith('win.');
+
+let layout: Record<string, unknown> | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Loads the server's layout; until then layout keys come from localStorage. */
+export async function loadLayout() {
+	layout = await api<Record<string, unknown>>('GET', '/api/layout');
+}
+
+function saveLayoutSoon() {
+	if (saveTimer) clearTimeout(saveTimer);
+	saveTimer = setTimeout(() => {
+		saveTimer = null;
+		if (layout) api('PUT', '/api/layout', layout).catch(() => {});
+	}, 400);
+}
+
 export function local<T>(key: string): T | null {
+	if (layout && isLayoutKey(key) && key in layout) return layout[key] as T;
 	try {
 		const raw = localStorage.getItem('exitbox.' + key);
 		return raw ? (JSON.parse(raw) as T) : null;
@@ -225,11 +247,16 @@ export function local<T>(key: string): T | null {
 }
 
 export function setLocal(key: string, value: unknown) {
+	if (layout && isLayoutKey(key)) {
+		if (value === null) delete layout[key];
+		else layout[key] = JSON.parse(JSON.stringify(value));
+		saveLayoutSoon();
+	}
 	try {
 		if (value === null) localStorage.removeItem('exitbox.' + key);
 		else localStorage.setItem('exitbox.' + key, JSON.stringify(value));
 	} catch {
-		// Storage off: nothing is remembered.
+		// Storage off: nothing more is remembered here.
 	}
 }
 

@@ -58,6 +58,17 @@ func (m *memVault) list(ws, pw string) ([]string, error) {
 	sort.Strings(keys)
 	return keys, nil
 }
+func (m *memVault) get(ws, pw, k string) (string, error) {
+	d, err := m.open(ws, pw)
+	if err != nil {
+		return "", err
+	}
+	v, ok := d[k]
+	if !ok {
+		return "", errors.New("key not found")
+	}
+	return v, nil
+}
 func (m *memVault) set(ws, pw, k, v string) error {
 	d, err := m.open(ws, pw)
 	if err != nil {
@@ -130,6 +141,12 @@ func TestVaultManagement(t *testing.T) {
 	}
 	if strings.Contains(stringify(out), "s3cret") {
 		t.Fatal("a secret value left the server")
+	}
+	if resp, out := post("reveal", map[string]any{"password": "vault pass", "key": "API_TOKEN"}); resp.StatusCode != 200 || out["value"] != "s3cret" {
+		t.Fatalf("reveal: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := post("reveal", map[string]any{"password": "wrong pass", "key": "API_TOKEN"}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reveal with a wrong password: %d", resp.StatusCode)
 	}
 	if resp, _ := post("keys", map[string]any{"password": "wrong pass"}); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong password: %d", resp.StatusCode)

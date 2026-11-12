@@ -35,6 +35,7 @@ type vaultBackend interface {
 	initialized(workspace string) bool
 	create(workspace, password string) error
 	list(workspace, password string) ([]string, error)
+	get(workspace, password, key string) (string, error)
 	set(workspace, password, key, value string) error
 	remove(workspace, password, key string) error
 	destroy(workspace string) error
@@ -72,6 +73,15 @@ func (d diskVault) list(ws, password string) ([]string, error) {
 	}
 	defer func() { _ = st.Close() }()
 	return st.List()
+}
+
+func (d diskVault) get(ws, password, key string) (string, error) {
+	st, err := d.open(ws, password)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = st.Close() }()
+	return st.Get(key)
 }
 
 func (d diskVault) set(ws, password, key, value string) error {
@@ -243,6 +253,22 @@ func (s *Server) handleVault(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"keys": nonNil(keys)})
+			return nil
+		})
+	case "reveal":
+		// The edit box shows the current value, on request. Only the key
+		// name is logged.
+		if !validVaultKey(req.Key) {
+			writeError(w, http.StatusBadRequest, errors.New("invalid key"))
+			return
+		}
+		withPassword(func() error {
+			value, err := s.vault.get(ws, req.Password, req.Key)
+			if err != nil {
+				return err
+			}
+			s.logf("web: vault %s: revealed %s", ws, req.Key)
+			writeJSON(w, http.StatusOK, map[string]any{"value": value})
 			return nil
 		})
 	case "set":

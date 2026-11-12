@@ -28,6 +28,10 @@
 		newValue: string;
 		error: string;
 		busy: boolean;
+		/** The secret being edited in its row, its value, and whether it shows. */
+		editKey: string;
+		editValue: string;
+		editShown: boolean;
 	}
 
 	let vaults = $state<VaultDoc[]>([]);
@@ -35,7 +39,7 @@
 	let cards = $state<Record<string, Card>>({});
 
 	function card(ws: string): Card {
-		cards[ws] ??= { password: '', confirm: '', createReadOnly: false, unlocked: false, keys: [], newKey: '', newValue: '', error: '', busy: false };
+		cards[ws] ??= { password: '', confirm: '', createReadOnly: false, unlocked: false, keys: [], newKey: '', newValue: '', error: '', busy: false, editKey: '', editValue: '', editShown: false };
 		return cards[ws];
 	}
 
@@ -57,7 +61,7 @@
 		c.busy = true;
 		c.error = '';
 		try {
-			return await api<{ keys?: string[] }>('POST', `/api/vault/${encodeURIComponent(ws)}/${action}`, body);
+			return await api<{ keys?: string[]; value?: string }>('POST', `/api/vault/${encodeURIComponent(ws)}/${action}`, body);
 		} catch (e) {
 			c.error = (e as Error).message;
 			return null;
@@ -95,6 +99,36 @@
 		c.unlocked = false;
 		c.keys = [];
 		c.newValue = '';
+		cancelEdit(ws);
+	}
+
+	/** Opens the row's editor with the current value, hidden. */
+	async function startEdit(ws: string, key: string) {
+		const c = card(ws);
+		const res = await call(ws, 'reveal', { password: c.password, key });
+		if (!res) return;
+		c.editKey = key;
+		c.editValue = res.value ?? '';
+		c.editShown = false;
+	}
+
+	function cancelEdit(ws: string) {
+		const c = card(ws);
+		c.editKey = '';
+		c.editValue = '';
+		c.editShown = false;
+	}
+
+	async function saveEdit(ws: string) {
+		const c = card(ws);
+		if (await call(ws, 'set', { password: c.password, key: c.editKey, value: c.editValue })) {
+			app.notify(`Updated ${c.editKey}.`);
+			cancelEdit(ws);
+		}
+	}
+
+	function focusInput(node: HTMLInputElement) {
+		node.focus();
 	}
 
 	async function setSecret(ws: string) {
@@ -141,7 +175,7 @@
 <PageHeader
 	kind="Workspace"
 	title="Vault"
-	lead="One encrypted store per workspace (AES-256, Argon2id). With the vault on, .env files are hidden in sessions and agents ask for secrets through exitbox-vault, with an approval for each read. Values you store here are never shown again."
+	lead="One encrypted store per workspace (AES-256, Argon2id). With the vault on, .env files are hidden in sessions and agents ask for secrets through exitbox-vault, with an approval for each read. Values stay hidden: edit one to see it, behind the eye."
 	source="exitbox vault · workspaces.items[].vault"
 />
 {#if loadError}<Callout tone="bad">{loadError}</Callout>{/if}
@@ -195,12 +229,50 @@
 				{#if c.keys.length}
 					<div class="flex flex-col overflow-hidden rounded-lg border border-line-1">
 						{#each c.keys as k (k)}
-							<div class="flex min-h-10 items-center gap-2 border-b border-line-1 px-3 last:border-b-0">
-								<span class="flex-1 truncate font-mono text-[12.5px]">{k}</span>
-								<span class="font-mono text-xs text-ink-3">••••••••</span>
-								<IconButton icon="pencil" label={'Replace the value of ' + k} small onclick={() => (c.newKey = k)} />
-								<IconButton icon="trash" label={'Delete ' + k} small class="hover:text-warn" onclick={() => removeSecret(v.workspace, k)} />
-							</div>
+							{#if c.editKey === k}
+								<form
+									class="flex flex-wrap items-center gap-2 border-b border-line-1 bg-surface-2 px-3 py-2 last:border-b-0"
+									onsubmit={(e) => {
+										e.preventDefault();
+										saveEdit(v.workspace);
+									}}
+								>
+									<span class="w-full truncate font-mono text-[12.5px] font-semibold">{k}</span>
+									<div class="flex min-w-0 flex-[1_1_320px] items-center rounded-md border border-brand bg-surface-0">
+										<input
+											type={c.editShown ? 'text' : 'password'}
+											bind:value={c.editValue}
+											{@attach focusInput}
+											aria-label={'Value of ' + k}
+											autocomplete="off"
+											spellcheck="false"
+											onkeydown={(e) => {
+												if (e.key === 'Escape') {
+													e.preventDefault();
+													cancelEdit(v.workspace);
+												}
+											}}
+											class="block min-w-0 flex-1 bg-transparent px-2.5 py-[7px] font-mono text-[12.5px] outline-none"
+										/>
+										<IconButton
+											icon={c.editShown ? 'eyeOff' : 'eye'}
+											label={c.editShown ? 'Hide the value' : 'Show the value'}
+											small
+											class="mr-1"
+											onclick={() => (c.editShown = !c.editShown)}
+										/>
+									</div>
+									<Button type="submit" size="sm" variant="primary" icon="check" disabled={c.busy || !c.editValue}>Save</Button>
+									<Button size="sm" variant="ghost" onclick={() => cancelEdit(v.workspace)}>Cancel</Button>
+								</form>
+							{:else}
+								<div class="flex min-h-10 items-center gap-2 border-b border-line-1 px-3 last:border-b-0">
+									<span class="flex-1 truncate font-mono text-[12.5px]">{k}</span>
+									<span class="font-mono text-xs text-ink-3">••••••••</span>
+									<IconButton icon="pencil" label={'Edit ' + k} small disabled={c.busy} onclick={() => startEdit(v.workspace, k)} />
+									<IconButton icon="trash" label={'Delete ' + k} small class="hover:text-warn" onclick={() => removeSecret(v.workspace, k)} />
+								</div>
+							{/if}
 						{/each}
 					</div>
 				{:else}
@@ -213,8 +285,8 @@
 						setSecret(v.workspace);
 					}}
 				>
-					<TextField label="Key" mono placeholder="API_TOKEN" hint="Letters, digits and underscores." wrap="flex-[1_1_200px]" bind:value={c.newKey} />
-					<TextField label="Value" type="password" autocomplete="off" hint={c.keys.includes(c.newKey.trim()) ? 'Replaces the stored value.' : 'Write-only: it is never shown again.'} wrap="flex-[2_1_280px]" bind:value={c.newValue} />
+					<TextField label="New secret" mono placeholder="API_TOKEN" hint="Letters, digits and underscores." wrap="flex-[1_1_200px]" bind:value={c.newKey} />
+					<TextField label="Value" type="password" autocomplete="off" hint={c.keys.includes(c.newKey.trim()) ? 'Replaces the stored value.' : 'Hidden as you type.'} wrap="flex-[2_1_280px]" bind:value={c.newValue} />
 					<Button type="submit" variant="primary" icon="check" disabled={c.busy || !validKey(c.newKey.trim()) || !c.newValue}>
 						{c.keys.includes(c.newKey.trim()) ? 'Replace' : 'Store'}
 					</Button>
