@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { app } from './app.svelte';
+	import { app, OPEN_DRAG, readDrop } from './app.svelte';
 	import Icon from './ui/Icon.svelte';
 	import IconButton from './ui/IconButton.svelte';
 
@@ -29,6 +29,23 @@
 		{@const active = app.activeTab === t.id}
 		<div
 			data-tab-id={t.id}
+			role="presentation"
+			ondragover={(e) => {
+				if (e.dataTransfer?.types.includes(OPEN_DRAG)) {
+					e.preventDefault();
+					app.dropTab = t.id;
+				}
+			}}
+			ondragleave={() => {
+				if (app.dropTab === t.id) app.dropTab = null;
+			}}
+			ondrop={(e) => {
+				const drop = readDrop(e);
+				app.dropTab = null;
+				if (!drop) return;
+				e.preventDefault();
+				app.openDropped(drop, t.id, null);
+			}}
 			class={[
 				'group flex h-8 shrink-0 items-center rounded-md border text-[12.5px]',
 				active ? 'border-line-2 bg-surface-3 text-ink-1' : 'border-transparent text-ink-2 hover:bg-surface-2 hover:text-ink-1',

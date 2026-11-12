@@ -125,6 +125,26 @@ export type View = 'loading' | 'login' | 'sessions' | 'settings' | 'offline';
 
 export type DockLayout = 'stack' | 'columns' | 'grid';
 
+/** The drag type of a session dragged from the sidebar to be opened. */
+export const OPEN_DRAG = 'application/x-exitbox-open';
+
+/** What a sidebar row carries when dragged onto the desktop or a tab. */
+export type SidebarDrop =
+	| { kind: 'window'; id: string }
+	| { kind: 'terminal'; container: string }
+	| { kind: 'saved'; saved: SavedDoc };
+
+/** Reads an OPEN_DRAG payload, or null. */
+export function readDrop(e: DragEvent): SidebarDrop | null {
+	const raw = e.dataTransfer?.getData(OPEN_DRAG);
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as SidebarDrop;
+	} catch {
+		return null;
+	}
+}
+
 export interface Tab {
 	id: string;
 	name: string;
@@ -743,14 +763,40 @@ class App {
 	}
 
 	/** Opens a window on a session started in a terminal. */
-	async attach(r: RunningDoc) {
+	async attach(r: RunningDoc): Promise<Win | null> {
 		try {
 			const info = await api<SessionInfo>('POST', '/api/attach', { container: r.container, cols: 120, rows: 36 });
-			this.openWindow(info);
+			const w = this.openWindow(info);
 			this.refresh();
+			return w;
 		} catch (e) {
 			this.notify((e as Error).message, true);
+			return null;
 		}
+	}
+
+	/**
+	 * Opens a session dragged from the sidebar onto the desktop or a tab: a
+	 * saved one resumes, a terminal one attaches, an open window moves here.
+	 * Dropped on a tile, the window takes that tile's slot.
+	 */
+	async openDropped(drop: SidebarDrop, tabId: string | null, targetId: string | null) {
+		if (tabId && tabId !== this.activeTab) this.setTab(tabId);
+		let w: Win | null = null;
+		if (drop.kind === 'window') {
+			w = this.windows.find((x) => x.id === drop.id) ?? null;
+			if (w) {
+				if (w.tab !== this.activeTab) this.moveToTab(w, this.activeTab);
+				this.show(w);
+			}
+		} else if (drop.kind === 'terminal') {
+			const r = this.data?.running?.find((x) => x.container === drop.container);
+			if (r) w = await this.attach(r);
+		} else {
+			w = await this.resume(drop.saved);
+		}
+		const target = targetId ? this.windows.find((x) => x.id === targetId) : null;
+		if (w && target && target !== w && this.autoDock) this.swapDock(w, target);
 	}
 
 	/** Renames a window's session; a running one takes the name when it ends. */
@@ -777,13 +823,15 @@ class App {
 		}
 	}
 
-	async resume(s: { dir: string; agent: string; workspace: string; name: string }) {
+	async resume(s: { dir: string; agent: string; workspace: string; name: string }): Promise<Win | null> {
 		try {
 			const info = await api<SessionInfo>('POST', '/api/sessions', { ...s, cols: 120, rows: 36 });
-			this.openWindow(info);
+			const w = this.openWindow(info);
 			this.refresh();
+			return w;
 		} catch (e) {
 			this.notify((e as Error).message, true);
+			return null;
 		}
 	}
 

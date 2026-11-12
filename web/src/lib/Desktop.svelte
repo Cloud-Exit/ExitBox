@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { app } from './app.svelte';
+	import { app, OPEN_DRAG, readDrop } from './app.svelte';
 	import Tabs from './Tabs.svelte';
 	import TerminalWindow from './TerminalWindow.svelte';
 	import Button from './ui/Button.svelte';
@@ -8,6 +8,16 @@
 	import SectionLabel from './ui/SectionLabel.svelte';
 
 	const terminalCount = $derived(app.data?.running?.length ?? 0);
+	let dropOver = $state(false);
+
+	/** The tiled window under a drag, which a dropped session replaces in the layout. */
+	function tileAt(e: DragEvent) {
+		for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+			const id = (el as HTMLElement).closest<HTMLElement>('[data-win-id]')?.dataset.winId;
+			if (id) return id;
+		}
+		return null;
+	}
 
 	// The desktop size bounds the windows; keep them reachable when it shrinks.
 	function measure(node: HTMLElement) {
@@ -36,7 +46,33 @@
 		<Chip icon="cascade" pressed={!app.autoDock} title="No docking: windows stay where you put them" onclick={() => app.setDock(null)}>Free</Chip>
 	</div>
 
-	<div data-desktop {@attach measure} class="relative min-h-0 flex-1 overflow-hidden bg-surface-0 max-md:min-h-[70vh]">
+	<div
+		data-desktop
+		{@attach measure}
+		role="presentation"
+		ondragover={(e) => {
+			if (!e.dataTransfer?.types.includes(OPEN_DRAG)) return;
+			e.preventDefault();
+			dropOver = true;
+			app.dropTarget = tileAt(e);
+		}}
+		ondragleave={(e) => {
+			if (e.currentTarget === e.target) {
+				dropOver = false;
+				app.dropTarget = null;
+			}
+		}}
+		ondrop={(e) => {
+			const drop = readDrop(e);
+			const target = tileAt(e);
+			dropOver = false;
+			app.dropTarget = null;
+			if (!drop) return;
+			e.preventDefault();
+			app.openDropped(drop, null, target);
+		}}
+		class={['relative min-h-0 flex-1 overflow-hidden bg-surface-0 max-md:min-h-[70vh]', dropOver && 'outline-2 -outline-offset-4 outline-accent']}
+	>
 		{#each app.windows as w, i (w.id)}
 			<TerminalWindow win={w} number={i + 1} />
 		{/each}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { app, sessionLabel, type Win } from './app.svelte';
+	import { app, OPEN_DRAG, sessionLabel, type SidebarDrop, type Win } from './app.svelte';
 	import { sessionKey, type Folder, type RunningDoc, type SavedDoc } from './api';
 	import Brand from './ui/Brand.svelte';
 	import Icon from './ui/Icon.svelte';
@@ -189,8 +189,15 @@
 	{@const name = title(r)}
 	<div
 		class={['group relative flex items-center rounded-md hover:bg-surface-2', r.kind === 'window' && app.focusedId === r.win.id && 'bg-brand-soft']}
-		draggable={r.named && editing !== r.key}
-		ondragstart={(e) => e.dataTransfer?.setData(DRAG_TYPE, r.key)}
+		draggable={editing !== r.key && !(r.kind === 'terminal' && r.run.noTmux)}
+		ondragstart={(e) => {
+			// Onto a folder it files the session; onto the desktop or a tab it opens it.
+			if (r.named) e.dataTransfer?.setData(DRAG_TYPE, r.key);
+			const drop: SidebarDrop =
+				r.kind === 'window' ? { kind: 'window', id: r.win.id } : r.kind === 'terminal' ? { kind: 'terminal', container: r.run.container } : { kind: 'saved', saved: r.saved };
+			e.dataTransfer?.setData(OPEN_DRAG, JSON.stringify(drop));
+			if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove';
+		}}
 		role="listitem"
 	>
 		{#if editing === r.key && rename}

@@ -382,6 +382,7 @@ All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format w
 
 - **Sessions**: start an agent in a project folder with the same options as `exitbox run` (workspace, name, env profile, firewall, read-only, memory, CPUs, extra domains). The sidebar groups sessions by workspace.
 - **Sessions started in a terminal**: agents you started with `exitbox run` show up too. Click one to open it in a window: it attaches to the session's tmux, so the terminal and the browser show the same session. Closing that window detaches; the session keeps running. A session started with `--no-tmux` can only be used in its own terminal.
+- **Drag to open**: drag a session from the sidebar onto the desktop to open it (a saved one resumes, a terminal one attaches) or onto a tab to open it there; dropped on a window, it takes that window's tile.
 - **Inactive sessions**: saved sessions that are not running are hidden; "Show inactive sessions" lists them, and clicking one resumes it.
 - **Rename**: the pencil next to a session's name renames it, including its saved conversation, so `--name <new>` resumes it. A running session takes the new name when it ends, because its container saves the conversation under the name it started with.
 - **Folders**: create folders in the sidebar and drag sessions into them (or use the folder button on a session). A session keeps its folder across runs and renames. Folders live in `~/.config/exitbox/web/folders.json` and are shared by every browser.
