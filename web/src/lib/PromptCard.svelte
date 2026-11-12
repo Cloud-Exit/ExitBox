@@ -70,17 +70,17 @@
 	data-prompt={prompt.kind}
 	aria-label={`${text.cmd}: ${name} ${text.lead} ${text.subject}`}
 	{@attach escapeDenies}
-	class="flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-lg border border-amber bg-surface-1 px-3.5 py-3 shadow-float"
+	class="flex flex-wrap items-center gap-x-6 gap-y-3.5 rounded-xl border border-amber bg-surface-1 px-6 py-5 shadow-float"
 >
-	<div class="flex min-w-0 flex-[1_1_220px] flex-col gap-1">
-		<span class="flex min-w-0 items-center gap-1.5 text-[12.5px]">
+	<div class="flex min-w-0 flex-[1_1_260px] flex-col gap-1.5">
+		<span class="flex min-w-0 items-center gap-2 text-[15px]">
 			<span class="font-mono font-bold text-amber">{text.cmd}</span>
 			<span class="text-ink-3">·</span>
-			<AgentIcon name={prompt.agent} small />
+			<AgentIcon name={prompt.agent} />
 			<span class="truncate text-ink-2"><span class="font-semibold text-ink-1">{name}</span> {text.lead}</span>
 		</span>
-		<span class="truncate font-mono text-[14px] font-bold text-ink-1" title={text.subject}>{text.subject}</span>
-		<span class="text-[11.5px] text-ink-2">{text.note}</span>
+		<span class="truncate font-mono text-[18px] font-bold text-ink-1" title={text.subject}>{text.subject}</span>
+		<span class="text-[13.5px] text-ink-2">{text.note}</span>
 	</div>
 	{#if isPassword}
 		<input
@@ -97,15 +97,15 @@
 					submit();
 				}
 			}}
-			class="h-8 min-w-0 flex-[1_1_160px] rounded-md border border-line-2 bg-inset px-2.5 text-[12.5px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-brand"
+			class="h-10 min-w-0 flex-[1_1_200px] rounded-md border border-line-2 bg-inset px-3 text-[14px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-brand"
 		/>
 	{/if}
-	<div class="ml-auto flex shrink-0 items-center gap-1.5">
+	<div class="ml-auto flex shrink-0 items-center gap-2">
 		{#if isPassword}
-			<Button variant="primary" size="sm" disabled={!password} onclick={submit}>{text.yes}</Button>
+			<Button variant="primary" size="lg" disabled={!password} onclick={submit}>{text.yes}</Button>
 		{:else}
-			<Button variant="primary" size="sm" onclick={submit} {@attach grab}>{text.yes}</Button>
+			<Button variant="primary" size="lg" onclick={submit} {@attach grab}>{text.yes}</Button>
 		{/if}
-		<Button variant="ghost" size="sm" onclick={deny}>{text.no}</Button>
+		<Button variant="ghost" size="lg" onclick={deny}>{text.no}</Button>
 	</div>
 </div>
