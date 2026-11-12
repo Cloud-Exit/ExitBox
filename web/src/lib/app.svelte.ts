@@ -168,6 +168,7 @@ class App {
 	toast = $state<{ text: string; bad: boolean } | null>(null);
 	prompt = $state.raw<Prompt | null>(null);
 	newSessionOpen = $state(false);
+	helpOpen = $state(false);
 	/** The window whose session settings are open. */
 	sessionSettings = $state.raw<Win | null>(null);
 	settingsSection = $state('general');
@@ -487,6 +488,17 @@ class App {
 		this.tabs.push({ id, name: 'Tab ' + n });
 		this.setTab(id);
 		return id;
+	}
+
+	/** Moves a tab to index to (counted before the move). */
+	moveTab(id: string, to: number) {
+		const from = this.tabs.findIndex((t) => t.id === id);
+		if (from < 0) return;
+		const dest = Math.max(0, Math.min(this.tabs.length - 1, to > from ? to - 1 : to));
+		if (dest === from) return;
+		const [t] = this.tabs.splice(from, 1);
+		this.tabs.splice(dest, 0, t);
+		this.saveTabs();
 	}
 
 	renameTab(id: string, name: string) {
@@ -847,6 +859,17 @@ class App {
 			this.notify((e as Error).message, true);
 			return null;
 		}
+	}
+
+	/** Ends a session started in a terminal without opening a window on it. */
+	async terminateRunning(r: RunningDoc) {
+		try {
+			const info = await api<SessionInfo>('POST', '/api/attach', { container: r.container, cols: 120, rows: 36 });
+			await api('POST', '/api/sessions/' + encodeURIComponent(info.id) + '/terminate', {});
+		} catch (e) {
+			this.notify((e as Error).message, true);
+		}
+		this.refresh();
 	}
 
 	/**

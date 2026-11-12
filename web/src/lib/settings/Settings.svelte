@@ -2,6 +2,7 @@
 	import { api } from '../api';
 	import type { SettingsDoc } from '../api';
 	import { app } from '../app.svelte';
+	import TopActions from '../TopActions.svelte';
 	import Button from '../ui/Button.svelte';
 	import Callout from '../ui/Callout.svelte';
 	import Icon from '../ui/Icon.svelte';
@@ -113,6 +114,10 @@
 	</nav>
 
 	<div class="flex min-w-0 flex-1 flex-col">
+		<!-- Same bar height as the sessions toolbar, so help and sign out stay put. -->
+		<div class="flex min-h-12 shrink-0 items-center justify-end border-b border-line-1 px-4 py-1.5">
+			<TopActions />
+		</div>
 		<div class="flex-1 overflow-auto">
 			<div class="flex w-full max-w-[1040px] flex-col gap-5 px-8 py-7 max-md:px-4 max-md:py-5">
 				{#if app.settingsSection === 'terminal'}

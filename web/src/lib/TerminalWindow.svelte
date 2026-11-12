@@ -6,6 +6,7 @@
 	import { app, MIN_H, MIN_W, type Win } from './app.svelte';
 	import { copyText, parseOsc52 } from './clipboard';
 	import { termFont } from './termFont.svelte';
+	import SessionMenu, { detach } from './SessionMenu.svelte';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
 
@@ -560,12 +561,19 @@
 			]
 		);
 		if (choice === 'terminate') app.terminate(win);
-		else if (choice === 'detach') {
-			// An attached window is only a view: closing it detaches. A web
-			// session keeps running without a window, listed in the sidebar.
-			if (win.attached) app.stop(win);
-			else app.hide(win);
-		}
+		else if (choice === 'detach') detach(win);
+	}
+
+	/** The title bar's session menu, at the pointer. */
+	let menu = $state<{ x: number; y: number; anchor: HTMLElement; back: HTMLElement | null } | null>(null);
+
+	function openMenu(e: MouseEvent) {
+		// The rename field keeps the browser's own menu, for paste.
+		if ((e.target as HTMLElement).closest('input')) return;
+		e.preventDefault();
+		const el = e.currentTarget as HTMLElement;
+		const at = !e.clientX && !e.clientY ? el.getBoundingClientRect() : null;
+		menu = { x: at ? at.left + 40 : e.clientX, y: at ? at.bottom : e.clientY, anchor: el, back: term?.textarea ?? null };
 	}
 </script>
 
@@ -598,6 +606,7 @@
 		ondblclick={(e) => {
 			if (!(e.target as HTMLElement).closest('button')) app.toggleMax(win);
 		}}
+		oncontextmenu={openMenu}
 		class={[
 			'flex h-[42px] shrink-0 touch-none items-center gap-2 overflow-hidden border-b pr-1 pl-3',
 			focused ? 'border-line-2 bg-surface-3' : 'border-line-1 bg-surface-1 text-ink-2',
@@ -679,6 +688,19 @@
 			</div>
 		{/if}
 	</div>
+
+	{#if menu}
+		<SessionMenu
+			target={{ kind: 'window', win }}
+			x={menu.x}
+			y={menu.y}
+			anchor={menu.anchor}
+			returnFocus={menu.back}
+			inWindow
+			onrename={info.name && !(win.attached && info.exited) ? startRename : undefined}
+			onclose={() => (menu = null)}
+		/>
+	{/if}
 
 	{#if !win.max}
 		{#each grips.filter((g) => !tiled || splitSides.has(g.dir)) as g (g.dir)}

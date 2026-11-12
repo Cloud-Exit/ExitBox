@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { app, OPEN_DRAG, sessionLabel, windowKey, type SidebarDrop, type Win } from './app.svelte';
 	import { sessionKey, type Folder, type RunningDoc, type SavedDoc } from './api';
+	import SessionMenu, { folderItems, folderNaming, openTarget, type SessionTarget } from './SessionMenu.svelte';
 	import Brand from './ui/Brand.svelte';
 	import Button from './ui/Button.svelte';
+	import ContextMenu from './ui/ContextMenu.svelte';
 	import Icon from './ui/Icon.svelte';
 	import IconButton from './ui/IconButton.svelte';
 	import SectionLabel from './ui/SectionLabel.svelte';
@@ -94,14 +96,53 @@
 	/** What is being named: a row key, a folder id, or a new folder. */
 	let editing = $state<string | null>(null);
 	let draft = $state('');
-	/** The row whose folder menu is open. */
-	let moving = $state<string | null>(null);
 
 	function startEdit(id: string, current: string) {
-		moving = null;
+		menu = null;
 		editing = id;
 		draft = current;
 	}
+
+	// A folder made from a session menu (here or in a title bar) is named here.
+	$effect(() => {
+		const id = folderNaming.id;
+		if (!id) return;
+		folderNaming.id = null;
+		const f = folders.find((x) => x.id === id);
+		if (f) startEdit('folder:' + f.id, f.name);
+	});
+
+	// ---------- menus ----------
+
+	/** The open menu: a row's session menu, or only its folder picker. */
+	let menu = $state<{
+		id: string;
+		folders: boolean;
+		x: number;
+		y: number;
+		anchor: HTMLElement | null;
+		returnFocus: HTMLElement | null;
+		keyboard: boolean;
+	} | null>(null);
+	/** The menu's row, current after each poll; the menu goes when its row does. */
+	const menuRow = $derived(menu ? (rows.find((r) => rowId(r) === menu!.id) ?? null) : null);
+
+	function target(r: Row): SessionTarget {
+		return r.kind === 'window' ? { kind: 'window', win: r.win } : r.kind === 'terminal' ? { kind: 'terminal', run: r.run } : { kind: 'saved', saved: r.saved };
+	}
+
+	/** Opens at the pointer, or under the element when opened from the keyboard. */
+	function openMenu(id: string, e: MouseEvent, anchor: HTMLElement, returnFocus: HTMLElement | null, folders = false) {
+		e.preventDefault();
+		const keyboard = e.detail === 0 && e.button === 0;
+		const at = !e.clientX && !e.clientY ? anchor.getBoundingClientRect() : null;
+		const btn = e.type === 'click' ? (e.currentTarget as HTMLElement).getBoundingClientRect() : null;
+		const box = btn ?? at;
+		menu = { id, folders, x: box ? box.left : e.clientX, y: box ? box.bottom + 4 : e.clientY, anchor, returnFocus, keyboard };
+	}
+
+	/** The row's own open button, where focus returns. */
+	const rowButton = (el: HTMLElement) => el.querySelector<HTMLElement>(':scope > button');
 
 	let saving = false;
 
@@ -146,28 +187,7 @@
 		return null;
 	}
 
-	function open(r: Row) {
-		if (r.kind === 'window') {
-			app.view = 'sessions';
-			app.show(r.win);
-		} else if (r.kind === 'terminal') {
-			if (!r.run.noTmux) app.attach(r.run);
-		} else {
-			app.resume(r.saved);
-		}
-	}
-
-	async function newFolderFor(key: string) {
-		moving = null;
-		const name = 'New folder';
-		if (await app.createFolder(name)) {
-			const f = app.data?.folders.at(-1);
-			if (f) {
-				await app.moveToFolder(key, f.id);
-				startEdit('folder:' + f.id, f.name);
-			}
-		}
-	}
+	const open = (r: Row) => openTarget(target(r));
 
 	function dropOn(e: DragEvent, folderId: string | null) {
 		const key = e.dataTransfer?.getData(DRAG_TYPE);
@@ -217,6 +237,12 @@
 				r.kind === 'window' ? { kind: 'window', id: r.win.id } : r.kind === 'terminal' ? { kind: 'terminal', container: r.run.container } : { kind: 'saved', saved: r.saved };
 			e.dataTransfer?.setData(OPEN_DRAG, JSON.stringify(drop));
 			if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove';
+		}}
+		oncontextmenu={(e) => {
+			// The rename field keeps the browser's own menu, for paste.
+			if (editing === r.key) return;
+			const el = e.currentTarget as HTMLElement;
+			openMenu(rowId(r), e, el, rowButton(el));
 		}}
 		role="listitem"
 	>
@@ -272,38 +298,32 @@
 			<span
 				class={[
 					'absolute top-1/2 right-1 -translate-y-1/2 items-center gap-0.5 rounded-md bg-surface-2 pl-1 group-focus-within:flex group-hover:flex',
-					moving === r.key ? 'flex' : 'hidden'
+					menu?.id === rowId(r) ? 'flex' : 'hidden'
 				]}
 			>
 				{#if rename}
 					<IconButton icon="pencil" label={'Rename ' + name} small onclick={() => startEdit(r.key, name)} />
 				{/if}
 				{#if r.named}
-					<IconButton icon="folderInput" label={'Move ' + name + ' to a folder'} small onclick={() => (moving = moving === r.key ? null : r.key)} />
+					<IconButton
+						icon="folderInput"
+						label={'Move ' + name + ' to a folder'}
+						small
+						aria-haspopup="menu"
+						onclick={(e) => openMenu(rowId(r), e, e.currentTarget.closest<HTMLElement>('[role=listitem]')!, e.currentTarget, true)}
+					/>
 				{/if}
 				{#if r.kind === 'saved'}
 					<IconButton icon="trash" label={'Forget saved session ' + name} small class="hover:text-warn" onclick={() => app.forget(r.saved)} />
 				{/if}
+				<IconButton
+					icon="more"
+					label={'More actions for ' + name}
+					small
+					aria-haspopup="menu"
+					onclick={(e) => openMenu(rowId(r), e, e.currentTarget.closest<HTMLElement>('[role=listitem]')!, e.currentTarget)}
+				/>
 			</span>
-		{/if}
-
-		{#if moving === r.key}
-			<div class="absolute top-full right-1 z-20 mt-1 flex w-52 flex-col rounded-lg border border-line-2 bg-surface-1 p-1 shadow-float" role="menu">
-				{#each folders as f (f.id)}
-					<button type="button" role="menuitem" onclick={() => { moving = null; app.moveToFolder(r.key, f.id); }} class="flex h-8 items-center gap-2 rounded px-2 text-left text-[13px] hover:bg-surface-2">
-						<Icon name="folder" size={12} /><span class="flex-1 truncate">{f.name}</span>
-						{#if folderOf.get(r.key) === f.id}<Icon name="check" size={12} />{/if}
-					</button>
-				{/each}
-				{#if folderOf.has(r.key)}
-					<button type="button" role="menuitem" onclick={() => { moving = null; app.moveToFolder(r.key, null); }} class="flex h-8 items-center gap-2 rounded px-2 text-left text-[13px] text-ink-2 hover:bg-surface-2">
-						<Icon name="x" size={12} />Take out of folder
-					</button>
-				{/if}
-				<button type="button" role="menuitem" onclick={() => newFolderFor(r.key)} class="flex h-8 items-center gap-2 rounded px-2 text-left text-[13px] text-ink-2 hover:bg-surface-2">
-					<Icon name="folderPlus" size={12} />New folder
-				</button>
-			</div>
 		{/if}
 	</div>
 {/snippet}
@@ -348,11 +368,33 @@
 	{/if}
 {/snippet}
 
-<svelte:window
-	onkeydown={(e) => {
-		if (e.key === 'Escape' && moving) moving = null;
-	}}
-/>
+{#if menu && menuRow}
+	{#if menu.folders}
+		<ContextMenu
+			items={folderItems(menuRow.key)}
+			x={menu.x}
+			y={menu.y}
+			anchor={menu.anchor}
+			returnFocus={menu.returnFocus}
+			keyboard={menu.keyboard}
+			label={'Move ' + title(menuRow) + ' to a folder'}
+			onclose={() => (menu = null)}
+		/>
+	{:else}
+		{@const r = menuRow}
+		{@const rename = renameAction(r)}
+		<SessionMenu
+			target={target(r)}
+			x={menu.x}
+			y={menu.y}
+			anchor={menu.anchor}
+			returnFocus={menu.returnFocus}
+			keyboard={menu.keyboard}
+			onrename={rename && !app.sidebarCollapsed ? () => startEdit(r.key, title(r)) : undefined}
+			onclose={() => (menu = null)}
+		/>
+	{/if}
+{/if}
 
 {#if app.sidebarCollapsed}
 	<nav aria-label="Sessions" class="flex min-h-0 w-12 shrink-0 flex-col items-center gap-1 border-r border-line-1 bg-surface-1 py-2 max-md:w-full max-md:flex-row max-md:border-r-0 max-md:border-b max-md:px-2">
@@ -369,6 +411,7 @@
 						app.view = 'sessions';
 						app.show(w);
 					}}
+					oncontextmenu={(e) => openMenu('w:' + w.id, e, e.currentTarget, e.currentTarget)}
 					class={[
 						'relative grid size-8 shrink-0 place-items-center rounded-md font-mono text-[11px] hover:bg-surface-2',
 						app.focusedId === w.id ? 'bg-brand-soft text-ink-1' : 'text-ink-2'
@@ -392,11 +435,6 @@
 		<Brand />
 		<IconButton icon="panelClose" label="Collapse the sidebar" onclick={() => app.toggleSidebar()} />
 	</div>
-
-	{#if moving}
-		<!-- Closes the folder menu on an outside click. -->
-		<button type="button" aria-label="Close menu" tabindex="-1" class="fixed inset-0 z-10 cursor-default" onclick={() => (moving = null)}></button>
-	{/if}
 
 	<div class="shrink-0 px-2 pt-2">
 		<Button variant="primary" icon="plus" class="w-full justify-center" onclick={() => (app.newSessionOpen = true)}>New session</Button>

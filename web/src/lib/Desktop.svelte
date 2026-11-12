@@ -2,6 +2,7 @@
 	import { app, OPEN_DRAG, readDrop } from './app.svelte';
 	import Tabs from './Tabs.svelte';
 	import TerminalWindow from './TerminalWindow.svelte';
+	import TopActions from './TopActions.svelte';
 	import Button from './ui/Button.svelte';
 	import Chip from './ui/Chip.svelte';
 	import Icon from './ui/Icon.svelte';
@@ -36,14 +37,16 @@
 	<div class="flex min-h-12 shrink-0 flex-wrap items-center gap-2.5 border-b border-line-1 px-4 py-1.5">
 		<h1 class="sr-only">Sessions</h1>
 		<Button variant="primary" icon="plus" onclick={() => (app.newSessionOpen = true)}>New session</Button>
+		<!-- Tabs take the free width and scroll, so the toolbar wraps only when narrow. -->
 		<Tabs />
-		<span class="flex-1"></span>
 		<span class="font-mono text-[11.5px] whitespace-nowrap text-ink-2">{app.running + terminalCount} running</span>
 		<SectionLabel>Windows</SectionLabel>
-		<Chip icon="stack" pressed={app.autoDock && app.dockLayout === 'stack'} title="Dock: the first window on the left, the rest stacked on the right" onclick={() => app.setDock('stack')}>Main + stack</Chip>
-		<Chip icon="columns" pressed={app.autoDock && app.dockLayout === 'columns'} title="Dock side by side" onclick={() => app.setDock('columns')}>Columns</Chip>
-		<Chip icon="grid" pressed={app.autoDock && app.dockLayout === 'grid'} title="Dock in a grid" onclick={() => app.setDock('grid')}>Grid</Chip>
-		<Chip icon="cascade" pressed={!app.autoDock} title="No docking: windows stay where you put them" onclick={() => app.setDock(null)}>Free</Chip>
+		<Chip icon="stack" pressed={app.autoDock && app.dockLayout === 'stack'} title="Dock: the first window on the left, the rest stacked on the right" onclick={() => app.setDock('stack')}><span class="max-2xl:sr-only">Main + stack</span></Chip>
+		<Chip icon="columns" pressed={app.autoDock && app.dockLayout === 'columns'} title="Dock side by side" onclick={() => app.setDock('columns')}><span class="max-2xl:sr-only">Columns</span></Chip>
+		<Chip icon="grid" pressed={app.autoDock && app.dockLayout === 'grid'} title="Dock in a grid" onclick={() => app.setDock('grid')}><span class="max-2xl:sr-only">Grid</span></Chip>
+		<Chip icon="cascade" pressed={!app.autoDock} title="No docking: windows stay where you put them" onclick={() => app.setDock(null)}><span class="max-2xl:sr-only">Free</span></Chip>
+		<span class="mx-0.5 h-5 w-px bg-line-1 max-md:hidden"></span>
+		<TopActions />
 	</div>
 
 	<div

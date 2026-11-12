@@ -11,7 +11,8 @@
 	// Focus the first control when the dialog opens.
 	function autofocus(node: HTMLElement) {
 		const prev = document.activeElement as HTMLElement | null;
-		const first = node.querySelector<HTMLElement>('[data-autofocus], input, button.primary-action, button');
+		// A selector list matches in document order, so the marked control is looked up on its own.
+		const first = node.querySelector<HTMLElement>('[data-autofocus]') ?? node.querySelector<HTMLElement>('input, button.primary-action, button');
 		first?.focus();
 		return () => prev?.focus?.();
 	}

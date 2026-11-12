@@ -8,6 +8,7 @@
 	import { copyText } from './clipboard';
 	import Button from './ui/Button.svelte';
 	import Callout from './ui/Callout.svelte';
+	import AgentIcon from './AgentIcon.svelte';
 	import Chip from './ui/Chip.svelte';
 	import Icon from './ui/Icon.svelte';
 	import IconButton from './ui/IconButton.svelte';
@@ -380,11 +381,14 @@
 		<div class="flex min-h-0 flex-1 flex-col gap-[18px] overflow-auto px-5 py-[18px]">
 			{#if error}<Callout tone="bad">{error}</Callout>{/if}
 
+			<!-- A new session starts at its name; settings start at the folder, as before. -->
+			<TextField label="Session name" placeholder="Timestamp if empty" wrap="" data-autofocus={edit ? undefined : true} bind:value={name} />
+
 			<div class="flex flex-col gap-2">
 				<SectionLabel>Project folder</SectionLabel>
 				<div class="flex gap-2">
 					<input
-						data-autofocus
+						data-autofocus={edit ? true : undefined}
 						bind:this={input}
 						bind:value={dir}
 						oninput={edited}
@@ -471,16 +475,17 @@
 				<div class="flex flex-wrap gap-1.5">
 					{#each data.agents as a (a.name)}
 						<Chip
+							size="md"
 							pressed={agent === a.name}
 							disabled={!a.enabled}
 							title={a.enabled ? a.display : a.display + ' is not enabled. Enable it under Settings > Agents.'}
-							onclick={() => (agent = a.name)}>{a.name}</Chip
+							onclick={() => (agent = a.name)}><AgentIcon name={a.name} muted={!a.enabled} />{a.display}</Chip
 						>
 					{/each}
 				</div>
 			</div>
 
-			<div class="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
+			<div class="grid grid-cols-3 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
 				<SelectField
 					label="Workspace"
 					wrap=""
@@ -488,7 +493,6 @@
 					onchange={() => (envProfile = '')}
 					options={[{ value: '', label: 'Auto (resolution order)' }, ...data.workspaces.map((w) => ({ value: w.name, label: w.name }))]}
 				/>
-				<TextField label="Session name" placeholder="Timestamp if empty" wrap="" bind:value={name} />
 				<SelectField
 					label="Env profile"
 					wrap=""

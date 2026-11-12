@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { app } from '$lib/app.svelte';
 	import Desktop from '$lib/Desktop.svelte';
+	import Help from '$lib/Help.svelte';
 	import Login from '$lib/Login.svelte';
 	import NewSession from '$lib/NewSession.svelte';
 	import NoLoginBar from '$lib/NoLoginBar.svelte';
@@ -19,6 +20,14 @@
 <svelte:window
 	onstorage={(e) => {
 		if (e.key === 'exitbox.theme') app.applyTheme();
+	}}
+	onkeydown={(e) => {
+		// Never from a field or a terminal (xterm types into a textarea), nor over a dialog.
+		if (e.key !== '?' || e.ctrlKey || e.metaKey || e.altKey || app.view === 'login') return;
+		const t = e.target as HTMLElement | null;
+		if (t?.closest('input, textarea, select, [contenteditable], .xterm') || document.querySelector('[role="dialog"]')) return;
+		e.preventDefault();
+		app.helpOpen = true;
 	}}
 />
 
@@ -47,6 +56,7 @@
 	{#if app.newSessionOpen && app.data}
 		<NewSession data={app.data} />
 	{/if}
+	{#if app.helpOpen}<Help />{/if}
 	{#if app.sessionSettings && app.data}
 		{#key app.sessionSettings}<SessionSettings data={app.data} win={app.sessionSettings} />{/key}
 	{/if}
