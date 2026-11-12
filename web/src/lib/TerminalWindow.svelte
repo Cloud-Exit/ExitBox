@@ -701,6 +701,8 @@
 	>
 		<div class="size-full" {@attach terminal}></div>
 		{#if win.prompts.length && !info.exited}
+			<!-- Fades the session so the card stands out; the card has the keyboard anyway. -->
+			<div class="absolute inset-0 z-[5] bg-black/55 backdrop-blur-[1.5px]"></div>
 			<div class="absolute inset-x-3 bottom-3 z-[6] flex max-h-[calc(100%-24px)] flex-col gap-2 overflow-y-auto">
 				{#each win.prompts as p, i (p.id)}
 					<PromptCard prompt={p} agent={app.agentDisplay(p.agent)} focus={i === 0 && focused && !win.min} onanswer={(allow, password) => win.answer?.(p.id, allow, password)} />
