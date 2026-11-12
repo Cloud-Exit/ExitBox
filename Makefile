@@ -10,11 +10,13 @@ build:
 # Rebuild the exitbox web UI (SvelteKit + Tailwind in web/) into
 # internal/web/assets, which the binary embeds. Run this after changing web/,
 # and commit the result.
+# --bun runs Vite on Bun's runtime everywhere, so the build is byte-for-byte
+# the same on every machine (CI compares it with the committed one).
 web:
-	cd web && bun install --frozen-lockfile && bun run build
+	cd web && bun install --frozen-lockfile && bun --bun run build
 
 web-check:
-	cd web && bun install --frozen-lockfile && bun run check
+	cd web && bun install --frozen-lockfile && bun --bun run check
 
 test:
 	go test ./...

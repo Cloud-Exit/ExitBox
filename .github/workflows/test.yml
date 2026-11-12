@@ -150,16 +150,18 @@ jobs:
 
       - name: Type check
         working-directory: web
-        run: bun run check
+        run: bun --bun run check
 
+      # Same runtime as `make web`, so the output matches the committed build.
       - name: Build
         working-directory: web
-        run: bun run build
+        run: bun --bun run build
 
       - name: Committed build is current
         run: |
           if ! git diff --quiet -- internal/web/assets || [ -n "$(git status --porcelain -- internal/web/assets)" ]; then
             git status --short -- internal/web/assets
+            git diff --stat -- internal/web/assets
             echo "internal/web/assets is out of date: run 'make web' and commit the result."
             exit 1
           fi
