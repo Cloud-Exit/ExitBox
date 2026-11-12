@@ -2,6 +2,9 @@
 	import { app } from './app.svelte';
 	import Button from './ui/Button.svelte';
 	import Kbd from './ui/Kbd.svelte';
+
+	// xterm forces its own selection with Option on a Mac, Shift elsewhere.
+	const selectKey = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Option' : 'Shift';
 </script>
 
 <div class="flex min-h-[30px] shrink-0 flex-wrap items-center gap-x-3.5 gap-y-1.5 border-t border-line-1 px-4 py-1 text-[11.5px] text-ink-2">
@@ -11,6 +14,7 @@
 		<span>Drag a title bar to move, an edge to resize, double-click to maximize.</span>
 	{/if}
 	<span><Kbd>Ctrl+B</Kbd> <Kbd>d</Kbd> detach</span>
+	<span><Kbd>{selectKey}+drag</Kbd> select</span>
 	<span><Kbd>Ctrl+Alt+P</Kbd> workspaces</span>
 	<span><Kbd>Ctrl+Alt+S</Kbd> sessions</span>
 	<span class="flex-1"></span>

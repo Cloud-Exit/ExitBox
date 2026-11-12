@@ -4,6 +4,7 @@
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import { app, MIN_H, MIN_W, type Win } from './app.svelte';
+	import { copyText, parseOsc52 } from './clipboard';
 	import { termFont } from './termFont.svelte';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
@@ -114,6 +115,8 @@
 			cursorBlink: true,
 			scrollback: 5000,
 			theme: termTheme(),
+			// Option+drag selects on a Mac while an app has the mouse, as Shift+drag does elsewhere.
+			macOptionClickForcesSelection: true,
 			// OSC 8 hyperlinks, as agents print them.
 			linkHandler: { activate: openLink, allowNonHttpProtocols: false }
 		});
@@ -236,10 +239,57 @@
 		const dataSub = t.onData((d) => {
 			if (!replaying) send({ t: 'i', d });
 		});
+
+		let copyFailed = false;
+		const copy = (text: string) => {
+			if (!text) return;
+			void copyText(text).then((ok) => {
+				if (ok || copyFailed) return;
+				copyFailed = true;
+				app.notify('Could not copy: the browser blocked clipboard access.', true);
+			});
+		};
+		// tmux (mouse on, set-clipboard on) and agents copy with OSC 52.
+		const oscSub = t.parser.registerOscHandler(52, (data) => {
+			// Replayed copies are old; they must not overwrite the clipboard.
+			if (replaying) return true;
+			const text = parseOsc52(data);
+			if (text !== null) copy(text);
+			return true;
+		});
+		// Copy a mouse selection when it ends, as Linux terminals do.
+		let selChanged = false;
+		const selSub = t.onSelectionChange(() => (selChanged = true));
+		const selectEnd = () => {
+			// xterm reports the selection in its own mouseup handler, after this one.
+			setTimeout(() => {
+				if (disposed || !selChanged) return;
+				selChanged = false;
+				if (t.hasSelection()) copy(t.getSelection());
+			});
+		};
+		const selectStart = (e: MouseEvent) => {
+			if (e.button !== 0) return;
+			selChanged = false;
+			document.addEventListener('mouseup', selectEnd, { once: true });
+		};
+		// Capture: runs before xterm, which may select a word on this press.
+		node.addEventListener('mousedown', selectStart, true);
 		// xterm sends Shift+Enter as a plain carriage return, so the agent
 		// would submit. Send a line feed instead (what Ctrl+J sends): Claude
 		// Code, Codex and OpenCode read it as a newline in the prompt.
 		t.attachCustomKeyEventHandler((ev) => {
+			// Ctrl+C copies a selection instead of sending ^C; Ctrl+Shift+C only
+			// ever copies. Cmd+C on a Mac copies natively.
+			if (!isMac && ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key.toLowerCase() === 'c') {
+				if (!ev.shiftKey && !t.hasSelection()) return true;
+				ev.preventDefault();
+				if (ev.type === 'keydown' && t.hasSelection()) {
+					copy(t.getSelection());
+					t.clearSelection();
+				}
+				return false;
+			}
 			// Ctrl+V pastes, as Cmd+V does on a Mac: xterm would send ^V, which
 			// agents read as "paste an image" from a clipboard the container lacks.
 			// Leaving the key to the browser fires its paste event, which xterm reads.
@@ -287,6 +337,10 @@
 			window.removeEventListener('online', reconnectNow);
 			ro.disconnect();
 			dataSub.dispose();
+			oscSub.dispose();
+			selSub.dispose();
+			node.removeEventListener('mousedown', selectStart, true);
+			document.removeEventListener('mouseup', selectEnd);
 			const s = ws;
 			ws = null;
 			s?.close();
