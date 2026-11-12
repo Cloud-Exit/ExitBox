@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
+	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import { app, MIN_H, MIN_W, type Win } from './app.svelte';
 	import Button from './ui/Button.svelte';
 	import IconButton from './ui/IconButton.svelte';
@@ -83,6 +84,19 @@
 		return untrack(() => mountTerminal(node));
 	}
 
+	/** Opens a link from the terminal in a new tab; only web links. */
+	function openLink(event: MouseEvent, uri: string) {
+		let url: URL;
+		try {
+			url = new URL(uri);
+		} catch {
+			return;
+		}
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+		event.preventDefault();
+		window.open(url.href, '_blank', 'noopener,noreferrer');
+	}
+
 	function mountTerminal(node: HTMLElement) {
 		const t = new Terminal({
 			fontFamily: "'Atkinson Hyperlegible Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -90,10 +104,14 @@
 			lineHeight: 1.15,
 			cursorBlink: true,
 			scrollback: 5000,
-			theme: termTheme()
+			theme: termTheme(),
+			// OSC 8 hyperlinks, as agents print them.
+			linkHandler: { activate: openLink, allowNonHttpProtocols: false }
 		});
 		const fit = new FitAddon();
 		t.loadAddon(fit);
+		// Plain URLs in the output.
+		t.loadAddon(new WebLinksAddon(openLink));
 		t.open(node);
 		term = t;
 
