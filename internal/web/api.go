@@ -467,10 +467,11 @@ func expandDir(p, home string) (string, error) {
 
 // --- sessions ---
 
-// startRequest describes a new session. Only these fields reach the
-// command line, each through its own flag. There is no --no-tmux: web
-// windows and attaching need the session's tmux.
-type startRequest struct {
+// RunOptions are the user-facing options of a session started here. Only
+// these fields reach the command line, each through its own flag. There is
+// no --no-tmux: web windows and attaching need the session's tmux. None
+// holds a secret (an env profile is a name), so sessions keep them.
+type RunOptions struct {
 	Dir        string   `json:"dir"`
 	Agent      string   `json:"agent"`
 	Workspace  string   `json:"workspace"` // "" resolves as exitbox run does
@@ -485,8 +486,13 @@ type startRequest struct {
 	Memory     string   `json:"memory"`
 	CPUs       string   `json:"cpus"`
 	AllowURLs  []string `json:"allowUrls"`
-	Cols       int      `json:"cols"`
-	Rows       int      `json:"rows"`
+}
+
+// startRequest describes a new session.
+type startRequest struct {
+	RunOptions
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
 }
 
 var (
@@ -508,7 +514,7 @@ func validName(n string) bool {
 }
 
 // buildArgs turns a request into exitbox arguments.
-func buildArgs(cfg *config.Config, req startRequest, home string) (dir string, args []string, err error) {
+func buildArgs(cfg *config.Config, req RunOptions, home string) (dir string, args []string, err error) {
 	if agents.Get(req.Agent) == nil {
 		return "", nil, fmt.Errorf("unknown agent %q", req.Agent)
 	}
@@ -580,31 +586,58 @@ func buildArgs(cfg *config.Config, req startRequest, home string) (dir string, a
 	return dir, args, nil
 }
 
+// runSession checks options as buildArgs does and returns the session they
+// start, keeping the options with it.
+func (s *Server) runSession(opts RunOptions) (SessionInfo, error) {
+	cfg := s.store.loadConfig()
+	dir, args, err := buildArgs(cfg, opts, s.store.home())
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	ws := opts.Workspace
+	if ws == "" {
+		if res, err := profile.ResolveActiveWorkspace(cfg, dir, ""); err == nil && res != nil {
+			ws = res.Workspace.Name
+		}
+	}
+	kept := opts.cleaned(dir)
+	return SessionInfo{Kind: KindRun, Agent: opts.Agent, Dir: dir, Workspace: ws, Name: kept.Name, Args: args, Request: &kept}, nil
+}
+
+// cleaned is the options as buildArgs read them, with dir as the folder.
+func (o RunOptions) cleaned(dir string) RunOptions {
+	o.Dir = dir
+	o.Name = strings.TrimSpace(o.Name)
+	o.EnvProfile = strings.TrimSpace(o.EnvProfile)
+	o.Memory = strings.TrimSpace(o.Memory)
+	o.CPUs = strings.TrimSpace(o.CPUs)
+	urls := []string{}
+	for _, d := range o.AllowURLs {
+		if d = strings.TrimSpace(d); d != "" {
+			urls = append(urls, d)
+		}
+	}
+	o.AllowURLs = urls
+	return o
+}
+
 func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	var req startRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	cfg := s.store.loadConfig()
-	dir, args, err := buildArgs(cfg, req, s.store.home())
+	info, err := s.runSession(req.RunOptions)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	ws := req.Workspace
-	if ws == "" {
-		if res, err := profile.ResolveActiveWorkspace(cfg, dir, ""); err == nil && res != nil {
-			ws = res.Workspace.Name
-		}
-	}
-	name := strings.TrimSpace(req.Name)
-	sess, err := s.sessions.Start(SessionInfo{Agent: req.Agent, Dir: dir, Workspace: ws, Name: name, Args: args}, req.Cols, req.Rows)
+	sess, err := s.sessions.Start(info, req.Cols, req.Rows)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting exitbox: %w", err))
 		return
 	}
-	s.logf("web: started session %s: exitbox %s (in %s)", sess.Info().ID, strings.Join(args, " "), dir)
+	s.logf("web: started session %s: exitbox %s (in %s)", sess.Info().ID, strings.Join(info.Args, " "), info.Dir)
 	writeJSON(w, http.StatusCreated, sess.Info())
 }
 
@@ -686,12 +719,14 @@ func (s *Server) handleRemoveSaved(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleRestartSession starts an ended session again with the same
-// arguments and forgets the old one.
+// handleRestartSession starts a session again and forgets the old one. With
+// a request, a run session starts with those options instead of its own,
+// and one still running is stopped first.
 func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cols int `json:"cols"`
-		Rows int `json:"rows"`
+		Cols    int         `json:"cols"`
+		Rows    int         `json:"rows"`
+		Request *RunOptions `json:"request"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -703,18 +738,37 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := old.Info()
-	if !info.Exited {
-		writeError(w, http.StatusConflict, errors.New("the session is still running"))
-		return
-	}
-	next := SessionInfo{Kind: info.Kind, Agent: info.Agent, Dir: info.Dir, Workspace: info.Workspace, Name: info.Name, Args: info.Args}
-	if info.Kind == KindRun && !hasFlag(info.Args, "--name") {
-		// Without --name the new run picks a new timestamp name; it is
-		// learned from the container again.
-		next.Name = ""
-	}
-	if info.Kind == KindAttach {
-		next.Container = info.Container
+	var next SessionInfo
+	if req.Request != nil {
+		if info.Kind != KindRun {
+			writeError(w, http.StatusBadRequest, errors.New("only a session started here can change its settings"))
+			return
+		}
+		var err error
+		if next, err = s.runSession(*req.Request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !info.Exited {
+			if err := s.stopForRestart(old); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+	} else {
+		if !info.Exited {
+			writeError(w, http.StatusConflict, errors.New("the session is still running"))
+			return
+		}
+		next = SessionInfo{Kind: info.Kind, Agent: info.Agent, Dir: info.Dir, Workspace: info.Workspace, Name: info.Name, Args: info.Args, Request: info.Request}
+		if info.Kind == KindRun && !hasFlag(info.Args, "--name") {
+			// Without --name the new run picks a new timestamp name; it is
+			// learned from the container again.
+			next.Name = ""
+		}
+		if info.Kind == KindAttach {
+			next.Container = info.Container
+		}
 	}
 	sess, err := s.sessions.Start(next, req.Cols, req.Rows)
 	if err != nil {
@@ -724,8 +778,27 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.sessions.Close(info.ID); err != nil {
 		s.logf("web: forget session %s: %v", info.ID, err)
 	}
-	s.logf("web: restarted session %s as %s", info.ID, sess.Info().ID)
+	s.logf("web: restarted session %s as %s: exitbox %s (in %s)", info.ID, sess.Info().ID, strings.Join(next.Args, " "), next.Dir)
 	writeJSON(w, http.StatusCreated, sess.Info())
+}
+
+// stopForRestart ends a running run session as terminating it would, but
+// keeps it until its replacement has started.
+func (s *Server) stopForRestart(sess *Session) error {
+	s.liveSessions()
+	info := sess.Info()
+	if info.Container != "" && containerNameRe.MatchString(info.Container) {
+		if err := s.store.stopContainer(info.Container); err != nil {
+			s.logf("web: stop container %s: %v", info.Container, err)
+		}
+	}
+	if err := sess.stop(); err != nil {
+		return fmt.Errorf("stopping the session: %w", err)
+	}
+	s.ctrMu.Lock()
+	s.ctrAt = time.Time{}
+	s.ctrMu.Unlock()
+	return nil
 }
 
 // handleEnvProfiles lists a workspace's env profiles. The New session
@@ -849,7 +922,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		s.noteRename(info.Workspace, info.Agent, info.Dir, info.Name, newName)
 		sess.update(func(i *SessionInfo) {
 			i.Name, i.RenameTo, i.RenameError = newName, "", ""
-			i.Args = withName(i.Args, newName)
+			renameArgs(i, newName)
 		})
 	default:
 		sess.update(func(i *SessionInfo) {
@@ -876,8 +949,22 @@ func (s *Server) renameOnExit(sess *Session) {
 	s.noteRename(info.Workspace, info.Agent, info.Dir, info.Name, info.RenameTo)
 	sess.update(func(i *SessionInfo) {
 		i.Name, i.RenameTo = i.RenameTo, ""
-		i.Args = withName(i.Args, i.Name)
+		renameArgs(i, i.Name)
 	})
+}
+
+// renameArgs makes starting the session again resume it under name.
+func renameArgs(i *SessionInfo, name string) {
+	if !hasFlag(i.Args, "--name") {
+		return
+	}
+	i.Args = withName(i.Args, name)
+	if i.Request != nil {
+		// A new copy: snapshots share the old one.
+		r := *i.Request
+		r.Name = name
+		i.Request = &r
+	}
 }
 
 // withName points a --name argument at name, so starting the session again

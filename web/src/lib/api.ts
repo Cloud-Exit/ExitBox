@@ -60,6 +60,8 @@ export interface SessionInfo {
 	container?: string;
 	renameTo?: string;
 	renameError?: string;
+	/** How a run session was started here; missing when unknown. */
+	request?: RunOptions;
 }
 
 /** An agent container that runs now but has no window: started in a terminal. */
@@ -131,6 +133,14 @@ export interface StartRequest {
 	allowUrls: string[];
 	cols?: number;
 	rows?: number;
+}
+
+/** The options a session keeps (internal/web RunOptions). */
+export type RunOptions = Omit<StartRequest, 'cols' | 'rows'>;
+
+/** The shell command that starts a run session. */
+export function runCommand(dir: string, args: string[]) {
+	return 'cd ' + shellQuote(dir) + ' && exitbox ' + args.map(shellQuote).join(' ');
 }
 
 export interface WorkspaceEdit {

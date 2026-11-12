@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
-	import { api, local, setLocal, shellQuote } from './api';
-	import type { EnvProfiles, FolderList, ProjectDoc, SessionInfo, StartRequest, State } from './api';
-	import { app, defaultWindowSize } from './app.svelte';
+	import { api, local, runCommand, setLocal, shellQuote } from './api';
+	import type { EnvProfiles, FolderList, ProjectDoc, RunOptions, SessionInfo, StartRequest, State } from './api';
+	import { app, defaultWindowSize, windowKey } from './app.svelte';
+	import type { Win } from './app.svelte';
+	import { copyText } from './clipboard';
 	import Button from './ui/Button.svelte';
 	import Callout from './ui/Callout.svelte';
 	import Chip from './ui/Chip.svelte';
@@ -16,37 +18,42 @@
 	import TextField from './ui/TextField.svelte';
 	import type { IconName } from './ui/icons';
 
-	let { data }: { data: State } = $props();
+	/** With edit, the dialog changes that window's session and restarts it. */
+	let { data, edit }: { data: State; edit?: Win } = $props();
 
 	// The dialog starts from the data it opened with; later polls do not reset it.
 	const start = (() => {
 		const d = data;
-		const last = local<{ dir: string; agent: string; folder?: string }>('last');
+		const req: Partial<RunOptions> = untrack(() => edit?.info.request) ?? {};
+		const last = edit ? null : local<{ dir: string; agent: string; folder?: string }>('last');
 		const enabled = d.agents.filter((a) => a.enabled);
+		const key = edit && windowKey(untrack(() => edit.info));
 		return {
-			dir: last?.dir ?? d.projects[0]?.path ?? d.home,
-			agent: (enabled.find((a) => a.name === last?.agent) ?? enabled[0])?.name ?? '',
-			folder: d.folders?.some((f) => f.id === last?.folder) ? (last?.folder ?? '') : '',
+			dir: req.dir ?? last?.dir ?? d.projects[0]?.path ?? d.home,
+			agent: req.agent ?? (enabled.find((a) => a.name === last?.agent) ?? enabled[0])?.name ?? '',
+			folder: key ? (d.folders?.find((f) => f.items.includes(key))?.id ?? '') : d.folders?.some((f) => f.id === last?.folder) ? (last?.folder ?? '') : '',
+			req,
 			defaults: d.defaults
 		};
 	})();
+	const req = start.req;
 
 	let dir = $state(app.tilde(start.dir));
 	let agent = $state(start.agent);
-	let workspace = $state('');
+	let workspace = $state(req.workspace ?? '');
 	let folder = $state(start.folder);
-	let name = $state('');
-	let envProfile = $state('');
+	let name = $state(req.name ?? '');
+	let envProfile = $state(req.envProfile ?? '');
 	let flags = $state({
-		noFirewall: start.defaults.noFirewall,
-		readOnly: start.defaults.readOnly,
-		noEnv: start.defaults.noEnv,
-		ollama: false,
-		fresh: false
+		noFirewall: !!req.noFirewall || start.defaults.noFirewall,
+		readOnly: !!req.readOnly || start.defaults.readOnly,
+		noEnv: !!req.noEnv || start.defaults.noEnv,
+		ollama: !!req.ollama,
+		fresh: !!req.fresh
 	});
-	let memory = $state(start.defaults.memory);
-	let cpus = $state(start.defaults.cpus);
-	let domains = $state('');
+	let memory = $state(req.memory || start.defaults.memory);
+	let cpus = $state(req.cpus || start.defaults.cpus);
+	let domains = $state(req.allowUrls?.join(', ') ?? '');
 	let browse = $state.raw<FolderList | null>(null);
 	/** Dotfiles, and on Windows entries marked Hidden. */
 	let showHidden = $state(local<boolean>('showHidden') ?? false);
@@ -89,7 +96,8 @@
 		agent,
 		workspace,
 		name: name.trim(),
-		envProfile: profiles.includes(envProfile) ? envProfile : '',
+		// Kept until the workspace's profiles have loaded.
+		envProfile: !env || profiles.includes(envProfile) ? envProfile : '',
 		// Flags already on by default need no option.
 		noFirewall: flags.noFirewall && !defaults.noFirewall,
 		readOnly: flags.readOnly && !defaults.readOnly,
@@ -98,7 +106,9 @@
 		fresh: flags.fresh,
 		memory: memory.trim() === defaults.memory ? '' : memory.trim(),
 		cpus: cpus.trim() === defaults.cpus ? '' : cpus.trim(),
-		allowUrls: domains.split(/[\s,]+/).filter(Boolean)
+		allowUrls: domains.split(/[\s,]+/).filter(Boolean),
+		// Not in the form: a stored request keeps it.
+		...(req.resume ? { resume: true } : {})
 	});
 
 	// Mirrors buildArgs in internal/web/api.go for the preview.
@@ -112,12 +122,25 @@
 		if (r.ollama) a.push('--ollama');
 		if (r.name) a.push('--name', r.name);
 		if (r.fresh) a.push('--no-resume');
+		else if (r.resume && !r.name) a.push('--resume');
 		if (r.envProfile) a.push('--profile', r.envProfile);
 		if (r.memory) a.push('--memory', r.memory);
 		if (r.cpus) a.push('--cpus', r.cpus);
 		for (const u of r.allowUrls) a.push('--allow-urls', u);
+		if (edit) return runCommand(fullDir, a);
 		return 'cd ' + shellQuote(dir.trim() || '~') + ' && exitbox ' + a.map(shellQuote).join(' ');
 	});
+
+	// Until an option changes, the command shown is the one the session ran.
+	const initial = untrack(() => JSON.stringify(request));
+	const changed = $derived(JSON.stringify(request) !== initial);
+	const used = $derived(edit ? runCommand(edit.info.dir, edit.info.args) : '');
+	const shown = $derived(edit && !changed ? used : preview);
+
+	async function copy(text: string) {
+		if (await copyText(text)) app.notify('Command copied');
+		else app.notify('The browser did not allow copying', true);
+	}
 
 	// ---------- project folder search and completion ----------
 
@@ -290,8 +313,31 @@
 		}
 	}
 
+	async function restart(w: Win) {
+		if (!w.info.exited) {
+			const ok = await app.ask('Restart this session?', `This ends the running ${app.agentDisplay(w.info.agent)} and starts it again with these settings.`, [
+				{ label: 'Restart', value: 'yes', tone: 'danger' }
+			]);
+			if (ok !== 'yes') return;
+		}
+		busy = true;
+		error = '';
+		const oldKey = windowKey(w.info);
+		try {
+			const info = await app.restartWith(w, Math.max(40, Math.floor((w.w - 24) / 7.8)), Math.max(10, Math.floor((w.h - 48) / 17)), request);
+			app.sessionSettings = null;
+			if (folder === start.folder && windowKey(info) === oldKey) return;
+			if (data.folders?.some((f) => f.id === folder)) app.fileNewSession(info, folder);
+			else if (start.folder) app.moveToFolder(oldKey, null);
+		} catch (err) {
+			error = (err as Error).message;
+			busy = false;
+		}
+	}
+
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
+		if (edit) return restart(edit);
 		busy = true;
 		error = '';
 		const size = defaultWindowSize();
@@ -312,17 +358,21 @@
 		}
 	}
 
-	const close = () => (app.newSessionOpen = false);
+	const close = () => {
+		if (edit) app.sessionSettings = null;
+		else app.newSessionOpen = false;
+	};
+	const title = $derived(edit ? 'Session settings' : 'New session');
 </script>
 
-<Modal label="New session" onclose={close} wide>
+<Modal label={title} onclose={close} wide>
 	<form onsubmit={submit} class="flex min-h-0 flex-col">
 		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4">
 			<div class="flex flex-1 flex-col gap-0.5">
 				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase">
 					<span class="size-1.5 rounded-full bg-brand"></span>Session
 				</span>
-				<h2 class="text-xl font-bold">New session</h2>
+				<h2 class="text-xl font-bold">{title}</h2>
 			</div>
 			<IconButton icon="x" label="Close" onclick={close} />
 		</div>
@@ -473,15 +523,26 @@
 			</div>
 
 			<div class="flex flex-col gap-2">
-				<SectionLabel>Runs as</SectionLabel>
-				<div class="rounded-lg border border-line-1 bg-inset px-3 py-2.5 font-mono text-xs break-all whitespace-pre-wrap">{preview}</div>
+				<div class="flex items-center gap-2">
+					<SectionLabel>{edit && changed ? 'Restarts as' : 'Runs as'}</SectionLabel>
+					<IconButton icon="copy" label="Copy command" small onclick={() => copy(shown)} />
+				</div>
+				<div class="rounded-lg border border-line-1 bg-inset px-3 py-2.5 font-mono text-xs break-all whitespace-pre-wrap">{shown}</div>
+				{#if edit && changed}
+					<small class="font-mono text-[11px] break-all text-ink-3" title="The command the session ran">Last run: {used}</small>
+				{/if}
 			</div>
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2 border-t border-line-1 px-5 py-3.5">
-			<Button type="submit" variant="primary" icon="play" disabled={busy || !agent || !dir.trim()}>Start session</Button>
-			<Button variant="ghost" onclick={close}>Cancel</Button>
-			<span class="ml-auto text-[11.5px] text-ink-2">The image builds on first run.</span>
+			{#if edit}
+				<Button type="submit" variant="primary" icon="rotate" disabled={busy || !agent || !dir.trim()}>Restart with these settings</Button>
+				<Button variant="ghost" onclick={close}>Cancel</Button>
+			{:else}
+				<Button type="submit" variant="primary" icon="play" disabled={busy || !agent || !dir.trim()}>Start session</Button>
+				<Button variant="ghost" onclick={close}>Cancel</Button>
+				<span class="ml-auto text-[11.5px] text-ink-2">The image builds on first run.</span>
+			{/if}
 		</div>
 	</form>
 </Modal>

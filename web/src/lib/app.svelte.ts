@@ -1,7 +1,7 @@
 // App state shared by the components. The app is client-only (ssr = false),
 // so one module-level instance is safe.
 import { api, ApiError, loadLayout, local, sessionKey, setLocal, setUnauthorizedHandler } from './api';
-import type { Folder, Me, RunningDoc, SavedDoc, SessionInfo, SettingsDoc, State } from './api';
+import type { Folder, Me, RunningDoc, RunOptions, SavedDoc, SessionInfo, SettingsDoc, State } from './api';
 
 export const MIN_W = 280;
 export const MIN_H = 160;
@@ -168,6 +168,8 @@ class App {
 	toast = $state<{ text: string; bad: boolean } | null>(null);
 	prompt = $state.raw<Prompt | null>(null);
 	newSessionOpen = $state(false);
+	/** The window whose session settings are open. */
+	sessionSettings = $state.raw<Win | null>(null);
 	settingsSection = $state('general');
 	/** Auto-dock tiles every visible window with dockLayout; off (Free), all windows float. */
 	autoDock = $state(local<boolean>('autoDock') ?? true);
@@ -325,6 +327,7 @@ class App {
 		this.focusedId = null;
 		this.settings = null;
 		this.newSessionOpen = false;
+		this.sessionSettings = null;
 		this.loginMessage = message;
 		this.view = 'login';
 	}
@@ -381,6 +384,7 @@ class App {
 		setLocal('win.' + w.id, null);
 		this.windows = this.windows.filter((x) => x.id !== w.id);
 		if (this.focusedId === w.id) this.focusedId = null;
+		if (this.sessionSettings === w) this.sessionSettings = null;
 		this.forgetDock(this.windows.map((x) => x.id));
 		this.retile();
 	}
@@ -560,22 +564,28 @@ class App {
 
 	async restart(w: Win, cols: number, rows: number) {
 		try {
-			const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', { cols, rows });
-			setLocal('win.' + info.id, { x: w.x, y: w.y, w: w.w, h: w.h, max: w.max, min: false, tab: w.tab });
-			// The new window takes the old one's dock slot.
-			this.dockOrder = this.dockOrder.map((id) => (id === w.id ? info.id : id));
-			for (const store of [this.colWeights, this.stackWeights]) {
-				if (store[w.id]) store[info.id] = store[w.id];
-			}
-			setLocal('dockOrder', this.dockOrder);
-			// Open the new window before dropping the old one: dropping prunes
-			// dock entries of windows that do not exist yet.
-			this.openWindow(info);
-			this.dropWindow(w);
-			this.refresh();
+			await this.restartWith(w, cols, rows);
 		} catch (e) {
 			this.notify((e as Error).message, true);
 		}
+	}
+
+	/** Starts a window's session again, with new options when given; the new window takes its place. */
+	async restartWith(w: Win, cols: number, rows: number, request?: RunOptions) {
+		const info = await api<SessionInfo>('POST', '/api/sessions/' + encodeURIComponent(w.id) + '/restart', request ? { cols, rows, request } : { cols, rows });
+		setLocal('win.' + info.id, { x: w.x, y: w.y, w: w.w, h: w.h, max: w.max, min: false, tab: w.tab });
+		// The new window takes the old one's dock slot.
+		this.dockOrder = this.dockOrder.map((id) => (id === w.id ? info.id : id));
+		for (const store of [this.colWeights, this.stackWeights]) {
+			if (store[w.id]) store[info.id] = store[w.id];
+		}
+		setLocal('dockOrder', this.dockOrder);
+		// Open the new window before dropping the old one: dropping prunes
+		// dock entries of windows that do not exist yet.
+		this.openWindow(info);
+		this.dropWindow(w);
+		this.refresh();
+		return info;
 	}
 
 	ended(w: Win, code: number) {

@@ -642,6 +642,7 @@
 				status.tone === 'bad' && 'bg-warn-soft text-warn'
 			]}>{status.text}</span
 		>
+		<IconButton icon="settings" label="Session settings" onclick={() => (app.sessionSettings = win)} />
 		<IconButton icon="minus" label="Hide window" onclick={() => app.hide(win)} />
 		<IconButton icon={win.max ? 'restore' : 'maximize'} label={win.max ? 'Restore size' : 'Maximize'} onclick={() => app.toggleMax(win)} />
 		<IconButton icon="x" label="Close window" onclick={askStop} />

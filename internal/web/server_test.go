@@ -420,7 +420,7 @@ func TestBuildArgs(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.SetAgentEnabled("claude", true)
 
-	dir, args, err := buildArgs(cfg, startRequest{
+	dir, args, err := buildArgs(cfg, RunOptions{
 		Dir: "~/p", Agent: "claude", Workspace: "default", Name: "feature x", EnvProfile: "openrouter",
 		NoFirewall: true, ReadOnly: true, NoEnv: true, Ollama: true, Fresh: true,
 		Memory: "16g", CPUs: "8", AllowURLs: []string{"api.example.com", " ", "10.0.0.1"},
@@ -438,7 +438,7 @@ func TestBuildArgs(t *testing.T) {
 		t.Fatalf("args\n got %q\nwant %q", args, want)
 	}
 
-	_, args, err = buildArgs(cfg, startRequest{Dir: proj, Agent: "claude", Resume: true}, home)
+	_, args, err = buildArgs(cfg, RunOptions{Dir: proj, Agent: "claude", Resume: true}, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestBuildArgs(t *testing.T) {
 		t.Fatalf("bare resume args %q", args)
 	}
 
-	bad := []startRequest{
+	bad := []RunOptions{
 		{Dir: proj, Agent: "codex"},                              // not enabled
 		{Dir: proj, Agent: "nope"},                               // unknown
 		{Dir: "relative", Agent: "claude"},                       // not absolute

@@ -70,6 +70,9 @@ type SessionInfo struct {
 	// RenameTo is a name the session takes when it ends.
 	RenameTo    string `json:"renameTo,omitempty"`
 	RenameError string `json:"renameError,omitempty"`
+	// Request is how a run session was started here; nil for attached
+	// sessions and those saved before it was kept.
+	Request *RunOptions `json:"request,omitempty"`
 }
 
 // Session is one session, run by its host process (RunHost) and reached
@@ -113,6 +116,11 @@ func (s *Session) Info() SessionInfo {
 	defer s.mu.Unlock()
 	info := s.info
 	info.Args = append([]string(nil), s.info.Args...)
+	if s.info.Request != nil {
+		r := *s.info.Request
+		r.AllowURLs = append([]string(nil), r.AllowURLs...)
+		info.Request = &r
+	}
 	info.Viewers = len(s.subs)
 	return info
 }
@@ -566,6 +574,29 @@ func (m *Manager) Close(id string) error {
 		return errors.New("no such session")
 	}
 	s.close()
+	return nil
+}
+
+// stop hangs up the process and waits for it to end, keeping the session.
+func (s *Session) stop() error {
+	if err := s.frame(frameStop, nil); err != nil {
+		select {
+		case <-s.done:
+			// It had ended already.
+		default:
+			return err
+		}
+	}
+	select {
+	case <-s.done:
+	case <-time.After(15 * time.Second):
+		return errors.New("the session did not end")
+	}
+	// A rename asked for while the session ran happens in the exit hook.
+	select {
+	case <-s.settled:
+	case <-time.After(10 * time.Second):
+	}
 	return nil
 }
 

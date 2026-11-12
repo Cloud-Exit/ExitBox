@@ -5,6 +5,7 @@
 	import NewSession from '$lib/NewSession.svelte';
 	import NoLoginBar from '$lib/NoLoginBar.svelte';
 	import Prompt from '$lib/Prompt.svelte';
+	import SessionSettings from '$lib/SessionSettings.svelte';
 	import Settings from '$lib/settings/Settings.svelte';
 	import Sidebar from '$lib/Sidebar.svelte';
 	import StatusBar from '$lib/StatusBar.svelte';
@@ -45,6 +46,9 @@
 	</div>
 	{#if app.newSessionOpen && app.data}
 		<NewSession data={app.data} />
+	{/if}
+	{#if app.sessionSettings && app.data}
+		{#key app.sessionSettings}<SessionSettings data={app.data} win={app.sessionSettings} />{/key}
 	{/if}
 {/if}
 
