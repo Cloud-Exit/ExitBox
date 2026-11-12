@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { api, local, setLocal, shellQuote } from './api';
-	import type { EnvProfiles, FolderList, SessionInfo, StartRequest, State } from './api';
+	import type { EnvProfiles, FolderList, ProjectDoc, SessionInfo, StartRequest, State } from './api';
 	import { app, defaultWindowSize } from './app.svelte';
 	import Button from './ui/Button.svelte';
 	import Callout from './ui/Callout.svelte';
 	import Chip from './ui/Chip.svelte';
 	import Icon from './ui/Icon.svelte';
 	import IconButton from './ui/IconButton.svelte';
+	import Kbd from './ui/Kbd.svelte';
 	import Modal from './ui/Modal.svelte';
 	import SectionLabel from './ui/SectionLabel.svelte';
 	import SelectField from './ui/SelectField.svelte';
@@ -19,11 +21,12 @@
 	// The dialog starts from the data it opened with; later polls do not reset it.
 	const start = (() => {
 		const d = data;
-		const last = local<{ dir: string; agent: string }>('last');
+		const last = local<{ dir: string; agent: string; folder?: string }>('last');
 		const enabled = d.agents.filter((a) => a.enabled);
 		return {
 			dir: last?.dir ?? d.projects[0]?.path ?? d.home,
 			agent: (enabled.find((a) => a.name === last?.agent) ?? enabled[0])?.name ?? '',
+			folder: d.folders?.some((f) => f.id === last?.folder) ? (last?.folder ?? '') : '',
 			defaults: d.defaults
 		};
 	})();
@@ -31,6 +34,7 @@
 	let dir = $state(app.tilde(start.dir));
 	let agent = $state(start.agent);
 	let workspace = $state('');
+	let folder = $state(start.folder);
 	let name = $state('');
 	let envProfile = $state('');
 	let flags = $state({
@@ -115,6 +119,167 @@
 		return 'cd ' + shellQuote(dir.trim() || '~') + ' && exitbox ' + a.map(shellQuote).join(' ');
 	});
 
+	// ---------- project folder search and completion ----------
+
+	type Suggestion = { kind: 'project'; path: string; project: ProjectDoc } | { kind: 'dir'; path: string; head: string; tail: string };
+
+	let input = $state<HTMLInputElement>();
+	let list = $state<HTMLDivElement>();
+	/** Index into suggestions; -1 is none. */
+	let hi = $state(-1);
+	/** Escape hides the folder completions until the next edit. */
+	let dismissed = $state(false);
+
+	const typed = $derived(dir.trim());
+	const expand = (p: string) => p.replace(/^~(?=\/|$)/, data.home);
+
+	// Exact, then path prefix, then name prefix, then substring, then workspace; ties keep the list order.
+	function rank(p: ProjectDoc, q: string) {
+		const t = app.tilde(p.path).toLowerCase();
+		const a = p.path.toLowerCase();
+		if (t === q || a === q || t + '/' === q || a + '/' === q) return 0;
+		if (t.startsWith(q) || a.startsWith(q)) return 1;
+		if (t.slice(t.lastIndexOf('/') + 1).startsWith(q)) return 2;
+		if (t.includes(q) || a.includes(q)) return 3;
+		if (p.workspace.toLowerCase().includes(q)) return 4;
+		return -1;
+	}
+
+	// One row per path: two project entries can share a path.
+	const allProjects = $derived([...new Map(data.projects.map((p) => [p.path, p])).values()]);
+
+	const projects = $derived.by(() => {
+		const q = typed.toLowerCase();
+		if (!q) return allProjects;
+		return allProjects
+			.map((p, i) => ({ p, i, r: rank(p, q) }))
+			.filter((x) => x.r >= 0)
+			.sort((x, y) => x.r - y.r || x.i - y.i)
+			.map((x) => x.p);
+	});
+
+	/** Folder listings by hidden flag and absolute path; null when unreadable. */
+	const listings = new SvelteMap<string, string[] | null>();
+	const loading = new Set<string>();
+	const listingKey = (path: string, hidden: boolean) => (hidden ? '1' : '0') + expand(path);
+
+	// The typed text read as a folder (children) and as parent plus name prefix (siblings).
+	const completion = $derived.by(() => {
+		const slash = typed.lastIndexOf('/');
+		if (browse || slash < 0) return null;
+		const parent = typed.slice(0, slash + 1);
+		const prefix = typed.slice(slash + 1);
+		return {
+			parent,
+			prefix,
+			self: prefix && prefix !== '.' && prefix !== '..' ? typed + '/' : '',
+			parentKey: listingKey(parent, showHidden || prefix.startsWith('.')),
+			selfKey: prefix && prefix !== '.' && prefix !== '..' ? listingKey(typed, showHidden) : ''
+		};
+	});
+
+	$effect(() => {
+		const c = completion;
+		if (!c) return;
+		const want = [c.parentKey, c.selfKey].filter((k) => k && !listings.has(k) && !loading.has(k));
+		if (!want.length) return;
+		const timer = setTimeout(() => want.forEach(load), 120);
+		return () => clearTimeout(timer);
+	});
+
+	function load(key: string) {
+		loading.add(key);
+		api<FolderList>('GET', '/api/fs?path=' + encodeURIComponent(key.slice(1)) + (key[0] === '1' ? '&hidden=1' : ''))
+			.then((r) => listings.set(key, r.dirs))
+			.catch(() => listings.set(key, null))
+			.finally(() => loading.delete(key));
+	}
+
+	const dirs = $derived.by(() => {
+		const c = completion;
+		if (!c || dismissed) return [];
+		const known = new Set(projects.map((p) => app.tilde(p.path) + '/'));
+		const out: Suggestion[] = [];
+		const add = (head: string, name: string) => {
+			const path = head + name + '/';
+			if (!known.has(path) && out.length < 200) out.push({ kind: 'dir', path, head, tail: name + '/' });
+		};
+		// Results land under their own key, so a late reply for older text never shows.
+		for (const d of (c.selfKey && listings.get(c.selfKey)) || []) if (showHidden || !d.startsWith('.')) add(c.self, d);
+		const p = c.prefix.toLowerCase();
+		for (const d of listings.get(c.parentKey) ?? []) {
+			if (d === c.prefix || !d.toLowerCase().startsWith(p)) continue;
+			if (showHidden || p.startsWith('.') || !d.startsWith('.')) add(c.parent, d);
+		}
+		return out;
+	});
+
+	const suggestions = $derived<Suggestion[]>([...projects.map((p) => ({ kind: 'project' as const, path: p.path, project: p })), ...dirs]);
+
+	$effect(() => {
+		if (hi >= 0) list?.querySelector('[data-hi]')?.scrollIntoView({ block: 'nearest' });
+	});
+
+	function edited() {
+		hi = -1;
+		dismissed = false;
+		browse = null;
+	}
+
+	function pick(s: Suggestion) {
+		dir = s.kind === 'dir' ? s.path : app.tilde(s.path);
+		edited();
+		input?.focus();
+	}
+
+	/** Tab with nothing highlighted: complete a single match or the shared prefix, else highlight the first folder. */
+	function tabComplete() {
+		const c = completion;
+		if (!c) return false;
+		if (c.self && Array.isArray(listings.get(c.selfKey))) {
+			dir = c.self;
+			edited();
+			return true;
+		}
+		if (!dirs.length) return false;
+		if (dirs.length === 1) {
+			pick(dirs[0]);
+			return true;
+		}
+		const siblings = dirs.filter((d) => d.kind === 'dir' && d.head === c.parent).map((d) => (d.kind === 'dir' ? d.tail.slice(0, -1) : ''));
+		let common = siblings[0] ?? '';
+		for (const n of siblings) while (!n.toLowerCase().startsWith(common.toLowerCase())) common = common.slice(0, -1);
+		if (siblings.length === dirs.length && common.length > c.prefix.length) {
+			dir = c.parent + common;
+			edited();
+		} else hi = projects.length;
+		return true;
+	}
+
+	function onkeydown(e: KeyboardEvent) {
+		if (browse) return;
+		const n = suggestions.length;
+		const current = suggestions[hi];
+		if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && n) {
+			e.preventDefault();
+			const step = e.key === 'ArrowDown' ? 1 : -1;
+			hi = hi < 0 ? (step > 0 ? 0 : n - 1) : (hi + step + n) % n;
+		} else if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+			if (current) pick(current);
+			else if (!tabComplete()) return;
+			e.preventDefault();
+		} else if (e.key === 'Enter' && current) {
+			e.preventDefault();
+			pick(current);
+		} else if (e.key === 'Escape' && (hi >= 0 || dirs.length)) {
+			// Closes the suggestions, not the dialog.
+			e.preventDefault();
+			e.stopPropagation();
+			hi = -1;
+			dismissed = true;
+		}
+	}
+
 	async function openFolder(path: string) {
 		try {
 			browse = await api<FolderList>('GET', '/api/fs?path=' + encodeURIComponent(path) + (showHidden ? '&hidden=1' : ''));
@@ -136,9 +301,10 @@
 				cols: Math.max(40, Math.floor((size.w - 24) / 7.8)),
 				rows: Math.max(10, Math.floor((size.h - 48) / 17))
 			});
-			setLocal('last', { dir: info.dir, agent: info.agent });
+			setLocal('last', { dir: info.dir, agent: info.agent, folder });
 			app.newSessionOpen = false;
 			app.openWindow(info);
+			if (data.folders?.some((f) => f.id === folder)) app.fileNewSession(info, folder);
 			app.refresh();
 		} catch (err) {
 			error = (err as Error).message;
@@ -169,8 +335,12 @@
 				<div class="flex gap-2">
 					<input
 						data-autofocus
+						bind:this={input}
 						bind:value={dir}
+						oninput={edited}
+						{onkeydown}
 						aria-label="Project folder"
+						autocomplete="off"
 						spellcheck="false"
 						class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none hover:border-line-2 focus:border-brand"
 					/>
@@ -180,7 +350,7 @@
 						<Button icon="folder" onclick={() => openFolder(dir)}>Browse</Button>
 					{/if}
 				</div>
-				<div class="flex max-h-[220px] flex-col overflow-auto rounded-lg border border-line-1">
+				<div bind:this={list} class="flex max-h-[220px] flex-col overflow-auto rounded-lg border border-line-1">
 					{#if browse}
 						{#if browse.parent}
 							{@const parent = browse.parent}
@@ -197,18 +367,32 @@
 							<div class="px-3 py-2.5 text-xs text-ink-3">No folders here</div>
 						{/each}
 					{:else}
-						{#each data.projects as p (p.path)}
+						{#each suggestions as s, i (s.kind + s.path)}
+							{#if s.kind === 'dir' && (i === 0 || suggestions[i - 1].kind === 'project')}
+								<div class="shrink-0 border-b border-line-1 px-3 pt-2 pb-1 font-mono text-[10.5px] tracking-[0.08em] text-ink-3 uppercase">Folders</div>
+							{/if}
 							<button
 								type="button"
-								onclick={() => (dir = app.tilde(p.path))}
-								class={['flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2', p.path === fullDir && 'bg-brand-soft']}
+								data-hi={i === hi || undefined}
+								onmousedown={(e) => e.preventDefault()}
+								onclick={() => pick(s)}
+								class={[
+									'flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2',
+									i === hi ? 'bg-surface-2' : s.kind === 'project' && s.path === fullDir && 'bg-brand-soft'
+								]}
 							>
-								<Icon name="folder" />
-								<span class="flex-1 truncate font-mono text-[12.5px]">{app.tilde(p.path)}</span>
-								<span class="text-[11.5px] whitespace-nowrap text-ink-2">{p.scoped ? 'directory-scoped to ' + p.workspace : p.workspace}</span>
+								{#if s.kind === 'project'}
+									<Icon name="folder" />
+									<span class="flex-1 truncate font-mono text-[12.5px]">{app.tilde(s.path)}</span>
+									<span class="text-[11.5px] whitespace-nowrap text-ink-2">{s.project.scoped ? 'directory-scoped to ' + s.project.workspace : s.project.workspace}</span>
+								{:else}
+									<span class="text-ink-3"><Icon name="folder" /></span>
+									<span class="flex-1 truncate font-mono text-[12.5px]"><span class="text-ink-3">{s.head}</span>{s.tail}</span>
+									{#if i === hi}<Kbd>Tab</Kbd>{/if}
+								{/if}
 							</button>
 						{:else}
-							<div class="px-3 py-2.5 text-xs text-ink-3">No known projects yet. Type a path or browse.</div>
+							<div class="px-3 py-2.5 text-xs text-ink-3">{data.projects.length ? 'No matches. Type a path or browse.' : 'No known projects yet. Type a path or browse.'}</div>
 						{/each}
 					{/if}
 				</div>
@@ -246,7 +430,7 @@
 				</div>
 			</div>
 
-			<div class="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+			<div class="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-md:grid-cols-1">
 				<SelectField
 					label="Workspace"
 					wrap=""
@@ -265,6 +449,7 @@
 						...profiles.map((p) => ({ value: p, label: p }))
 					]}
 				/>
+				<SelectField label="Sidebar folder" wrap="" bind:value={folder} options={[{ value: '', label: 'None' }, ...(data.folders ?? []).map((f) => ({ value: f.id, label: f.name }))]} />
 			</div>
 
 			<div class="flex flex-col gap-2">

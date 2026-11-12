@@ -26,14 +26,14 @@
 			return;
 		}
 		try {
-			const res = await api<{ authEnabled: boolean; restartNeeded: boolean; listen: string }>('PUT', '/api/settings/web', {
+			const res = await api<{ authEnabled: boolean; signedOut: boolean; restartNeeded: boolean; listen: string }>('PUT', '/api/settings/web', {
 				listen,
 				username,
 				password,
 				disable
 			});
 			app.notify(res.restartNeeded ? `Saved. Restart exitbox web to listen on ${res.listen}.` : 'Saved.');
-			if (res.authEnabled) {
+			if (res.signedOut) {
 				app.showLogin('Login settings changed. Sign in again.');
 				return;
 			}

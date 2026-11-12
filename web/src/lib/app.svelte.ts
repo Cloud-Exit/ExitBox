@@ -1,6 +1,6 @@
 // App state shared by the components. The app is client-only (ssr = false),
 // so one module-level instance is safe.
-import { api, ApiError, loadLayout, local, setLocal, setUnauthorizedHandler } from './api';
+import { api, ApiError, loadLayout, local, sessionKey, setLocal, setUnauthorizedHandler } from './api';
 import type { Folder, Me, RunningDoc, SavedDoc, SessionInfo, SettingsDoc, State } from './api';
 
 export const MIN_W = 280;
@@ -90,6 +90,11 @@ export class Win {
 		const n = index % 8;
 		this.place(16 + n * 28, 16 + n * 28, size.w, size.h);
 	}
+}
+
+/** A window's sidebar key; an unnamed run is keyed by window until it learns its name. */
+export function windowKey(i: SessionInfo) {
+	return i.name ? sessionKey(i.workspace || 'default', i.agent, i.dir, i.name) : 'window:' + i.id;
 }
 
 /** A session's name, or the agent and start time while it has none. */
@@ -200,6 +205,8 @@ class App {
 
 	private zTop = 10;
 	private poll: ReturnType<typeof setInterval> | null = null;
+	private retryTimer: ReturnType<typeof setTimeout> | null = null;
+	private booting = false;
 	private toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 	focused = $derived(this.windows.find((w) => w.id === this.focusedId) ?? null);
@@ -212,13 +219,38 @@ class App {
 	// ---------- boot and polling ----------
 
 	async boot() {
+		if (this.booting) return;
+		this.booting = true;
+		try {
+			await this.bootOnce();
+		} finally {
+			this.booting = false;
+		}
+	}
+
+	/** Boots again now, from the offline view. */
+	retry() {
+		if (this.retryTimer) clearTimeout(this.retryTimer);
+		this.retryTimer = null;
+		void this.boot();
+	}
+
+	/** Shows the offline view and boots again shortly, so the page recovers when the server is back. */
+	private goOffline(e: unknown) {
+		this.stopPolling();
+		this.offlineReason = e instanceof Error ? e.message : String(e);
+		this.view = 'offline';
+		if (this.retryTimer) clearTimeout(this.retryTimer);
+		this.retryTimer = setTimeout(() => this.retry(), 3000);
+	}
+
+	private async bootOnce() {
 		this.applyTheme();
 		let me: Me;
 		try {
 			me = await api<Me>('GET', '/api/me');
 		} catch (e) {
-			this.offlineReason = (e as Error).message;
-			this.view = 'offline';
+			this.goOffline(e);
 			return;
 		}
 		this.me = me;
@@ -243,7 +275,9 @@ class App {
 		this.applyLayout();
 		try {
 			this.data = await api<State>('GET', '/api/state');
-		} catch {
+		} catch (e) {
+			// A 401 has already shown the login.
+			if (!(e instanceof ApiError && e.status === 401)) this.goOffline(e);
 			return;
 		}
 		this.view = 'sessions';
@@ -270,6 +304,7 @@ class App {
 			const w = this.windows.find((x) => x.id === info.id);
 			if (w) w.info = info;
 			else this.addWindow(info);
+			if (info.id in this.pendingFolder && (info.name || info.exited)) this.filePending(info);
 		}
 		for (const w of this.windows.filter((x) => !live.has(x.id))) this.dropWindow(w);
 	}
@@ -758,6 +793,21 @@ class App {
 			if (ok !== 'yes') return;
 		}
 		await this.saveFolders((this.data?.folders ?? []).filter((x) => x.id !== f.id));
+	}
+
+	/** Folders picked for new unnamed runs, by window id: folders hold session names, learned from the container. */
+	pendingFolder = $state<Record<string, string>>({});
+
+	/** Files a just started session in a folder, once it has a name to file. */
+	fileNewSession(info: SessionInfo, folderId: string) {
+		if (info.name) this.moveToFolder(windowKey(info), folderId);
+		else this.pendingFolder[info.id] = folderId;
+	}
+
+	private filePending(info: SessionInfo) {
+		const folderId = this.pendingFolder[info.id];
+		delete this.pendingFolder[info.id];
+		if (info.name && this.data?.folders.some((f) => f.id === folderId)) this.moveToFolder(windowKey(info), folderId);
 	}
 
 	/** Files a session in a folder, or takes it out with folderId null. */

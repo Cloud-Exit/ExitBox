@@ -34,7 +34,8 @@ export const icons = {
 	grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
 	panelClose: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="16 15 13 12 16 9"/>',
 	panelOpen: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="13 9 16 12 13 15"/>',
-	dock: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15h18"/><path d="m9 9 3 3 3-3"/>'
+	dock: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15h18"/><path d="m9 9 3 3 3-3"/>',
+	search: '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>'
 } as const;
 
 export type IconName = keyof typeof icons;

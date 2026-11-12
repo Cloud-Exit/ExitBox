@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { app, OPEN_DRAG, sessionLabel, type SidebarDrop, type Win } from './app.svelte';
+	import { app, OPEN_DRAG, sessionLabel, windowKey, type SidebarDrop, type Win } from './app.svelte';
 	import { sessionKey, type Folder, type RunningDoc, type SavedDoc } from './api';
 	import Brand from './ui/Brand.svelte';
 	import Button from './ui/Button.svelte';
@@ -23,7 +23,7 @@
 		for (const w of app.windows) {
 			const i = w.info;
 			const ws = i.workspace || 'default';
-			const key = i.name ? sessionKey(ws, i.agent, i.dir, i.name) : 'window:' + i.id;
+			const key = windowKey(i);
 			if (!i.exited) running.add(key);
 			out.push({ kind: 'window', key, named: !!i.name, workspace: ws, win: w });
 		}
@@ -44,8 +44,26 @@
 	});
 
 	const folders = $derived(app.data?.folders ?? []);
-	const folderOf = $derived(new Map(folders.flatMap((f) => f.items.map((k) => [k, f.id] as const))));
-	const shown = (r: Row) => r.kind !== 'saved' || app.showInactive;
+	const folderOf = $derived(
+		new Map([
+			...folders.flatMap((f) => f.items.map((k) => [k, f.id] as const)),
+			// A new unnamed run shows in its folder before it can be filed.
+			...Object.entries(app.pendingFolder)
+				.filter(([, f]) => folders.some((x) => x.id === f))
+				.map(([id, f]) => ['window:' + id, f] as const)
+		])
+	);
+	let query = $state('');
+	const needle = $derived(query.trim().toLowerCase());
+
+	function matches(r: Row) {
+		const [agent, dir] = r.kind === 'window' ? [r.win.info.agent, r.win.info.dir] : r.kind === 'terminal' ? [r.run.agent, r.run.dir] : [r.saved.agent, r.saved.dir];
+		return [title(r), agent, r.workspace, dir, app.tilde(dir)].some((s) => s.toLowerCase().includes(needle));
+	}
+
+	// A search also finds saved sessions while inactive ones are hidden.
+	const shown = (r: Row) => (needle ? matches(r) : r.kind !== 'saved' || app.showInactive);
+	const anyFolderMatch = $derived(!needle || rows.some((r) => folderOf.has(r.key) && shown(r)));
 
 	const workspaceGroups = $derived.by(() => {
 		const d = app.data;
@@ -294,38 +312,40 @@
 	{@const inside = rows.filter((r) => folderOf.get(r.key) === f.id)}
 	{@const visibleRows = inside.filter(shown)}
 	{@const hidden = inside.length - visibleRows.length}
-	{@const open = !app.collapsed[f.id]}
-	<div class="flex flex-col gap-0.5 rounded-md" ondragover={allowDrop} ondrop={(e) => dropOn(e, f.id)} role="list" aria-label={'Folder ' + f.name}>
-		<div class="group flex items-center rounded-md hover:bg-surface-2">
-			{#if editing === 'folder:' + f.id}
-				{@render nameInput((n) => app.renameFolder(f.id, n), f.name, 'Folder name')}
-			{:else}
-				<button type="button" aria-expanded={open} onclick={() => app.toggleFolder(f.id)} class="flex h-8 min-w-0 items-center gap-1.5 pl-1 text-left">
-					<span class="text-ink-3"><Icon name={open ? 'chevronDown' : 'chevronRight'} size={12} /></span>
-					<span class="text-ink-2"><Icon name="folder" size={13} /></span>
-					<span class="truncate text-[13px] font-semibold">{f.name}</span>
-				</button>
-				<span class="flex-1"></span>
-				<span class="mr-2 font-mono text-[10.5px] text-ink-3 group-hover:hidden">{visibleRows.length}</span>
-				<span class="mr-1 hidden items-center gap-0.5 group-focus-within:flex group-hover:flex">
-					<IconButton icon="pencil" label={'Rename folder ' + f.name} small onclick={() => startEdit('folder:' + f.id, f.name)} />
-					<IconButton icon="trash" label={'Delete folder ' + f.name} small class="hover:text-warn" onclick={() => app.deleteFolder(f)} />
-				</span>
-			{/if}
-		</div>
-		{#if open}
-			<div class="flex flex-col gap-0.5 pl-3">
-				{#each visibleRows as r (rowId(r))}
-					{@render row(r)}
-				{/each}
-				{#if !visibleRows.length}
-					<div class="px-2 pb-1.5 text-xs text-ink-3">
-						{hidden ? `${hidden} inactive ${hidden === 1 ? 'session' : 'sessions'} hidden` : 'Empty. Drag sessions here.'}
-					</div>
+	{@const open = !!needle || !app.collapsed[f.id]}
+	{#if !needle || visibleRows.length}
+		<div class="flex flex-col gap-0.5 rounded-md" ondragover={allowDrop} ondrop={(e) => dropOn(e, f.id)} role="list" aria-label={'Folder ' + f.name}>
+			<div class="group flex items-center rounded-md hover:bg-surface-2">
+				{#if editing === 'folder:' + f.id}
+					{@render nameInput((n) => app.renameFolder(f.id, n), f.name, 'Folder name')}
+				{:else}
+					<button type="button" aria-expanded={open} disabled={!!needle} onclick={() => app.toggleFolder(f.id)} class="flex h-8 min-w-0 items-center gap-1.5 pl-1 text-left">
+						<span class="text-ink-3"><Icon name={open ? 'chevronDown' : 'chevronRight'} size={12} /></span>
+						<span class="text-ink-2"><Icon name="folder" size={13} /></span>
+						<span class="truncate text-[13px] font-semibold">{f.name}</span>
+					</button>
+					<span class="flex-1"></span>
+					<span class="mr-2 font-mono text-[10.5px] text-ink-3 group-hover:hidden">{visibleRows.length}</span>
+					<span class="mr-1 hidden items-center gap-0.5 group-focus-within:flex group-hover:flex">
+						<IconButton icon="pencil" label={'Rename folder ' + f.name} small onclick={() => startEdit('folder:' + f.id, f.name)} />
+						<IconButton icon="trash" label={'Delete folder ' + f.name} small class="hover:text-warn" onclick={() => app.deleteFolder(f)} />
+					</span>
 				{/if}
 			</div>
-		{/if}
-	</div>
+			{#if open}
+				<div class="flex flex-col gap-0.5 pl-3">
+					{#each visibleRows as r (rowId(r))}
+						{@render row(r)}
+					{/each}
+					{#if !visibleRows.length}
+						<div class="px-2 pb-1.5 text-xs text-ink-3">
+							{hidden ? `${hidden} inactive ${hidden === 1 ? 'session' : 'sessions'} hidden` : 'Empty. Drag sessions here.'}
+						</div>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
 {/snippet}
 
 <svelte:window
@@ -381,12 +401,37 @@
 	<div class="shrink-0 px-2 pt-2">
 		<Button variant="primary" icon="plus" class="w-full justify-center" onclick={() => (app.newSessionOpen = true)}>New session</Button>
 	</div>
-	<div class="flex flex-1 flex-col gap-0.5 overflow-auto p-2">
-		<div class="flex items-center gap-2 px-2 pt-1 pb-1">
-			<SectionLabel>Folders</SectionLabel>
-			<span class="flex-1"></span>
-			<IconButton icon="folderPlus" label="New folder" small onclick={() => startEdit('new-folder', '')} />
+	<div class="shrink-0 px-2 pt-2">
+		<div class="flex h-8 items-center gap-2 rounded-md border border-line-1 bg-inset pr-1 pl-2.5 text-ink-3 hover:border-line-2 focus-within:border-brand focus-within:bg-surface-0">
+			<Icon name="search" size={13} />
+			<input
+				type="search"
+				bind:value={query}
+				placeholder="Search sessions"
+				aria-label="Search sessions"
+				autocomplete="off"
+				spellcheck="false"
+				onkeydown={(e) => {
+					if (e.key === 'Escape' && query) {
+						e.preventDefault();
+						query = '';
+					}
+				}}
+				class="block h-full min-w-0 flex-1 bg-transparent text-[13px] text-ink-1 outline-none placeholder:text-ink-3 [&::-webkit-search-cancel-button]:hidden"
+			/>
+			{#if query}
+				<IconButton icon="x" label="Clear search" small onclick={() => (query = '')} />
+			{/if}
 		</div>
+	</div>
+	<div class="flex flex-1 flex-col gap-0.5 overflow-auto p-2">
+		{#if anyFolderMatch}
+			<div class="flex items-center gap-2 px-2 pt-1 pb-1">
+				<SectionLabel>Folders</SectionLabel>
+				<span class="flex-1"></span>
+				<IconButton icon="folderPlus" label="New folder" small onclick={() => startEdit('new-folder', '')} />
+			</div>
+		{/if}
 		{#if editing === 'new-folder'}
 			<div class="flex">{@render nameInput((n) => app.createFolder(n), '', 'New folder name')}</div>
 		{/if}
@@ -406,7 +451,9 @@
 				{/each}
 			</div>
 		{:else}
-			{#if !rows.some(shown)}
+			{#if needle && !rows.some(shown)}
+				<div class="px-2 py-3 text-xs text-ink-3">No sessions match.</div>
+			{:else if !rows.some(shown)}
 				<div class="px-2 py-3 text-xs text-ink-3">
 					Nothing running.{inactiveCount && !app.showInactive ? ` ${inactiveCount} saved ${inactiveCount === 1 ? 'session is' : 'sessions are'} hidden.` : ''}
 				</div>

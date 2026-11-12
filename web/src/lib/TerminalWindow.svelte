@@ -9,6 +9,7 @@
 
 	let { win, number }: { win: Win; number: number } = $props();
 
+	const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 	let busy = $state<'' | 'drag' | 'resize'>('');
 	let term: Terminal | null = null;
 	let cols = 120;
@@ -231,6 +232,10 @@
 		// would submit. Send a line feed instead (what Ctrl+J sends): Claude
 		// Code, Codex and OpenCode read it as a newline in the prompt.
 		t.attachCustomKeyEventHandler((ev) => {
+			// Ctrl+V pastes, as Cmd+V does on a Mac: xterm would send ^V, which
+			// agents read as "paste an image" from a clipboard the container lacks.
+			// Leaving the key to the browser fires its paste event, which xterm reads.
+			if (!isMac && ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key.toLowerCase() === 'v') return false;
 			if (ev.key !== 'Enter' || !ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return true;
 			ev.preventDefault();
 			if (ev.type === 'keydown') send({ t: 'i', d: '\n' });

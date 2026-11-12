@@ -8,6 +8,7 @@
 	import Sidebar from '$lib/Sidebar.svelte';
 	import StatusBar from '$lib/StatusBar.svelte';
 	import Toast from '$lib/Toast.svelte';
+	import Button from '$lib/ui/Button.svelte';
 	import Callout from '$lib/ui/Callout.svelte';
 
 	app.boot();
@@ -23,7 +24,10 @@
 	<Login />
 {:else if app.view === 'offline'}
 	<div class="grid min-h-screen place-items-center p-4">
-		<Callout tone="bad">Cannot reach exitbox web: {app.offlineReason}</Callout>
+		<div class="flex flex-col items-center gap-3">
+			<Callout tone="bad">Cannot reach exitbox web: {app.offlineReason}. Retrying every few seconds.</Callout>
+			<Button icon="rotate" onclick={() => app.retry()}>Retry now</Button>
+		</div>
 	</div>
 {:else if app.view === 'sessions' || app.view === 'settings'}
 	<div class="flex h-screen overflow-hidden max-md:h-auto max-md:min-h-screen max-md:flex-col max-md:overflow-visible">
