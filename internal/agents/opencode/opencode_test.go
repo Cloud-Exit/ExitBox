@@ -22,6 +22,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/cloud-exit/exitbox/internal/agent"
+	"github.com/cloud-exit/exitbox/internal/distro"
 )
 
 func TestOpenCodeAgent(t *testing.T) {
@@ -102,6 +105,62 @@ func TestOpenCodeAgent(t *testing.T) {
 	}
 	if !strings.Contains(full, "OPENCODE_VERSION=0.2.0") {
 		t.Error("GetFullDockerfile() should include OPENCODE_VERSION ARG")
+	}
+}
+
+func TestOpenCodeInstallUsesMuslAssetOnAlpine(t *testing.T) {
+	tests := []struct {
+		name string
+		libc string
+	}{
+		{name: "default libc"},
+		{name: "explicit musl", libc: "musl"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			install, err := (&OpenCode{}).installSnippet(agent.PrepareBuildInput{Libc: tt.libc})
+			if err != nil {
+				t.Fatalf("installSnippet() error: %v", err)
+			}
+			if !strings.Contains(install, `ASSET="opencode-linux-${OC_ARCH}-musl.tar.gz"`) {
+				t.Errorf("Alpine install should select the musl asset:\n%s", install)
+			}
+			if !strings.Contains(install, "apk add --no-cache curl jq") {
+				t.Errorf("Alpine install should use apk:\n%s", install)
+			}
+		})
+	}
+}
+
+func TestOpenCodePrepareBuildUsesGlibcAssetOnGPU(t *testing.T) {
+	d := distro.Get(distro.GPU)
+	dir := t.TempDir()
+	in := agent.PrepareBuildInput{
+		Version:        "1.19.4",
+		BuildDir:       dir,
+		DockerfilePath: filepath.Join(dir, "Dockerfile"),
+		BaseImage:      "exitbox-base-gpu",
+		Libc:           d.LibcTag(),
+		Install:        d.InstallSnippet,
+		InstallInline:  d.InstallCommand,
+		Remove:         d.RemoveCommand,
+	}
+	if err := (&OpenCode{}).PrepareBuild(in); err != nil {
+		t.Fatalf("PrepareBuild() error: %v", err)
+	}
+	data, err := os.ReadFile(in.DockerfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := string(data)
+	if !strings.Contains(df, `ASSET="opencode-linux-${OC_ARCH}.tar.gz"`) {
+		t.Errorf("GPU install should select the glibc asset:\n%s", df)
+	}
+	if strings.Contains(df, "opencode-linux-${OC_ARCH}-musl.tar.gz") {
+		t.Errorf("GPU install must not select the musl asset:\n%s", df)
+	}
+	if !strings.Contains(df, "apt-get install") || strings.Contains(df, "apk add") {
+		t.Errorf("GPU install should use apt:\n%s", df)
 	}
 }
 

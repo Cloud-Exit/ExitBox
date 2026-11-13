@@ -16,6 +16,10 @@ func (o *OpenCode) installSnippet(in agent.PrepareBuildInput) (string, error) {
 	if o.NpmPackageName() == "" {
 		return "", fmt.Errorf("unsupported architecture for OpenCode")
 	}
+	libcSuffix := ""
+	if in.IsMusl() {
+		libcSuffix = "-musl"
+	}
 	return `# Install OpenCode via direct GitHub release download with SHA-256 verification.
 # No "curl | bash" — fetches tarball, verifies digest from GitHub API, extracts.
 # Note: base image must include curl, jq, sha256sum.
@@ -29,7 +33,7 @@ RUN set -e && \
         aarch64|arm64) OC_ARCH="arm64" ;; \
         *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
     esac && \
-    ASSET="opencode-linux-${OC_ARCH}.tar.gz" && \
+    ASSET="opencode-linux-${OC_ARCH}` + libcSuffix + `.tar.gz" && \
     echo "Installing OpenCode v${OPENCODE_VERSION} (${ASSET})..." && \
     if [ -n "${GITHUB_TOKEN:-}" ]; then \
         META=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
