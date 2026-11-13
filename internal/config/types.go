@@ -38,6 +38,19 @@ type WebConfig struct {
 	Listen       string `yaml:"listen,omitempty"`
 	Username     string `yaml:"username,omitempty"`
 	PasswordHash string `yaml:"password_hash,omitempty"` // bcrypt
+	// RecentDays is how long an ended session shows as recently ended; 0 means the default.
+	RecentDays int `yaml:"recent_days,omitempty"`
+}
+
+// DefaultWebRecentDays is how long an ended session shows as recently ended when nothing is configured.
+const DefaultWebRecentDays = 3
+
+// RecentDaysOrDefault returns the configured recently ended days or the default.
+func (w WebConfig) RecentDaysOrDefault() int {
+	if w.RecentDays <= 0 {
+		return DefaultWebRecentDays
+	}
+	return w.RecentDays
 }
 
 // AuthEnabled reports whether the web UI asks for a login.

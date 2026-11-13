@@ -10,6 +10,7 @@
 
 <script lang="ts">
 	import { tick } from 'svelte';
+	import { viewport } from '../viewport.svelte';
 	import Icon from './Icon.svelte';
 
 	let {
@@ -41,6 +42,8 @@
 	// svelte-ignore state_referenced_locally
 	let expanded = $state<string | null>(expand);
 	let closed = false;
+	/** A press began on the phone's backdrop: the click that ends the opening long press must not close the menu. */
+	let scrimDown = false;
 
 	function close(refocus = true) {
 		if (closed) return;
@@ -60,9 +63,10 @@
 	const focusables = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('[data-mi]:not([disabled])')];
 
 	/** Lives on document.body: a filtered or transformed ancestor would offset a fixed box. */
-	function mount(node: HTMLElement) {
+	function mount(wrap: HTMLElement) {
 		// The empty wrapper stays where Svelte put it, so Svelte can still remove the block.
-		document.body.appendChild(node);
+		document.body.appendChild(wrap);
+		const node = wrap.querySelector<HTMLElement>('[role=menu]')!;
 		const fit = () => {
 			const r = node.getBoundingClientRect();
 			node.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + 'px';
@@ -75,7 +79,8 @@
 		else node.focus({ preventScroll: true });
 
 		const outside = (e: Event) => {
-			if (!node.contains(e.target as Node)) close(false);
+			// The phone's backdrop closes on its own click, so the tap cannot land on what is under it.
+			if (!wrap.contains(e.target as Node)) close(false);
 		};
 		const scrolled = (e: Event) => {
 			const t = e.target;
@@ -89,19 +94,24 @@
 			close();
 		};
 		const lost = () => close(false);
+		// A phone's on-screen keyboard closing resizes the window; only a new width moves the menu's anchor.
+		const width = innerWidth;
+		const resized = () => {
+			if (!viewport.phone || innerWidth !== width) close(false);
+		};
 		document.addEventListener('pointerdown', outside, true);
 		document.addEventListener('scroll', scrolled, true);
 		document.addEventListener('keydown', escape, true);
 		window.addEventListener('blur', lost);
-		window.addEventListener('resize', lost);
+		window.addEventListener('resize', resized);
 		return () => {
-			node.remove();
+			wrap.remove();
 			ro.disconnect();
 			document.removeEventListener('pointerdown', outside, true);
 			document.removeEventListener('scroll', scrolled, true);
 			document.removeEventListener('keydown', escape, true);
 			window.removeEventListener('blur', lost);
-			window.removeEventListener('resize', lost);
+			window.removeEventListener('resize', resized);
 		};
 	}
 
@@ -151,7 +161,7 @@
 				data-mi
 				data-group={it.label}
 				onclick={() => toggle(it.label, false)}
-				class="flex h-8 w-full shrink-0 items-center gap-2.5 rounded-md px-2 text-left text-[13px] outline-none hover:bg-surface-2 focus:bg-surface-2"
+				class="flex h-8 w-full shrink-0 items-center gap-2.5 rounded-md px-2 text-left text-[13px] outline-none hover:bg-surface-2 focus:bg-surface-2 max-md:h-[44px] max-md:text-[14px]"
 			>
 				{#if it.icon}<span class="text-ink-2"><Icon name={it.icon} size={13} /></span>{/if}
 				<span class="flex-1 truncate">{it.label}</span>
@@ -172,7 +182,7 @@
 				data-in={parent || undefined}
 				onclick={() => activate(it)}
 				class={[
-					'flex h-8 w-full shrink-0 items-center gap-2.5 rounded-md px-2 text-left text-[13px] outline-none disabled:cursor-not-allowed disabled:opacity-50',
+					'flex h-8 w-full shrink-0 items-center gap-2.5 rounded-md px-2 text-left text-[13px] outline-none disabled:cursor-not-allowed disabled:opacity-50 max-md:h-[44px] max-md:text-[14px]',
 					it.danger ? 'text-warn enabled:hover:bg-warn-soft focus:bg-warn-soft' : 'enabled:hover:bg-surface-2 focus:bg-surface-2'
 				]}
 			>
@@ -185,15 +195,39 @@
 {/snippet}
 
 <div class="hidden">
-	<div
-		{@attach mount}
-		role="menu"
-		aria-label={label}
-		tabindex="-1"
-		{onkeydown}
-		oncontextmenu={(e) => e.preventDefault()}
-		class="fixed top-0 left-0 z-[9999] flex max-h-[calc(100dvh-12px)] w-60 flex-col overflow-auto rounded-lg border border-line-2 bg-surface-1 p-1 text-ink-1 shadow-float outline-none"
-	>
-		{@render list(items, '')}
+	<div {@attach mount} class="contents">
+		{#if viewport.phone}
+			<!-- A phone shows the menu as a sheet; a tap on the dimmed page closes it without acting there. -->
+			<div
+				aria-hidden="true"
+				class="fixed inset-0 z-[9998] bg-black/50"
+				onpointerdown={() => (scrimDown = true)}
+				onclick={() => {
+					if (scrimDown) close(false);
+				}}
+			></div>
+		{/if}
+		<div
+			role="menu"
+			aria-label={label}
+			tabindex="-1"
+			{onkeydown}
+			oncontextmenu={(e) => e.preventDefault()}
+			class="fixed top-0 left-0 z-[9999] flex max-h-[calc(100dvh-12px)] w-60 flex-col overflow-auto rounded-lg border border-line-2 bg-surface-1 p-1 text-ink-1 shadow-float outline-none max-md:!top-auto max-md:!bottom-0 max-md:!left-0 max-md:max-h-[80dvh] max-md:w-full max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:p-[8px] max-md:pb-[calc(env(safe-area-inset-bottom)+8px)]"
+		>
+			{#if viewport.phone}<div class="truncate px-2 pt-1 pb-2 text-[13px] font-semibold text-ink-2">{label}</div>{/if}
+			{@render list(items, '')}
+			{#if viewport.phone}
+				<!-- The scrim is hidden from assistive tech: this is the way out it can reach. -->
+				<div role="separator" class="mx-1 my-1 h-px bg-line-1"></div>
+				<button
+					type="button"
+					role="menuitem"
+					data-mi
+					onclick={() => close()}
+					class="flex h-[44px] w-full shrink-0 items-center justify-center rounded-md px-2 text-[14px] font-semibold text-ink-2 outline-none focus:bg-surface-2 enabled:hover:bg-surface-2">Cancel</button
+				>
+			{/if}
+		</div>
 	</div>
 </div>

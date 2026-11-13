@@ -89,11 +89,20 @@ type webSettingsDoc struct {
 	ListenActive string `json:"listenActive"`
 	Username     string `json:"username"`
 	AuthEnabled  bool   `json:"authEnabled"`
+	RecentDays   int    `json:"recentDays"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.store.loadConfig()
-	al := s.store.loadAllowlist()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	al, err := s.store.loadAllowlist()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	st := cfg.Settings
 	df := st.DefaultFlags
 	kbDef := config.DefaultKeybindings()
@@ -114,6 +123,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 		Web: &webSettingsDoc{
 			Listen: cfg.Web.ListenOrDefault(), ListenActive: s.opts.Listen,
 			Username: s.auth.user(), AuthEnabled: s.auth.enabled(),
+			RecentDays: cfg.Web.RecentDaysOrDefault(),
 		},
 		Defaults: &keybindingsDoc{WorkspaceMenu: kbDef.WorkspaceMenu, SessionMenu: kbDef.SessionMenu},
 	}
@@ -129,6 +139,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 
 // packageRe is an Alpine package name; never something that reads as a flag.
 var packageRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$`)
+
+// versionRe is an agent version; it ends up in a Dockerfile ARG.
+var versionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 
 // applySettings copies the editable fields onto the config and allowlist.
 func applySettings(cfg *config.Config, al *config.Allowlist, doc settingsDoc, home string) error {
@@ -160,7 +173,7 @@ func applySettings(cfg *config.Config, al *config.Allowlist, doc settingsDoc, ho
 		if agents.Get(a.Name) == nil {
 			return fmt.Errorf("unknown agent %q", a.Name)
 		}
-		if a.Version != "" && !validName(a.Version) {
+		if v := strings.TrimSpace(a.Version); v != "" && !versionRe.MatchString(v) {
 			return fmt.Errorf("invalid version %q", a.Version)
 		}
 	}
@@ -257,22 +270,36 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	cfg := s.store.loadConfig()
-	al := s.store.loadAllowlist()
-	if err := applySettings(cfg, al, doc, s.store.home()); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.store.saveConfig(cfg); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("saving config.yaml: %w", err))
-		return
-	}
-	if err := s.store.saveAllowlist(al); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("saving allowlist.yaml: %w", err))
+	if status, err := s.putSettings(doc); err != nil {
+		writeError(w, status, err)
 		return
 	}
 	s.logf("web: settings saved")
 	s.handleGetSettings(w, r)
+}
+
+// putSettings saves the settings; it returns the HTTP status of a failure.
+func (s *Server) putSettings(doc settingsDoc) (int, error) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("%w; fix or remove the file, nothing was saved", err)
+	}
+	al, err := s.store.loadAllowlist()
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("%w; fix or remove the file, nothing was saved", err)
+	}
+	if err := applySettings(cfg, al, doc, s.store.home()); err != nil {
+		return http.StatusBadRequest, err
+	}
+	if err := s.store.saveConfig(cfg); err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("saving config.yaml: %w", err)
+	}
+	if err := s.store.saveAllowlist(al); err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("saving allowlist.yaml: %w", err)
+	}
+	return http.StatusOK, nil
 }
 
 // webAuthRequest changes the login and the listen address.
@@ -283,7 +310,12 @@ type webAuthRequest struct {
 	Password string `json:"password"`
 	// Disable removes the login.
 	Disable bool `json:"disable"`
+	// RecentDays nil keeps the current value.
+	RecentDays *int `json:"recentDays"`
 }
+
+// maxWebRecentDays bounds the recently ended days.
+const maxWebRecentDays = 365
 
 // applyWebSettings updates cfg.Web. active is the address this server
 // listens on now.
@@ -299,6 +331,16 @@ func applyWebSettings(cfg *config.Config, req webAuthRequest, active string) err
 	next.Listen = listen
 	if listen == config.DefaultWebListen {
 		next.Listen = ""
+	}
+	if req.RecentDays != nil {
+		d := *req.RecentDays
+		if d < 1 || d > maxWebRecentDays {
+			return fmt.Errorf("recently ended days must be between 1 and %d", maxWebRecentDays)
+		}
+		next.RecentDays = d
+		if d == config.DefaultWebRecentDays {
+			next.RecentDays = 0
+		}
 	}
 	switch {
 	case req.Disable:
@@ -335,7 +377,13 @@ func (s *Server) handlePutWebSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	cfg := s.store.loadConfig()
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("%w; fix or remove the file, nothing was saved", err))
+		return
+	}
 	// Start from the active login, which --username/--password may have
 	// given without saving it, so an unrelated edit never drops it.
 	if user, hash := s.auth.credentials(); user != "" && hash != "" {
@@ -360,5 +408,6 @@ func (s *Server) handlePutWebSettings(w http.ResponseWriter, r *http.Request) {
 		"signedOut":     signedOut && cfg.Web.AuthEnabled(),
 		"restartNeeded": cfg.Web.ListenOrDefault() != s.opts.Listen,
 		"listen":        cfg.Web.ListenOrDefault(),
+		"recentDays":    cfg.Web.RecentDaysOrDefault(),
 	})
 }

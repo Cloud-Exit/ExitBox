@@ -35,6 +35,12 @@ const promptViewerBuffer = 32
 // promptRequestTimeout bounds reading a requester's prompt line.
 const promptRequestTimeout = 5 * time.Second
 
+// promptNoViewerGrace lets a prompt nobody sees survive a page reload or reconnect.
+const promptNoViewerGrace = 2 * time.Second
+
+// maxAcceptBackoff caps the pause between failed accepts.
+const maxAcceptBackoff = time.Second
+
 // promptBroker passes the host prompts of web sessions (exitbox-allow,
 // vault approvals, the vault password) to the browsers viewing them. A
 // requester is an exitbox run; it connects to the broker's socket, sends one
@@ -45,6 +51,8 @@ type promptBroker struct {
 	// byContainer lists the sessions whose window shows a container.
 	byContainer func(container string) []string
 	logf        func(format string, args ...any)
+	// noViewerGrace: see promptNoViewerGrace; tests shorten it.
+	noViewerGrace time.Duration
 
 	mu      sync.Mutex
 	viewers map[string]map[*promptViewer]struct{}
@@ -70,6 +78,9 @@ type pendingPrompt struct {
 	seq      uint64
 	msg      string
 	reply    chan webprompt.Reply
+	// seen holds the viewers that received msg; only they count as viewers.
+	seen  map[*promptViewer]struct{}
+	grace *time.Timer
 }
 
 func (p *pendingPrompt) shownIn(session string) bool {
@@ -83,13 +94,14 @@ func (p *pendingPrompt) shownIn(session string) bool {
 
 func newPromptBroker(known func(string) bool, byContainer func(string) []string, logf func(string, ...any)) *promptBroker {
 	return &promptBroker{
-		known:       known,
-		byContainer: byContainer,
-		logf:        logf,
-		viewers:     map[string]map[*promptViewer]struct{}{},
-		pending:     map[string]*pendingPrompt{},
-		conns:       map[net.Conn]struct{}{},
-		closed:      make(chan struct{}),
+		known:         known,
+		byContainer:   byContainer,
+		logf:          logf,
+		noViewerGrace: promptNoViewerGrace,
+		viewers:       map[string]map[*promptViewer]struct{}{},
+		pending:       map[string]*pendingPrompt{},
+		conns:         map[net.Conn]struct{}{},
+		closed:        make(chan struct{}),
 	}
 }
 
@@ -108,11 +120,21 @@ func (b *promptBroker) listen(path string) error {
 		return err
 	}
 	b.mu.Lock()
-	b.ln, b.path = ln, path
+	b.path = path
+	b.mu.Unlock()
+	b.start(ln)
+	return nil
+}
+
+// start serves requesters on ln until close.
+func (b *promptBroker) start(ln net.Listener) {
+	b.mu.Lock()
+	b.ln = ln
 	b.mu.Unlock()
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
+		backoff := 10 * time.Millisecond
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -125,8 +147,20 @@ func (b *promptBroker) listen(path string) error {
 				if errors.As(err, &ne) && ne.Timeout() {
 					continue
 				}
-				return
+				b.logf("web: prompt socket: %v", err)
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				// A transient failure (out of file descriptors) must not end prompts for good.
+				select {
+				case <-b.closed:
+					return
+				case <-time.After(backoff):
+				}
+				backoff = min(backoff*2, maxAcceptBackoff)
+				continue
 			}
+			backoff = 10 * time.Millisecond
 			b.mu.Lock()
 			b.conns[conn] = struct{}{}
 			b.mu.Unlock()
@@ -140,7 +174,6 @@ func (b *promptBroker) listen(path string) error {
 			}()
 		}
 	}()
-	return nil
 }
 
 // close stops listening, cancels every prompt and removes the socket. The
@@ -194,13 +227,14 @@ func (b *promptBroker) watch(session string) *promptViewer {
 	for _, p := range list {
 		select {
 		case v.out <- p.msg:
+			p.seen[v] = struct{}{}
 		default:
 		}
 	}
 	return v
 }
 
-// unwatch removes a viewer. Its prompts stay pending for the next one.
+// unwatch removes a viewer; a prompt left unseen returns to its requester after a grace.
 func (b *promptBroker) unwatch(session string, v *promptViewer) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -208,17 +242,45 @@ func (b *promptBroker) unwatch(session string, v *promptViewer) {
 	if len(b.viewers[session]) == 0 {
 		delete(b.viewers, session)
 	}
+	for _, p := range b.pending {
+		if _, ok := p.seen[v]; !ok {
+			continue
+		}
+		delete(p.seen, v)
+		if len(p.seen) == 0 {
+			if p.grace != nil {
+				p.grace.Stop()
+			}
+			p.grace = time.AfterFunc(b.noViewerGrace, func() { b.expireUnseen(p) })
+		}
+	}
 }
 
-func (b *promptBroker) broadcastLocked(sessions []string, msg string) {
+// expireUnseen returns a still unseen prompt to its requester, which shows the popup.
+func (b *promptBroker) expireUnseen(p *pendingPrompt) {
+	b.mu.Lock()
+	if b.pending[p.id] != p || len(p.seen) > 0 {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.pending, p.id)
+	b.mu.Unlock()
+	p.reply <- webprompt.Reply{Status: webprompt.StatusNoViewer}
+}
+
+// broadcastLocked queues msg for the viewers of sessions and returns those that took it.
+func (b *promptBroker) broadcastLocked(sessions []string, msg string) map[*promptViewer]struct{} {
+	got := map[*promptViewer]struct{}{}
 	for _, s := range sessions {
 		for v := range b.viewers[s] {
 			select {
 			case v.out <- msg:
+				got[v] = struct{}{}
 			default:
 			}
 		}
 	}
+	return got
 }
 
 func doneMsg(id string) string {
@@ -232,19 +294,51 @@ func doneMsg(id string) string {
 	return string(data)
 }
 
-// answer settles a prompt of session; the first answer wins. It reports
-// whether the answer was taken.
-func (b *promptBroker) answer(session, id string, allow bool, password string) bool {
+// errNoPrompt: the prompt was answered already, cancelled or never shown here.
+var errNoPrompt = errors.New("no such prompt")
+
+// answerFrom settles a prompt for viewer v and tells v why an answer was refused.
+func (b *promptBroker) answerFrom(v *promptViewer, session, id string, allow bool, password string) {
+	err := b.settle(session, id, allow, password)
+	if err == nil || errors.Is(err, errNoPrompt) {
+		return
+	}
+	data, merr := json.Marshal(struct {
+		T     string `json:"t"`
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}{"prompt-error", id, err.Error()})
+	if merr != nil {
+		return
+	}
+	select {
+	case v.out <- string(data):
+	default:
+	}
+}
+
+// settle answers a prompt of session; the first answer wins. It returns
+// why an answer was not taken.
+func (b *promptBroker) settle(session, id string, allow bool, password string) error {
 	b.mu.Lock()
 	p := b.pending[id]
 	if p == nil || !p.shownIn(session) {
 		b.mu.Unlock()
-		return false
+		return errNoPrompt
 	}
 	isPassword := p.kind == webprompt.KindVaultPassword
-	if isPassword && allow && (password == "" || len(password) > webprompt.MaxPassword) {
-		b.mu.Unlock()
-		return false
+	if isPassword && allow {
+		reason := ""
+		switch {
+		case password == "":
+			reason = "enter the vault password"
+		case len(password) > webprompt.MaxPassword:
+			reason = "the password is too long"
+		}
+		if reason != "" {
+			b.mu.Unlock()
+			return errors.New(reason)
+		}
 	}
 	delete(b.pending, id)
 	b.broadcastLocked(p.sessions, doneMsg(id))
@@ -254,7 +348,7 @@ func (b *promptBroker) answer(session, id string, allow bool, password string) b
 		r.Password = password
 	}
 	p.reply <- r
-	return true
+	return nil
 }
 
 // cancel drops a prompt nobody waits for any more.
@@ -288,20 +382,14 @@ func (b *promptBroker) open(req webprompt.Request, sessions []string) (*pendingP
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	viewed := false
-	for _, s := range sessions {
-		if len(b.viewers[s]) > 0 {
-			viewed = true
-			break
-		}
-	}
-	if !viewed {
+	// Only a viewer that took the message counts.
+	seen := b.broadcastLocked(sessions, string(msg))
+	if len(seen) == 0 {
 		return nil, nil
 	}
 	b.seq++
-	p := &pendingPrompt{id: id, sessions: sessions, kind: req.Kind, seq: b.seq, msg: string(msg), reply: make(chan webprompt.Reply, 1)}
+	p := &pendingPrompt{id: id, sessions: sessions, kind: req.Kind, seq: b.seq, msg: string(msg), reply: make(chan webprompt.Reply, 1), seen: seen}
 	b.pending[id] = p
-	b.broadcastLocked(sessions, p.msg)
 	return p, nil
 }
 

@@ -147,12 +147,12 @@
 					{#if app.tabWindows(t.id).some((w) => w.prompts.length)}
 						<span title="A window here waits for your answer" class="size-1.5 rounded-full bg-amber ring-2 ring-amber/40"></span>
 					{/if}
-					<span class={['min-w-[18px] rounded px-1 text-center font-mono text-[10.5px]', active ? 'bg-surface-2 text-ink-2' : 'text-ink-3']}>{count}</span>
+<span class={['grid h-[20px] min-w-[20px] place-items-center rounded-full px-[5px] font-mono text-[10.5px]', active ? 'bg-surface-2 text-ink-2' : 'text-ink-3']}>{count}</span>
 				</button>
 				{#if app.tabs.length > 1}
 					<IconButton
 						icon="x"
-						label={'Close tab ' + t.name + (count ? ' (its windows move to the next tab)' : '')}
+						label={'Close tab ' + t.name + (count ? ' (its windows move to the tab next to it)' : '')}
 						small
 						class={['mr-0.5', !active && 'invisible group-hover:visible']}
 						onclick={() => app.closeTab(t.id)}

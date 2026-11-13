@@ -12,8 +12,9 @@
 	aria-label={label}
 	title={label}
 	class={[
-		'grid shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-1',
+		'grid shrink-0 place-items-center rounded-md text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
 		small ? 'size-6' : 'size-7',
+		'max-md:size-[44px]',
 		cls
 	]}
 	{...rest}

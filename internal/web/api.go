@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -41,12 +42,13 @@ import (
 
 // store is how the server reaches ExitBox's files; tests replace it.
 type store interface {
-	loadConfig() *config.Config
+	// loadConfig returns the defaults only when config.yaml does not exist.
+	loadConfig() (*config.Config, error)
 	saveConfig(*config.Config) error
-	loadAllowlist() *config.Allowlist
+	loadAllowlist() (*config.Allowlist, error)
 	saveAllowlist(*config.Allowlist) error
 	projects() []string
-	savedSessions(workspace, agent, dir string) ([]string, error)
+	savedSessions(workspace, agent, dir string) ([]savedSession, error)
 	removeSaved(workspace, agent, dir, name string) (bool, error)
 	renameSaved(workspace, agent, dir, oldName, newName string) error
 	envProfiles(workspace string) ([]string, string, error)
@@ -62,9 +64,30 @@ type store interface {
 
 type configStore struct{}
 
-func (configStore) loadConfig() *config.Config              { return config.LoadOrDefault() }
-func (configStore) saveConfig(c *config.Config) error       { return config.SaveConfig(c) }
-func (configStore) loadAllowlist() *config.Allowlist        { return config.LoadAllowlistOrDefault() }
+func (configStore) loadConfig() (*config.Config, error) {
+	cfg, err := config.LoadConfig()
+	if errors.Is(err, os.ErrNotExist) {
+		return config.DefaultConfig(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading config.yaml: %w", err)
+	}
+	return cfg, nil
+}
+
+func (configStore) saveConfig(c *config.Config) error { return config.SaveConfig(c) }
+
+func (configStore) loadAllowlist() (*config.Allowlist, error) {
+	al, err := config.LoadAllowlist()
+	if errors.Is(err, os.ErrNotExist) {
+		return config.DefaultAllowlist(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading allowlist.yaml: %w", err)
+	}
+	return al, nil
+}
+
 func (configStore) saveAllowlist(a *config.Allowlist) error { return config.SaveAllowlist(a) }
 
 func (configStore) projects() []string {
@@ -89,8 +112,23 @@ func (configStore) projects() []string {
 	return out
 }
 
-func (configStore) savedSessions(workspace, agent, dir string) ([]string, error) {
-	return session.ListNames(workspace, agent, dir)
+// savedSession is a saved session name and its directories on disk.
+type savedSession struct {
+	Name string
+	Dirs []string
+}
+
+func (configStore) savedSessions(workspace, agent, dir string) ([]savedSession, error) {
+	named, err := session.NamedDirs(workspace, agent, dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]savedSession, 0, len(named))
+	for n, dirs := range named {
+		out = append(out, savedSession{Name: n, Dirs: dirs})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // openKV opens a workspace's KV store. Sessions open it for one request
@@ -138,25 +176,42 @@ func (configStore) containers() ([]containerDoc, error) {
 	if rt == nil {
 		return nil, nil
 	}
-	names, err := rt.PS("name=exitbox-", "{{.Names}}")
+	out, err := runtimeOutput(rt.Name(), "ps", "--filter", "name=exitbox-", "--format", "{{.Names}}")
 	if err != nil {
 		return nil, err
 	}
 	var keep []string
-	for _, n := range names {
-		if containerNameRe.MatchString(n) {
+	for _, n := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if n = strings.TrimSpace(n); containerNameRe.MatchString(n) {
 			keep = append(keep, n)
 		}
 	}
 	if len(keep) == 0 {
 		return nil, nil
 	}
-	out, err := exec.Command(rt.Name(), append([]string{"inspect"}, keep...)...).Output()
+	out, err = runtimeOutput(rt.Name(), append([]string{"inspect"}, keep...)...)
 	if err != nil {
 		// A container that stopped between ps and inspect fails the call.
 		return nil, err
 	}
 	return parseInspect(out)
+}
+
+// runtimeTimeout bounds one container runtime call of the listing: a hung
+// runtime must not hold the container cache lock.
+var runtimeTimeout = 5 * time.Second
+
+func runtimeOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// A child that keeps stdout open would otherwise outlast the timeout.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("%s %s: %w", name, args[0], ctx.Err())
+	}
+	return out, err
 }
 
 func (configStore) envProfiles(workspace string) ([]string, string, error) {
@@ -218,6 +273,8 @@ type savedDoc struct {
 	Agent     string `json:"agent"`
 	Dir       string `json:"dir"`
 	Name      string `json:"name"`
+	// LastUsed is RFC 3339 UTC; empty when the session's files are gone.
+	LastUsed string `json:"lastUsed,omitempty"`
 }
 
 type defaultsDoc struct {
@@ -271,7 +328,11 @@ func workspaceDocs(cfg *config.Config) []workspaceDoc {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	sessions, others := s.liveSessions()
 	folders, err := s.folders.load()
 	if err != nil {
@@ -298,7 +359,11 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 					continue
 				}
 				for _, n := range list {
-					saved = append(saved, savedDoc{Workspace: ws.Name, Agent: a, Dir: dir, Name: n})
+					d := savedDoc{Workspace: ws.Name, Agent: a, Dir: dir, Name: n.Name}
+					if t := s.lastUsed.get(n.Dirs); !t.IsZero() {
+						d.LastUsed = t.UTC().Format(time.RFC3339)
+					}
+					saved = append(saved, d)
 				}
 			}
 		}
@@ -325,6 +390,8 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		"sessions": sessions,
 		"running":  nonNil(others),
 		"folders":  folders,
+		// The sidebar needs it before the settings page loads.
+		"recentDays": cfg.Web.RecentDaysOrDefault(),
 	})
 }
 
@@ -393,6 +460,26 @@ func (s *Server) runningContainers() []containerDoc {
 	return list
 }
 
+// freshContainers lists the agent containers now, past the cache.
+func (s *Server) freshContainers() ([]containerDoc, error) {
+	return s.recentContainers(0)
+}
+
+// recentContainers lists the agent containers, reusing a list younger than maxAge.
+func (s *Server) recentContainers(maxAge time.Duration) ([]containerDoc, error) {
+	s.ctrMu.Lock()
+	defer s.ctrMu.Unlock()
+	if maxAge > 0 && !s.ctrAt.IsZero() && time.Since(s.ctrAt) < maxAge {
+		return s.ctrList, nil
+	}
+	list, err := s.store.containers()
+	if err != nil {
+		return nil, err
+	}
+	s.ctrList, s.ctrAt = list, time.Now()
+	return list, nil
+}
+
 func orDefault(v, def string) string {
 	if strings.TrimSpace(v) == "" {
 		return def
@@ -449,6 +536,10 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 // an existing directory. Empty means home.
 func expandDir(p, home string) (string, error) {
 	p = strings.TrimSpace(p)
+	// A tab separates the parts of a session key.
+	if strings.Contains(p, "\t") {
+		return "", errors.New("a folder path cannot contain a tab")
+	}
 	switch {
 	case p == "" || p == "~":
 		p = home
@@ -517,7 +608,7 @@ func validDomain(d string) bool {
 }
 
 func validName(n string) bool {
-	return n != "" && len(n) <= 128 && !strings.ContainsAny(n, "\x00\n\r") && !strings.HasPrefix(n, "-")
+	return n != "" && len(n) <= 128 && !strings.ContainsAny(n, "\x00\n\r\t") && !strings.HasPrefix(n, "-")
 }
 
 // buildArgs turns a request into exitbox arguments.
@@ -596,7 +687,10 @@ func buildArgs(cfg *config.Config, req RunOptions, home string) (dir string, arg
 // runSession checks options as buildArgs does and returns the session they
 // start, keeping the options with it.
 func (s *Server) runSession(opts RunOptions) (SessionInfo, error) {
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		return SessionInfo{}, err
+	}
 	dir, args, err := buildArgs(cfg, opts, s.store.home())
 	if err != nil {
 		return SessionInfo{}, err
@@ -736,7 +830,11 @@ func (s *Server) handleRemoveSaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if profile.FindWorkspace(cfg, req.Workspace) == nil || agents.Get(req.Agent) == nil || !validName(req.Name) {
 		writeError(w, http.StatusBadRequest, errors.New("unknown saved session"))
 		return
@@ -763,24 +861,38 @@ func (s *Server) handleRemoveSaved(w http.ResponseWriter, r *http.Request) {
 
 // handleRestartSession starts a session again and forgets the old one. With
 // a request (ssh for an SSH session), it starts with those options instead
-// of its own, and one still running is stopped first.
+// of its own, and one still running is stopped first. With rebuild, a run
+// session started here rebuilds its image (--update) on this start only,
+// stopping it first if it still runs.
 func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cols    int         `json:"cols"`
 		Rows    int         `json:"rows"`
 		Request *RunOptions `json:"request"`
 		SSH     *SSHOptions `json:"ssh"`
+		Rebuild bool        `json:"rebuild"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	old := s.sessions.Get(r.PathValue("id"))
+	id := r.PathValue("id")
+	if !s.beginRestart(id) {
+		writeError(w, http.StatusConflict, errors.New("this session is already restarting"))
+		return
+	}
+	defer s.endRestart(id)
+	// Looked up under the guard: a restart that just finished forgot it.
+	old := s.sessions.Get(id)
 	if old == nil {
 		writeError(w, http.StatusNotFound, errors.New("no such session"))
 		return
 	}
 	info := old.Info()
+	if req.Rebuild && (info.Kind != KindRun || info.Request == nil) {
+		writeError(w, http.StatusBadRequest, errors.New("only a session started here can be rebuilt"))
+		return
+	}
 	var next SessionInfo
 	if req.SSH != nil {
 		if info.Kind != KindSSH {
@@ -815,9 +927,17 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		if !info.Exited {
+		if !info.Exited && !req.Rebuild {
 			writeError(w, http.StatusConflict, errors.New("the session is still running"))
 			return
+		}
+		if !info.Exited {
+			if err := s.stopForRestart(old); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			// The exit hook may have applied a queued rename.
+			info = old.Info()
 		}
 		if info.Kind == KindSSH {
 			// Reconnect with the same options, checked again.
@@ -844,7 +964,12 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	sess, err := s.sessions.Start(next, req.Cols, req.Rows)
+	var extra []string
+	if req.Rebuild {
+		// Not in next.Args, so a later restart does not rebuild again.
+		extra = []string{"--update"}
+	}
+	sess, err := s.sessions.Start(next, req.Cols, req.Rows, extra...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("starting %s: %w", program(next), err))
 		return
@@ -852,12 +977,36 @@ func (s *Server) handleRestartSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.sessions.Close(info.ID); err != nil {
 		s.logf("web: forget session %s: %v", info.ID, err)
 	}
+	if req.Rebuild {
+		s.logf("web: rebuilding the %s image for session %s as %s", next.Agent, info.ID, sess.Info().ID)
+	}
 	if next.Kind == KindSSH {
 		s.logf("web: restarted ssh session %s as %s: ssh %s", info.ID, sess.Info().ID, strings.Join(next.Args, " "))
 	} else {
 		s.logf("web: restarted session %s as %s: exitbox %s (in %s)", info.ID, sess.Info().ID, strings.Join(next.Args, " "), next.Dir)
 	}
 	writeJSON(w, http.StatusCreated, sess.Info())
+}
+
+// beginRestart claims a session for one restart at a time: two would
+// each start a replacement.
+func (s *Server) beginRestart(id string) bool {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	if s.restarting[id] {
+		return false
+	}
+	if s.restarting == nil {
+		s.restarting = map[string]bool{}
+	}
+	s.restarting[id] = true
+	return true
+}
+
+func (s *Server) endRestart(id string) {
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	delete(s.restarting, id)
 }
 
 // stopForRestart ends a running run session as terminating it would, but
@@ -883,7 +1032,12 @@ func (s *Server) stopForRestart(sess *Session) error {
 // dialog asks for them when it needs them.
 func (s *Server) handleEnvProfiles(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("workspace")
-	if profile.FindWorkspace(s.store.loadConfig(), name) == nil {
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if profile.FindWorkspace(cfg, name) == nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown workspace %q", name))
 		return
 	}
@@ -986,6 +1140,10 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("this session has no name to rename yet"))
 			return
 		}
+		if status, err := s.checkWorkspace(info.Workspace); err != nil {
+			writeError(w, status, err)
+			return
+		}
 		if err := s.renames.add(pendingRename{Workspace: info.Workspace, Agent: info.Agent, Dir: info.Dir, Name: info.Name, To: newName}); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -1082,7 +1240,11 @@ func (s *Server) handleRenameSaved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if profile.FindWorkspace(cfg, req.Workspace) == nil || agents.Get(req.Agent) == nil || !validName(req.Name) {
 		writeError(w, http.StatusBadRequest, errors.New("unknown saved session"))
 		return

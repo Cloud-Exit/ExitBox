@@ -149,6 +149,52 @@ func TestWebSettings(t *testing.T) {
 	}
 }
 
+func TestWebSettingsRecentDays(t *testing.T) {
+	days := func(n int) *int { return &n }
+	cfg := config.DefaultConfig()
+	cfg.Web.RecentDays = 7
+	if err := applyWebSettings(cfg, webAuthRequest{}, "127.0.0.1:4848"); err != nil || cfg.Web.RecentDays != 7 {
+		t.Fatalf("nil changed it to %d: %v", cfg.Web.RecentDays, err)
+	}
+	if err := applyWebSettings(cfg, webAuthRequest{RecentDays: days(14)}, "127.0.0.1:4848"); err != nil || cfg.Web.RecentDays != 14 {
+		t.Fatalf("14 saved as %d: %v", cfg.Web.RecentDays, err)
+	}
+	if err := applyWebSettings(cfg, webAuthRequest{RecentDays: days(config.DefaultWebRecentDays)}, "127.0.0.1:4848"); err != nil || cfg.Web.RecentDays != 0 {
+		t.Fatalf("the default saved as %d, want 0: %v", cfg.Web.RecentDays, err)
+	}
+	for _, n := range []int{0, -1, 366} {
+		cfg.Web.RecentDays = 5
+		err := applyWebSettings(cfg, webAuthRequest{RecentDays: days(n)}, "127.0.0.1:4848")
+		if err == nil || !strings.Contains(err.Error(), "between 1 and 365") || cfg.Web.RecentDays != 5 {
+			t.Errorf("%d: err %v, saved %d", n, err, cfg.Web.RecentDays)
+		}
+	}
+}
+
+func TestRecentDaysReachesThePage(t *testing.T) {
+	_, st, ts := newTestServer(t, Options{})
+	_, state := do(t, ts, "GET", "/api/state", nil, "")
+	if state["recentDays"] != float64(config.DefaultWebRecentDays) {
+		t.Fatalf("state recentDays %v, want the default", state["recentDays"])
+	}
+	resp, out := do(t, ts, "PUT", "/api/settings/web", map[string]any{"recentDays": 10}, "")
+	if resp.StatusCode != 200 || out["recentDays"] != float64(10) || st.cfg.Web.RecentDays != 10 {
+		t.Fatalf("put: %d %v, saved %d", resp.StatusCode, out, st.cfg.Web.RecentDays)
+	}
+	_, doc := do(t, ts, "GET", "/api/settings", nil, "")
+	if web, _ := doc["web"].(map[string]any); web["recentDays"] != float64(10) {
+		t.Fatalf("settings web %v", web)
+	}
+	_, state = do(t, ts, "GET", "/api/state", nil, "")
+	if state["recentDays"] != float64(10) {
+		t.Fatalf("state recentDays %v after save", state["recentDays"])
+	}
+	resp, out = do(t, ts, "PUT", "/api/settings/web", map[string]any{"recentDays": 0}, "")
+	if resp.StatusCode != http.StatusBadRequest || st.cfg.Web.RecentDays != 10 {
+		t.Fatalf("0 days: %d %v, saved %d", resp.StatusCode, out, st.cfg.Web.RecentDays)
+	}
+}
+
 func TestPutWebSettingsSignsOut(t *testing.T) {
 	s, st, ts := newTestServer(t, Options{})
 	resp, out := do(t, ts, "PUT", "/api/settings/web", map[string]any{"username": "me", "password": "correct horse"}, "")
@@ -205,7 +251,7 @@ func TestServiceFiles(t *testing.T) {
 	unit := SystemdUnit(spec)
 	for _, want := range []string{
 		`ExecStart="/opt/exit box/exitbox" web`,
-		`Environment="PATH=/usr/bin:/a b$$%%"`,
+		`Environment="PATH=/usr/bin:/a b$%%"`,
 		"WantedBy=default.target",
 		"Restart=on-failure",
 	} {

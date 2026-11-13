@@ -43,6 +43,14 @@ func kill(cmd *exec.Cmd) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
+// killHostProcess kills a session host and its process group.
+func killHostProcess(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}
+
 // DetachProcess makes cmd a session leader with no terminal, so it is not
 // stopped with exitbox web: not by Ctrl+C in its terminal, not by its
 // process group going away.

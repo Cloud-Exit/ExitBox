@@ -18,6 +18,8 @@ package wizard
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -88,12 +90,27 @@ func TestWebAccessTurnsOnLogin(t *testing.T) {
 		t.Fatalf("page not opened: step %v listen %q", m.step, m.web.listen)
 	}
 
-	// Saving without a username fails and says why.
+	// Saving without a login keeps a loopback address only.
+	m.web.listen = "0.0.0.0:4848"
 	m.web.cursor = webRowSave
 	m = keys(m, "enter")
-	if m.web.err == "" || saved.AuthEnabled() {
-		t.Fatal("saved without a username")
+	if m.web.err == "" || saved.AuthEnabled() || saved.Listen != "" {
+		t.Fatal("saved a public address without a login")
 	}
+	m.web.listen = "127.0.0.1:9000"
+	m = keys(m, "enter")
+	if m.web.err != "" || saved.Listen != "127.0.0.1:9000" || saved.AuthEnabled() || m.web.authOn {
+		t.Fatalf("listen-only save: err %q saved %+v", m.web.err, *saved)
+	}
+	m.web.listen = config.DefaultWebListen
+
+	// A username without a password fails and says why.
+	m.web.username = "me"
+	m = keys(m, "enter")
+	if m.web.err == "" || saved.AuthEnabled() {
+		t.Fatal("saved without a password")
+	}
+	m.web.username = ""
 
 	m.web.cursor = webRowUser
 	m = keys(m, "enter", "m", "e", "enter", "down", "enter", "correct horse", "enter", "down", "enter", "correct horsx", "backspace", "e", "enter", "down", "enter")
@@ -140,5 +157,39 @@ func TestWebConfigFromForm(t *testing.T) {
 	}
 	if w.Listen != "0.0.0.0:4848" || w.PasswordHash != "old" {
 		t.Fatalf("got %+v; an empty password keeps the old hash", w)
+	}
+}
+
+func TestSaveWebConfigTo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	// No file yet: defaults plus the web settings.
+	if err := saveWebConfigTo(path, config.WebConfig{Listen: "127.0.0.1:9000"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfigFrom(path)
+	if err != nil || cfg.Web.Listen != "127.0.0.1:9000" {
+		t.Fatalf("saved %+v: %v", cfg, err)
+	}
+	// The web UI's recently ended days survive a save here.
+	cfg.Web.RecentDays = 9
+	if err := config.SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWebConfigTo(path, config.WebConfig{Username: "me", PasswordHash: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = config.LoadConfigFrom(path); err != nil || cfg.Web.RecentDays != 9 || cfg.Web.Username != "me" {
+		t.Fatalf("saved %+v: %v", cfg.Web, err)
+	}
+	// A config it cannot parse is left alone.
+	bad := []byte("settings: [unclosed\n")
+	if err := os.WriteFile(path, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWebConfigTo(path, config.WebConfig{}); err == nil {
+		t.Fatal("saved over an unreadable config")
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != string(bad) {
+		t.Fatalf("config changed to %q: %v", data, err)
 	}
 }

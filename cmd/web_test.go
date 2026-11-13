@@ -17,13 +17,16 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/web"
 )
 
@@ -119,5 +122,93 @@ func TestSpawnHostReapsAndKeepsLog(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "host failed: web-session-host --state "+dir+" --id abc") {
 		t.Fatalf("log %q", data)
+	}
+	// The manager kills a host that never listens by this pid.
+	pid, err := os.ReadFile(filepath.Join(dir, "abc.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := strconv.Atoi(string(pid)); err != nil || n <= 0 {
+		t.Fatalf("pid file %q", pid)
+	}
+}
+
+func TestWebLogin(t *testing.T) {
+	noAsk := func() (string, error) { return "", errors.New("asked") }
+	saved := config.WebConfig{Username: "saved", PasswordHash: "$2a$saved"}
+	if u, h, err := webLogin(webOptions{}, "env password", saved, noAsk); err != nil || u != "saved" || h != saved.PasswordHash {
+		t.Fatalf("no flags: %q %q %v", u, h, err)
+	}
+	for _, o := range []webOptions{
+		{password: "correct horse"},
+		{username: " ", password: "correct horse"},
+		{username: "a:b", password: "correct horse"},
+		{username: strings.Repeat("u", 65), password: "correct horse"},
+	} {
+		if _, _, err := webLogin(o, "", saved, noAsk); err == nil {
+			t.Errorf("%+v accepted", o)
+		}
+	}
+	u, h, err := webLogin(webOptions{username: " me "}, "correct horse", saved, noAsk)
+	if err != nil || u != "me" || !web.PasswordMatches(h, "correct horse") {
+		t.Fatalf("env password: %q %v", u, err)
+	}
+	// The flag wins over the env, and the same login keeps its hash.
+	again, h2, err := webLogin(webOptions{username: "me", password: "correct horse"}, "other password", config.WebConfig{Username: "me", PasswordHash: h}, noAsk)
+	if err != nil || again != "me" || h2 != h {
+		t.Fatalf("flag password: %q %v; hash kept %v", again, err, h2 == h)
+	}
+	if _, _, err := webLogin(webOptions{username: "me"}, "", saved, noAsk); err == nil || err.Error() != "asked" {
+		t.Fatalf("no password: %v", err)
+	}
+}
+
+func TestWebRefusedOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows only")
+	}
+	if err := runWeb(nil, webOptions{}); err == nil || !strings.Contains(err.Error(), "Windows") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestLoadWebConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := loadWebConfig(filepath.Join(dir, "missing.yaml"))
+	if err != nil || cfg == nil || cfg.Web.ListenOrDefault() != config.DefaultWebListen {
+		t.Fatalf("missing config: %+v %v", cfg, err)
+	}
+	bad := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(bad, []byte("web: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := loadWebConfig(bad); err == nil {
+		t.Fatalf("unreadable config loaded as %+v", cfg)
+	}
+}
+
+// An unreadable config is reported, never replaced with defaults by --service.
+func TestRunWebKeepsUnreadableConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exitbox web is refused on Windows")
+	}
+	old := config.Home
+	config.Home = t.TempDir()
+	t.Cleanup(func() { config.Home = old })
+	orig := []byte("web: [\n")
+	if err := os.WriteFile(config.ConfigFile(), orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []webOptions{
+		{service: true, listen: "127.0.0.1:4849", username: "me", password: "correct horse"},
+		{},
+	} {
+		err := runWeb(nil, o)
+		if err == nil || !strings.Contains(err.Error(), config.ConfigFile()) {
+			t.Fatalf("%+v: err %v", o, err)
+		}
+		if data, err := os.ReadFile(config.ConfigFile()); err != nil || string(data) != string(orig) {
+			t.Fatalf("%+v: config now %q %v", o, data, err)
+		}
 	}
 }

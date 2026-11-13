@@ -46,16 +46,16 @@
 	<NewSession {data} edit={win} />
 {:else}
 	<Modal label="Session settings" onclose={close}>
-		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4">
+		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4 max-md:min-h-[52px] max-md:py-0 max-md:pr-[4px] max-md:pl-[16px]">
 			<div class="flex flex-1 flex-col gap-0.5">
-				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase">
+				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase max-md:hidden">
 					<span class="size-1.5 rounded-full bg-brand"></span>{info.kind === 'attach' ? 'Started in a terminal' : 'Session'}
 				</span>
-				<h2 class="text-xl font-bold">Session settings</h2>
+				<h2 class="text-xl font-bold max-md:text-[15px]">Session settings</h2>
 			</div>
 			<IconButton icon="x" label="Close" onclick={close} />
 		</div>
-		<div class="flex flex-col gap-[18px] overflow-auto px-5 py-[18px]">
+		<div class="flex flex-col gap-[18px] overflow-auto px-5 py-[18px] max-md:flex-1 max-md:px-[12px] max-md:py-[16px]">
 			<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
 				{#each rows as [k, v] (k)}
 					<dt class="text-ink-2">{k}</dt>
@@ -73,8 +73,8 @@
 				{/if}
 			</div>
 		</div>
-		<div class="flex items-center gap-2 border-t border-line-1 px-5 py-3.5">
-			<Button variant="ghost" onclick={close}>Close</Button>
+		<div class="flex items-center gap-2 border-t border-line-1 px-5 py-3.5 max-md:px-[12px] max-md:py-[8px]">
+			<Button variant="ghost" class="max-md:w-full max-md:justify-center max-md:border-line-2" onclick={close}>Close</Button>
 		</div>
 	</Modal>
 {/if}

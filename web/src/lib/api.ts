@@ -43,6 +43,8 @@ export interface SavedDoc {
 	agent: string;
 	dir: string;
 	name: string;
+	/** RFC 3339 UTC; missing when unknown. */
+	lastUsed?: string;
 }
 
 export interface SessionInfo {
@@ -57,6 +59,8 @@ export interface SessionInfo {
 	started: string;
 	exited: boolean;
 	exitCode: number;
+	/** RFC 3339; missing while it runs. */
+	ended?: string;
 	viewers: number;
 	container?: string;
 	renameTo?: string;
@@ -142,6 +146,8 @@ export interface State {
 	sessions: SessionInfo[];
 	running: RunningDoc[];
 	folders: Folder[];
+	/** Days a saved session shows as recently ended (config.yaml web.recent_days). */
+	recentDays: number;
 }
 
 /** A sidebar folder; items are sessionKey values. */
@@ -217,7 +223,7 @@ export interface SettingsDoc {
 		custom: string[];
 		hostPorts: number[];
 	};
-	web?: { listen: string; listenActive: string; username: string; authEnabled: boolean };
+	web?: { listen: string; listenActive: string; username: string; authEnabled: boolean; recentDays: number };
 	keybindingDefaults?: { workspaceMenu: string; sessionMenu: string };
 }
 
@@ -270,7 +276,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 // The desktop layout (tabs, tiling, window places) lives on the server so
 // it survives restarts and matches in every browser. Other keys (theme,
 // sidebar state, last folder) are per-browser conveniences in localStorage.
-const LAYOUT_KEYS = new Set(['tabs', 'activeTab', 'autoDock', 'dockLayout', 'dockOrder', 'colWeights', 'rowWeights', 'stackWeights', 'mainRatio']);
+const LAYOUT_KEYS = new Set(['tabs', 'activeTab', 'autoDock', 'dockLayout', 'dockOrder', 'colWeights', 'rowWeights', 'stackWeights', 'mainRatio', 'tileTrees']);
 const isLayoutKey = (key: string) => LAYOUT_KEYS.has(key) || key.startsWith('win.');
 
 let layout: Record<string, unknown> | null = null;

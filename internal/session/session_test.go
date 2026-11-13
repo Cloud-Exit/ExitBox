@@ -88,6 +88,22 @@ func TestListNames_NoDir(t *testing.T) {
 	}
 }
 
+func TestNamedDirs(t *testing.T) {
+	withTempConfigHome(t)
+	projectDir := t.TempDir()
+	a := writeSessionDir(t, "default", "claude", projectDir, "a", "same")
+	c := writeSessionDir(t, "default", "claude", projectDir, "c", "same")
+	b := writeSessionDir(t, "default", "claude", projectDir, "b", "other")
+
+	got, err := NamedDirs("default", "claude", projectDir)
+	if err != nil {
+		t.Fatalf("NamedDirs() error: %v", err)
+	}
+	if !slices.Equal(got["same"], []string{a, c}) || !slices.Equal(got["other"], []string{b}) || len(got) != 2 {
+		t.Fatalf("NamedDirs() = %v", got)
+	}
+}
+
 func TestRemoveByName(t *testing.T) {
 	withTempConfigHome(t)
 	projectDir := t.TempDir()

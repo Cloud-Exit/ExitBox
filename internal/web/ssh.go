@@ -201,6 +201,10 @@ func (p *sshConfigParser) parseFile(path string, depth int) {
 		return
 	}
 	p.files++
+	// Stat follows links; opening a FIFO would block for good.
+	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() || st.Size() > maxSSHConfigBytes {
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -218,12 +222,18 @@ func (p *sshConfigParser) parseFile(path string, depth int) {
 		}
 		switch key {
 		case "host":
-			p.blocks = append(p.blocks, &sshBlock{patterns: args, opts: map[string]string{}})
+			// Never nil: a Host line with no patterns matches nothing.
+			p.blocks = append(p.blocks, &sshBlock{patterns: append([]string{}, args...), opts: map[string]string{}})
 		case "match":
 			p.blocks = append(p.blocks, &sshBlock{match: true, opts: map[string]string{}})
 		case "include":
+			cur, n := p.blocks[len(p.blocks)-1], len(p.blocks)
 			for _, a := range args {
 				p.include(a, depth)
+			}
+			if len(p.blocks) != n {
+				// What follows still belongs to the enclosing block, not the included file's last Host.
+				p.blocks = append(p.blocks, &sshBlock{patterns: cur.patterns, match: cur.match, opts: map[string]string{}})
 			}
 		case "hostname", "user", "port":
 			cur := p.blocks[len(p.blocks)-1]
@@ -301,6 +311,10 @@ func sshConfigLine(line string) (string, []string) {
 			}
 			a, rest = rest[1:i+1], rest[i+2:]
 		} else {
+			if rest[0] == '#' {
+				// A token starting with # begins a trailing comment.
+				break
+			}
 			i := strings.IndexAny(rest, " \t")
 			if i < 0 {
 				i = len(rest)
@@ -333,29 +347,29 @@ func sshHostMatches(patterns []string, host string) bool {
 	return ok
 }
 
-// sshGlob matches ssh's * and ? wildcards.
+// sshGlob matches ssh's * and ? wildcards, backtracking only to the last star.
 func sshGlob(pat, s string) bool {
-	for pat != "" {
-		switch pat[0] {
-		case '*':
-			for i := 0; i <= len(s); i++ {
-				if sshGlob(pat[1:], s[i:]) {
-					return true
-				}
-			}
-			return false
-		case '?':
-			if s == "" {
-				return false
-			}
+	p, i := 0, 0
+	star, mark := -1, 0
+	for i < len(s) {
+		switch {
+		case p < len(pat) && pat[p] == '*':
+			star, mark = p, i
+			p++
+		case p < len(pat) && (pat[p] == '?' || pat[p] == s[i]):
+			p++
+			i++
+		case star >= 0:
+			mark++
+			p, i = star+1, mark
 		default:
-			if s == "" || s[0] != pat[0] {
-				return false
-			}
+			return false
 		}
-		pat, s = pat[1:], s[1:]
 	}
-	return s == ""
+	for p < len(pat) && pat[p] == '*' {
+		p++
+	}
+	return p == len(pat)
 }
 
 // handleSSHHosts lists the Host aliases of ~/.ssh/config for the New

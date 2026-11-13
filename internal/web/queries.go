@@ -30,6 +30,14 @@ const answerWindow = 30 * time.Second
 // output chunk.
 const maxPendingSeq = 256
 
+// Output nobody answers must not grow the tracker: these bound the queries
+// kept per kind, the kinds, and the length of a kind.
+const (
+	maxQueriesPerKind = 32
+	maxQueryKinds     = 64
+	maxQueryKindLen   = 32
+)
+
 // queryTracker passes one browser answer per terminal query. tmux asks the
 // terminal for device attributes, its version and mode 2026 when a client
 // starts and takes the first answer; every further answer reaches the agent
@@ -57,6 +65,7 @@ func (q *queryTracker) sawOutput(p []byte) {
 		q.tail = nil
 	}
 	now := q.clock()
+	q.pruneLocked(now)
 	for i := 0; i < len(p); {
 		j := bytes.IndexByte(p[i:], 0x1b)
 		if j < 0 {
@@ -71,12 +80,41 @@ func (q *queryTracker) sawOutput(p []byte) {
 			return
 		}
 		if k := queryKind(seq); k != "" {
-			if q.pending == nil {
-				q.pending = map[string][]time.Time{}
-			}
-			q.pending[k] = append(q.pending[k], now)
+			q.addLocked(k, now)
 		}
 		i += n
+	}
+}
+
+// addLocked records a query of kind k within the caps; q.mu must be held.
+func (q *queryTracker) addLocked(k string, now time.Time) {
+	if len(k) > maxQueryKindLen {
+		return
+	}
+	if q.pending == nil {
+		q.pending = map[string][]time.Time{}
+	}
+	list, ok := q.pending[k]
+	if !ok && len(q.pending) >= maxQueryKinds {
+		return
+	}
+	if len(list) >= maxQueriesPerKind {
+		list = list[1:]
+	}
+	q.pending[k] = append(list, now)
+}
+
+// pruneLocked drops the queries past answerWindow; q.mu must be held.
+func (q *queryTracker) pruneLocked(now time.Time) {
+	for k, list := range q.pending {
+		for len(list) > 0 && now.Sub(list[0]) > answerWindow {
+			list = list[1:]
+		}
+		if len(list) == 0 {
+			delete(q.pending, k)
+		} else {
+			q.pending[k] = list
+		}
 	}
 }
 

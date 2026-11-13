@@ -97,6 +97,41 @@ func TestStartReportsHostError(t *testing.T) {
 	}
 }
 
+// A host that never listens is killed, not left running its agent.
+func TestStartKillsHostThatNeverListens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	dir := shortTempDir(t)
+	var exited chan struct{}
+	spawn := func(dir, id string) (<-chan struct{}, error) {
+		c := exec.Command("sleep", "60")
+		DetachProcess(c)
+		if err := c.Start(); err != nil {
+			return nil, err
+		}
+		exited = make(chan struct{})
+		go func() {
+			defer close(exited)
+			_ = c.Wait()
+		}()
+		return exited, WriteHostPID(dir, id, c.Process.Pid)
+	}
+	m := NewManager(shellCommand(&recorder{}, "true"), spawn, dir)
+	m.startTimeout = 200 * time.Millisecond
+	if _, err := m.Start(SessionInfo{Agent: "claude", Dir: t.TempDir()}, 80, 24); err == nil {
+		t.Fatal("a host that never listened started")
+	}
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host still runs")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Fatalf("files left behind: %v", left)
+	}
+}
+
 // The spec holds the server's environment: it must not stay on disk.
 func TestHostRemovesSpec(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -352,6 +387,8 @@ func TestPendingRenameRetriesUntilApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	now := time.Now()
+	s.renameNow = func() time.Time { return now }
 	// The workspace store is busy: the rename stays queued.
 	st.renameErr = errors.New("the workspace store is busy")
 	s.applyPendingRenames(nil, nil)
@@ -359,8 +396,9 @@ func TestPendingRenameRetriesUntilApplied(t *testing.T) {
 		t.Fatal("a rename that failed for now was dropped")
 	}
 
-	// Polls at once apply it once.
+	// Polls at once, past the retry pause, apply it once.
 	st.renameErr = nil
+	now = now.Add(renameRetryMax)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -424,5 +462,146 @@ func TestRemoveSavedRefusedWhileRunning(t *testing.T) {
 	}
 	if resp, _ := do(t, ts, "POST", "/api/saved/remove", body, ""); resp.StatusCode != 200 {
 		t.Fatalf("remove after the end: %d", resp.StatusCode)
+	}
+}
+
+// The pid file only serves until the host listens; none is left behind.
+func TestPIDFileRemovedAfterStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	dir := shortTempDir(t)
+	// A stand-in pid: Start kills it only if the host never listens.
+	stand := exec.Command("sleep", "60")
+	DetachProcess(stand)
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stand.Process.Kill()
+		_ = stand.Wait()
+	})
+	spawn := func(dir, id string) (<-chan struct{}, error) {
+		if err := WriteHostPID(dir, id, stand.Process.Pid); err != nil {
+			return nil, err
+		}
+		return inProcessHosts(dir, id)
+	}
+	m := NewManager(shellCommand(&recorder{}, "sleep 60"), spawn, dir)
+	sess, err := m.Start(SessionInfo{Agent: "claude", Dir: t.TempDir()}, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Info().ID
+	if _, err := os.Stat(pidPath(dir, id)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pid file kept after the start: %v", err)
+	}
+	// One left by an older server goes with the session.
+	if err := WriteHostPID(dir, id, stand.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		left, err := filepath.Glob(filepath.Join(dir, "*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("files left behind: %v", left)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A session that ended while exitbox web was down keeps the time it ended,
+// not the time the next server learned of it.
+func TestEndedIsTheHostsExitTime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	dir := shortTempDir(t)
+	m1 := NewManager(shellCommand(&recorder{}, "sleep 1"), inProcessHosts, dir)
+	sess, err := m1.Start(SessionInfo{Agent: "claude", Dir: t.TempDir()}, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Info().ID
+	m1.Disconnect()
+	time.Sleep(3 * time.Second)
+	m2 := NewManager(shellCommand(&recorder{}, "true"), inProcessHosts, dir)
+	defer m2.CloseAll()
+	restored := time.Now()
+	if n, err := m2.Restore(); err != nil || n != 1 {
+		t.Fatalf("restored %d, %v", n, err)
+	}
+	waitDone(t, m2.Get(id))
+	info := m2.Get(id).Info()
+	if info.Ended == nil || restored.Sub(*info.Ended) < time.Second {
+		t.Fatalf("ended %v, restored at %v: not the host's exit time", info.Ended, restored)
+	}
+}
+
+// A host from an older binary sends no exit time: now stands in. One that
+// does is taken at its word.
+func TestEndedFromExitFrames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix sockets for hosts on Windows")
+	}
+	dir := shortTempDir(t)
+	m := NewManager(shellCommand(&recorder{}, "true"), inProcessHosts, dir)
+	defer m.Disconnect()
+	at := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, c := range []struct {
+		id     string
+		exitAt bool
+	}{{"0123456789abcde1", false}, {"0123456789abcde2", true}} {
+		_, conns := fakeHost(t, dir, c.id)
+		s, hc := connectFake(t, m, c.id, conns)
+		if c.exitAt {
+			if err := writeFrame(hc, frameExitAt, exitAtPayload(at)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := time.Now().Add(-time.Second)
+		if err := writeFrame(hc, frameExit, exitPayload(3)); err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, s)
+		info := s.Info()
+		if info.Ended == nil || info.ExitCode != 3 {
+			t.Fatalf("%s: ended %v, code %d", c.id, info.Ended, info.ExitCode)
+		}
+		if c.exitAt && !info.Ended.Equal(at) {
+			t.Fatalf("ended %v, the host said %v", info.Ended, at)
+		}
+		if !c.exitAt && (info.Ended.Before(before) || info.Ended.After(time.Now())) {
+			t.Fatalf("ended %v without a host time, want now", info.Ended)
+		}
+	}
+}
+
+// Empty lists reach the page as [], as its types say, not null.
+func TestInfoJSONEmptyLists(t *testing.T) {
+	m := NewManager(shellCommand(&recorder{}, "true"), inProcessHosts, shortTempDir(t))
+	for _, info := range []SessionInfo{
+		{ID: "0123456789abcde1", Kind: KindAttach, Agent: "claude", Container: "exitbox-claude-p-0a1b2c3d"},
+		{ID: "0123456789abcde2", Kind: KindRun, Agent: "claude", Request: &RunOptions{Agent: "claude"}},
+	} {
+		data, err := json.Marshal(m.newSession(info).Info())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(data, []byte(`"args":[]`)) {
+			t.Errorf("%s: no empty args in %s", info.Kind, data)
+		}
+		if info.Request != nil && !bytes.Contains(data, []byte(`"allowUrls":[]`)) {
+			t.Errorf("%s: no empty allowUrls in %s", info.Kind, data)
+		}
 	}
 }

@@ -108,7 +108,7 @@
 <TextField label="Session name" placeholder={request.host ? (request.user ? request.user + '@' : '') + request.host : 'user@host if empty'} wrap="" data-autofocus={edit ? undefined : true} bind:value={form.name} />
 
 <div class="flex flex-col gap-1.5">
-	<span class="text-[11.5px] font-semibold text-ink-2" id="ssh-host-label">Host</span>
+	<span class="text-[11.5px] font-semibold text-ink-2 max-md:text-[13px]" id="ssh-host-label">Host</span>
 	<div class="relative">
 		<input
 			data-autofocus={edit ? true : undefined}
@@ -128,7 +128,7 @@
 			placeholder="host, IP or ~/.ssh/config alias"
 			autocomplete="off"
 			spellcheck="false"
-			class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none placeholder:font-sans placeholder:text-ink-3 hover:border-line-2 focus:border-brand"
+			class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none placeholder:font-sans placeholder:text-ink-3 hover:border-line-2 focus:border-brand max-md:h-[44px] max-md:rounded-[8px] max-md:px-[12px] max-md:text-[16px]"
 		/>
 		{#if listShown}
 			<div
@@ -147,7 +147,7 @@
 						tabindex="-1"
 						onmousedown={(e) => e.preventDefault()}
 						onclick={() => pick(h)}
-						class={['flex min-h-9 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2', i === hi && 'bg-surface-2']}
+						class={['flex min-h-9 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2 max-md:min-h-[44px]', i === hi && 'bg-surface-2']}
 					>
 						<span class="flex-1 truncate font-mono text-[12.5px]">{h.alias}</span>
 						<span class="truncate font-mono text-[11px] text-ink-2">{sshTarget(h)}</span>

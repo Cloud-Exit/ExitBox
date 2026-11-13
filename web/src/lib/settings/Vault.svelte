@@ -1,10 +1,12 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '../api';
 	import { app } from '../app.svelte';
 	import Button from '../ui/Button.svelte';
 	import Callout from '../ui/Callout.svelte';
 	import Icon from '../ui/Icon.svelte';
 	import IconButton from '../ui/IconButton.svelte';
+	import Modal from '../ui/Modal.svelte';
 	import SectionLabel from '../ui/SectionLabel.svelte';
 	import TextField from '../ui/TextField.svelte';
 	import Toggle from '../ui/Toggle.svelte';
@@ -28,6 +30,8 @@
 		newValue: string;
 		error: string;
 		busy: boolean;
+		/** Bumped by lock: secret answers to calls made before it are dropped. */
+		gen: number;
 		/** The secret being edited in its row, its value, and whether it shows. */
 		editKey: string;
 		editValue: string;
@@ -39,7 +43,21 @@
 	let cards = $state<Record<string, Card>>({});
 
 	function card(ws: string): Card {
-		cards[ws] ??= { password: '', confirm: '', createReadOnly: false, unlocked: false, keys: [], newKey: '', newValue: '', error: '', busy: false, editKey: '', editValue: '', editShown: false };
+		cards[ws] ??= {
+			password: '',
+			confirm: '',
+			createReadOnly: false,
+			unlocked: false,
+			keys: [],
+			newKey: '',
+			newValue: '',
+			error: '',
+			busy: false,
+			gen: 0,
+			editKey: '',
+			editValue: '',
+			editShown: false
+		};
 		return cards[ws];
 	}
 
@@ -56,14 +74,18 @@
 	}
 	load();
 
-	async function call(ws: string, action: string, body: Record<string, unknown>) {
+	/** With secret set, an answer that shows secrets or unlocks the card is dropped once the card was locked since. */
+	async function call(ws: string, action: string, body: Record<string, unknown>, secret = false) {
 		const c = card(ws);
+		const gen = c.gen;
+		const stale = () => secret && c.gen !== gen;
 		c.busy = true;
 		c.error = '';
 		try {
-			return await api<{ keys?: string[]; value?: string }>('POST', `/api/vault/${encodeURIComponent(ws)}/${action}`, body);
+			const res = await api<{ keys?: string[]; value?: string }>('POST', `/api/vault/${encodeURIComponent(ws)}/${action}`, body);
+			return stale() ? null : res;
 		} catch (e) {
-			c.error = (e as Error).message;
+			if (!stale()) c.error = (e as Error).message;
 			return null;
 		} finally {
 			c.busy = false;
@@ -86,7 +108,7 @@
 
 	async function unlock(ws: string) {
 		const c = card(ws);
-		const res = await call(ws, 'keys', { password: c.password });
+		const res = await call(ws, 'keys', { password: c.password }, true);
 		if (res) {
 			c.keys = res.keys ?? [];
 			c.unlocked = true;
@@ -95,17 +117,27 @@
 
 	function lock(ws: string) {
 		const c = card(ws);
+		c.gen++;
 		c.password = '';
+		c.confirm = '';
 		c.unlocked = false;
 		c.keys = [];
 		c.newValue = '';
 		cancelEdit(ws);
 	}
 
+	// Settings stays mounted behind the sessions view: leaving it drops every held password.
+	$effect(() => {
+		if (app.view === 'settings') return;
+		untrack(() => {
+			for (const ws of Object.keys(cards)) lock(ws);
+		});
+	});
+
 	/** Opens the row's editor with the current value, hidden. */
 	async function startEdit(ws: string, key: string) {
 		const c = card(ws);
-		const res = await call(ws, 'reveal', { password: c.password, key });
+		const res = await call(ws, 'reveal', { password: c.password, key }, true);
 		if (!res) return;
 		c.editKey = key;
 		c.editValue = res.value ?? '';
@@ -155,17 +187,32 @@
 		if (await call(v.workspace, 'config', { enabled, readOnly })) await load();
 	}
 
-	async function destroy(ws: string) {
-		const ok = await app.ask(
-			'Destroy this vault?',
-			`Permanently deletes the encrypted vault of ${ws} and every secret in it. This cannot be undone.`,
-			[{ label: 'Destroy vault', value: 'yes', tone: 'danger' }]
-		);
-		if (ok !== 'yes') return;
-		if (await call(ws, 'destroy', { confirm: ws })) {
-			lock(ws);
-			app.notify(`Vault of ${ws} destroyed.`);
+	/** The destroy dialog: the workspace name must be typed, and that typed text is what the server checks. */
+	let destroying = $state<{ ws: string; typed: string; error: string; busy: boolean } | null>(null);
+
+	function destroy(ws: string) {
+		destroying = { ws, typed: '', error: '', busy: false };
+	}
+
+	async function confirmDestroy() {
+		const d = destroying;
+		if (!d || d.busy || d.typed !== d.ws) return;
+		const c = card(d.ws);
+		d.busy = true;
+		c.busy = true;
+		d.error = '';
+		try {
+			await api('POST', `/api/vault/${encodeURIComponent(d.ws)}/destroy`, { confirm: d.typed });
+			lock(d.ws);
+			destroying = null;
+			app.notify(`Vault of ${d.ws} destroyed.`);
 			await load();
+		} catch (e) {
+			// A 409 means a session of this workspace runs.
+			d.error = (e as Error).message;
+		} finally {
+			d.busy = false;
+			c.busy = false;
 		}
 	}
 
@@ -252,7 +299,7 @@
 													cancelEdit(v.workspace);
 												}
 											}}
-											class="block min-w-0 flex-1 bg-transparent px-2.5 py-[7px] font-mono text-[12.5px] outline-none"
+											class="block min-w-0 flex-1 bg-transparent px-2.5 py-[7px] font-mono text-[12.5px] outline-none max-md:h-[44px] max-md:text-[16px]"
 										/>
 										<IconButton
 											icon={c.editShown ? 'eyeOff' : 'eye'}
@@ -270,7 +317,7 @@
 									<span class="flex-1 truncate font-mono text-[12.5px]">{k}</span>
 									<span class="font-mono text-xs text-ink-3">••••••••</span>
 									<IconButton icon="pencil" label={'Edit ' + k} small disabled={c.busy} onclick={() => startEdit(v.workspace, k)} />
-									<IconButton icon="trash" label={'Delete ' + k} small class="hover:text-warn" onclick={() => removeSecret(v.workspace, k)} />
+									<IconButton icon="trash" label={'Delete ' + k} small class="hover:text-warn" disabled={c.busy} onclick={() => removeSecret(v.workspace, k)} />
 								</div>
 							{/if}
 						{/each}
@@ -293,9 +340,34 @@
 				</form>
 			{/if}
 
-			<div class="flex justify-end">
-				<Button size="sm" variant="ghost" class="text-warn" onclick={() => destroy(v.workspace)}>Destroy vault</Button>
+			<div class="flex flex-wrap items-center justify-end gap-2">
+				<Button size="sm" variant="ghost" class="text-warn" disabled={c.busy} onclick={() => destroy(v.workspace)}>Destroy vault</Button>
 			</div>
 		{/if}
 	</div>
 {/each}
+
+{#if destroying}
+	{@const d = destroying}
+	<Modal label="Destroy this vault?" onclose={() => !d.busy && (destroying = null)}>
+		<form
+			class="flex min-h-0 flex-1 flex-col"
+			onsubmit={(e) => {
+				e.preventDefault();
+				confirmDestroy();
+			}}
+		>
+			<div class="border-b border-line-1 px-5 py-4 max-md:px-[16px]"><h2 class="text-base font-bold">Destroy this vault?</h2></div>
+			<div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-[18px] text-[13px] text-ink-2 max-md:px-[16px] max-md:text-[14px]">
+				<span>Permanently deletes the encrypted vault of <span class="font-semibold text-ink-1">{d.ws}</span> and every secret in it. This cannot be undone.</span>
+				<TextField label={`Type ${d.ws} to confirm`} mono autocapitalize="off" wrap="flex-none" disabled={d.busy} bind:value={d.typed} />
+				{#if d.error}<Callout tone="bad">{d.error}</Callout>{/if}
+			</div>
+			<div class="flex flex-wrap items-center gap-2 border-t border-line-1 px-5 py-3.5 max-md:flex-col max-md:items-stretch max-md:px-[16px]">
+				<Button type="submit" variant="danger" class="max-md:w-full max-md:justify-center" disabled={d.busy || d.typed !== d.ws}>Destroy vault</Button>
+				<!-- Cancel takes the focus: a stray Enter must never destroy. -->
+				<Button variant="ghost" data-autofocus class="max-md:w-full max-md:justify-center max-md:border-line-2" disabled={d.busy} onclick={() => (destroying = null)}>Cancel</Button>
+			</div>
+		</form>
+	</Modal>
+{/if}

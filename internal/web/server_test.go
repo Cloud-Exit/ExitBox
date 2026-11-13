@@ -47,8 +47,10 @@ type fakeStore struct {
 	al    *config.Allowlist
 	dirs  []string
 	saved map[string][]string // workspace/agent/dir -> names
-	homeD string
-	ctrs  []containerDoc
+	// savedDirs maps workspace/agent/dir/name to the session's directories.
+	savedDirs map[string][]string
+	homeD     string
+	ctrs      []containerDoc
 	// renames records renameSaved calls as "old->new".
 	renames []string
 	stopped []string
@@ -57,6 +59,14 @@ type fakeStore struct {
 	renameCalls int
 	// noSSH: no ssh client is installed.
 	noSSH bool
+	// loadErr fails loadConfig and loadAllowlist; saves counts the saves.
+	loadErr error
+	saves   int
+	// loadHook runs inside loadConfig, without the lock.
+	loadHook func()
+	// ctrErr fails containers; ctrCalls counts its calls.
+	ctrErr   error
+	ctrCalls int
 }
 
 func (f *fakeStore) renameSaved(ws, agent, dir, oldName, newName string) error {
@@ -99,12 +109,25 @@ func (f *fakeStore) stopContainer(name string) error {
 func (f *fakeStore) containers() ([]containerDoc, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ctrCalls++
+	if f.ctrErr != nil {
+		return nil, f.ctrErr
+	}
 	return append([]containerDoc(nil), f.ctrs...), nil
 }
 
-func (f *fakeStore) loadConfig() *config.Config {
+func (f *fakeStore) loadConfig() (*config.Config, error) {
+	f.mu.Lock()
+	hook := f.loadHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
 	data, err := json.Marshal(f.cfg)
 	if err != nil {
 		panic(err)
@@ -113,30 +136,40 @@ func (f *fakeStore) loadConfig() *config.Config {
 	if err := json.Unmarshal(data, &c); err != nil {
 		panic(err)
 	}
-	return &c
+	return &c, nil
 }
 func (f *fakeStore) saveConfig(c *config.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.saves++
 	f.cfg = c
 	return nil
 }
-func (f *fakeStore) loadAllowlist() *config.Allowlist {
+func (f *fakeStore) loadAllowlist() (*config.Allowlist, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
 	c := *f.al
 	c.Custom = append([]string(nil), f.al.Custom...)
-	return &c
+	return &c, nil
 }
 func (f *fakeStore) saveAllowlist(a *config.Allowlist) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.saves++
 	f.al = a
 	return nil
 }
 func (f *fakeStore) projects() []string { return f.dirs }
-func (f *fakeStore) savedSessions(ws, agent, dir string) ([]string, error) {
-	return f.saved[ws+"/"+agent+"/"+dir], nil
+func (f *fakeStore) savedSessions(ws, agent, dir string) ([]savedSession, error) {
+	k := ws + "/" + agent + "/" + dir
+	var out []savedSession
+	for _, n := range f.saved[k] {
+		out = append(out, savedSession{Name: n, Dirs: f.savedDirs[k+"/"+n]})
+	}
+	return out, nil
 }
 func (f *fakeStore) removeSaved(ws, agent, dir, name string) (bool, error) {
 	k := ws + "/" + agent + "/" + dir
@@ -225,6 +258,8 @@ func newTestServer(t *testing.T, opts Options) (*Server, *fakeStore, *httptest.S
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Serve restores the logins; these tests use the handler alone.
+	s.restoreLogins()
 	s.store = st
 	s.folders = &folderStore{path: filepath.Join(t.TempDir(), "folders.json")}
 	s.layout = &layoutStore{path: filepath.Join(t.TempDir(), "layout.json")}

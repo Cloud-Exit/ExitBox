@@ -10,10 +10,11 @@
 	import SelectField from '../ui/SelectField.svelte';
 	import TextField from '../ui/TextField.svelte';
 	import Toggle from '../ui/Toggle.svelte';
+	import { viewport } from '../viewport.svelte';
 	import type { IconName } from '../ui/icons';
 	import ListEditor from './ListEditor.svelte';
 	import PageHeader from './PageHeader.svelte';
-	import TerminalFont from './TerminalFont.svelte';
+	import Appearance from './Appearance.svelte';
 	import Vault from './Vault.svelte';
 	import WebAccess from './WebAccess.svelte';
 
@@ -25,7 +26,7 @@
 		{ id: 'firewall', label: 'Firewall', icon: 'shield' },
 		{ id: 'keybindings', label: 'Keybindings', icon: 'command' },
 		{ id: 'web', label: 'Web access', icon: 'globe' },
-		{ id: 'terminal', label: 'Terminal', icon: 'terminal' }
+		{ id: 'appearance', label: 'Appearance', icon: 'type' }
 	];
 
 	const agentInfo: Record<string, string> = {
@@ -91,9 +92,21 @@
 	const isPort = (v: string) => /^[0-9]{1,5}$/.test(v) && +v >= 1 && +v <= 65535;
 </script>
 
-<div class={['flex min-h-0 flex-1 max-md:flex-col', app.view !== 'settings' && 'hidden']}>
-	<nav aria-label="Settings sections" class="flex-[0_0_220px] overflow-auto border-r border-line-1 px-2 py-3 max-md:flex max-md:flex-none max-md:flex-wrap max-md:gap-1 max-md:border-r-0 max-md:border-b">
-		<button type="button" onclick={() => (app.view = 'sessions')} class="flex h-[34px] w-full items-center gap-2.5 rounded-md px-2 text-left text-[13px] text-ink-2 hover:bg-surface-2 hover:text-ink-1 max-md:w-auto">
+<div class={['flex min-h-0 flex-1 max-md:flex-col max-md:bg-surface-0', app.view !== 'settings' && 'hidden']}>
+	{#if viewport.phone}
+		<header class="flex min-h-[52px] shrink-0 items-center gap-[4px] border-b border-line-1 bg-surface-1 pr-[8px] pl-[4px]">
+			<button type="button" aria-label="Back to sessions" onclick={() => (app.view = 'sessions')} class="grid size-[44px] shrink-0 place-items-center rounded-[6px] text-ink-1">
+				<Icon name="back" size={18} />
+			</button>
+			<span class="min-w-0 flex-1 truncate text-[15px] font-bold">Settings</span>
+		</header>
+	{/if}
+	<!-- A phone scrolls the sections sideways above the page. -->
+	<nav
+		aria-label="Settings sections"
+		class="flex-[0_0_220px] overflow-auto border-r border-line-1 px-2 py-3 max-md:flex max-md:flex-none max-md:gap-[4px] max-md:overflow-x-auto max-md:overflow-y-hidden max-md:[scrollbar-width:none] max-md:border-r-0 max-md:border-b max-md:bg-surface-1 max-md:px-[8px] max-md:py-[4px]"
+	>
+		<button type="button" onclick={() => (app.view = 'sessions')} class="flex h-[34px] w-full items-center gap-2.5 rounded-md px-2 text-left text-[13px] text-ink-2 hover:bg-surface-2 hover:text-ink-1 max-md:hidden">
 			<Icon name="back" /> Back to sessions
 		</button>
 		<div class="px-2 pt-3.5 pb-1 max-md:hidden"><SectionLabel>Configure</SectionLabel></div>
@@ -102,8 +115,12 @@
 				type="button"
 				onclick={() => (app.settingsSection = s.id)}
 				aria-current={app.settingsSection === s.id ? 'page' : undefined}
+				{@attach (el) => {
+					// The phone's strip scrolls sideways: keep the open section in view.
+					if (viewport.phone && app.view === 'settings' && app.settingsSection === s.id) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+				}}
 				class={[
-					'flex h-[34px] w-full items-center gap-2.5 rounded-md px-2 text-left text-[13px] max-md:w-auto',
+					'flex h-[34px] w-full items-center gap-2.5 rounded-md px-2 text-left text-[13px] max-md:h-[44px] max-md:w-auto max-md:shrink-0 max-md:px-[12px] max-md:text-[14px] max-md:whitespace-nowrap',
 					app.settingsSection === s.id ? 'bg-surface-3 text-ink-1' : 'text-ink-2 hover:bg-surface-2 hover:text-ink-1'
 				]}
 			>
@@ -113,16 +130,16 @@
 		{/each}
 	</nav>
 
-	<div class="flex min-w-0 flex-1 flex-col">
+	<div class="flex min-w-0 flex-1 flex-col max-md:min-h-0">
 		<!-- Same bar height as the sessions toolbar, so help and sign out stay put. -->
-		<div class="flex min-h-12 shrink-0 items-center justify-end border-b border-line-1 px-4 py-1.5">
+		<div class="flex min-h-12 shrink-0 items-center justify-end border-b border-line-1 px-4 py-1.5 max-md:hidden">
 			<TopActions />
 		</div>
 		<div class="flex-1 overflow-auto">
-			<div class="flex w-full max-w-[1040px] flex-col gap-5 px-8 py-7 max-md:px-4 max-md:py-5">
-				{#if app.settingsSection === 'terminal'}
+			<div class="flex w-full max-w-[1040px] flex-col gap-5 px-8 py-7 max-md:px-[12px] max-md:py-[16px]">
+				{#if app.settingsSection === 'appearance'}
 					<!-- Per browser: needs no server settings. -->
-					<TerminalFont />
+					<Appearance />
 				{:else if app.settingsError && !doc}
 					<Callout tone="bad">{app.settingsError}</Callout>
 				{:else if !doc}
@@ -243,14 +260,14 @@
 			</div>
 		</div>
 
-		{#if doc && !['web', 'vault', 'terminal'].includes(app.settingsSection)}
-			<div class="flex flex-wrap items-center gap-2.5 border-t border-line-1 bg-surface-1 px-8 py-3 max-md:px-4">
+{#if doc && !['web', 'vault', 'appearance'].includes(app.settingsSection)}
+			<div class="flex flex-wrap items-center gap-2.5 border-t border-line-1 bg-surface-1 px-8 py-3 max-md:px-[12px] max-md:py-[8px]">
 				<Button variant="primary" icon="check" disabled={changes === 0} onclick={save}>Save configuration</Button>
 				<Button variant="ghost" disabled={changes === 0} onclick={discard}>Discard</Button>
 				<span class="font-mono text-[11.5px] text-ink-2">
 					{saved && changes === 0 ? 'Saved' : changes === 0 ? 'No unsaved changes' : changes + (changes === 1 ? ' unsaved change' : ' unsaved changes')}
 				</span>
-				<span class="ml-auto text-[11.5px] text-ink-2">
+				<span class="ml-auto text-[11.5px] text-ink-2 max-md:hidden">
 					Writes <span class="font-mono">config.yaml</span> and <span class="font-mono">allowlist.yaml</span>, the same files as
 					<span class="font-mono">exitbox setup</span>. Running sessions keep their settings.
 				</span>

@@ -49,7 +49,36 @@ type ServiceSpec struct {
 }
 
 // ServiceEnvKeys are the variables copied from the installing shell.
-var ServiceEnvKeys = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "DOCKER_HOST", "CONTAINER_HOST", "CONTAINER_CONNECTION"}
+// TMPDIR is among them because the session state dir derives from it.
+var ServiceEnvKeys = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "DOCKER_HOST", "CONTAINER_HOST", "CONTAINER_CONNECTION"}
+
+// ServiceEnv picks the ServiceEnvKeys to carry into the service from getenv.
+// TMPDIR goes only when it names a directory other than the OS default:
+// the service would fail on a gone one, and the default needs no setting.
+func ServiceEnv(getenv func(string) string) map[string]string {
+	env := map[string]string{}
+	for _, k := range ServiceEnvKeys {
+		v := getenv(k)
+		if v == "" || (k == "TMPDIR" && !customTempDir(v)) {
+			continue
+		}
+		env[k] = v
+	}
+	return env
+}
+
+func customTempDir(dir string) bool {
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	clean := filepath.Clean(dir)
+	if clean == "/tmp" || (runtime.GOOS == "darwin" && (clean == "/private/tmp" || strings.HasPrefix(clean, "/var/folders/") || strings.HasPrefix(clean, "/private/var/folders/"))) {
+		// launchd gives an agent its own /var/folders TMPDIR.
+		return false
+	}
+	st, err := os.Stat(clean)
+	return err == nil && st.IsDir()
+}
 
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
@@ -79,6 +108,16 @@ func systemdQuote(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
+// systemdEnvQuote quotes one Environment= assignment. Unlike ExecStart,
+// Environment does not expand $, so only specifiers and quotes are escaped.
+func systemdEnvQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"'\\%") {
+		return s
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%")
+	return `"` + r.Replace(s) + `"`
+}
+
 // SystemdUnit renders the user unit.
 func SystemdUnit(spec ServiceSpec) string {
 	words := []string{systemdQuote(spec.Exe)}
@@ -93,10 +132,10 @@ func SystemdUnit(spec ServiceSpec) string {
 	b.WriteString("Type=simple\n")
 	b.WriteString("ExecStart=" + strings.Join(words, " ") + "\n")
 	if spec.Path != "" {
-		b.WriteString("Environment=" + systemdQuote("PATH="+spec.Path) + "\n")
+		b.WriteString("Environment=" + systemdEnvQuote("PATH="+spec.Path) + "\n")
 	}
 	for _, k := range sortedKeys(spec.Env) {
-		b.WriteString("Environment=" + systemdQuote(k+"="+spec.Env[k]) + "\n")
+		b.WriteString("Environment=" + systemdEnvQuote(k+"="+spec.Env[k]) + "\n")
 	}
 	b.WriteString("Restart=on-failure\n")
 	// Stop only exitbox web itself: the session hosts it started keep the

@@ -165,7 +165,11 @@ type vaultDoc struct {
 }
 
 func (s *Server) handleVaultList(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	out := []vaultDoc{}
 	for _, ws := range cfg.Workspaces.Items {
 		out = append(out, vaultDoc{Workspace: ws.Name, Initialized: s.vault.initialized(ws.Name), Enabled: ws.Vault.Enabled, ReadOnly: ws.Vault.ReadOnly})
@@ -185,7 +189,11 @@ type vaultRequest struct {
 // handleVault serves POST /api/vault/{workspace}/{action}.
 func (s *Server) handleVault(w http.ResponseWriter, r *http.Request) {
 	ws, action := r.PathValue("workspace"), r.PathValue("action")
-	cfg := s.store.loadConfig()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if profile.FindWorkspace(cfg, ws) == nil {
 		writeError(w, http.StatusNotFound, fmt.Errorf("unknown workspace %q", ws))
 		return
@@ -330,6 +338,17 @@ func (s *Server) handleVault(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("this workspace has no vault"))
 			return
 		}
+		// No password here: destroy is the way out of a forgotten one.
+		running, err := s.workspaceRunning(ws)
+		if err != nil {
+			s.logf("web: vault destroy for workspace %s: listing containers: %v", ws, err)
+			writeError(w, http.StatusServiceUnavailable, errors.New("cannot check for running sessions; try again"))
+			return
+		}
+		if running {
+			writeError(w, http.StatusConflict, errVaultBusy)
+			return
+		}
 		if err := s.vault.destroy(ws); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -345,8 +364,33 @@ func (s *Server) handleVault(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// workspaceRunning reports whether a session of the workspace runs, here
+// or started in a terminal. Without a fresh container list it cannot tell.
+func (s *Server) workspaceRunning(ws string) (bool, error) {
+	if _, err := s.freshContainers(); err != nil {
+		return false, err
+	}
+	sessions, others := s.liveSessions()
+	for _, info := range sessions {
+		if !info.Exited && info.Kind != KindSSH && info.Workspace == ws {
+			return true, nil
+		}
+	}
+	for _, c := range others {
+		if c.Workspace == ws {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Server) saveVaultConfig(ws string, enabled, readOnly bool) error {
-	cfg := s.store.loadConfig()
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		return fmt.Errorf("%w; fix or remove the file, the vault settings were not saved", err)
+	}
 	w := cfg.Workspace(ws)
 	if w == nil {
 		return fmt.Errorf("unknown workspace %q", ws)

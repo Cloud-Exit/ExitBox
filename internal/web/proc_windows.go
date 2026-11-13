@@ -36,6 +36,15 @@ func kill(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
+// killHostProcess kills a session host.
+func killHostProcess(pid int) error {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return p.Kill()
+}
+
 // DetachProcess is a no-op on Windows, where exitbox web has no sessions.
 func DetachProcess(*exec.Cmd) {}
 

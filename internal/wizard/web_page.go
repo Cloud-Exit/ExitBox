@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,13 +55,24 @@ type webForm struct {
 // The page reaches the config through these, replaced in tests.
 var (
 	loadSavedConfig = config.LoadConfig
-	saveWebConfig   = func(w config.WebConfig) error {
-		cfg := config.LoadOrDefault()
-		cfg.Web = w
-		return config.SaveConfig(cfg)
-	}
+	saveWebConfig   = func(w config.WebConfig) error { return saveWebConfigTo(config.ConfigFile(), w) }
 	hashWebPassword = web.HashPassword
 )
+
+// saveWebConfigTo sets the web settings in the config at path, never resetting an unreadable one.
+func saveWebConfigTo(path string, w config.WebConfig) error {
+	cfg, err := config.LoadConfigFrom(path)
+	if errors.Is(err, os.ErrNotExist) {
+		cfg, err = config.DefaultConfig(), nil
+	}
+	if err != nil {
+		return err
+	}
+	// This page does not edit it; the web UI does.
+	w.RecentDays = cfg.Web.RecentDays
+	cfg.Web = w
+	return config.SaveConfigTo(cfg, path)
+}
 
 func (m Model) openWebAccess() Model {
 	var w config.WebConfig
@@ -123,6 +135,13 @@ func webConfigFromForm(f webForm, disable bool) (config.WebConfig, error) {
 		return out, nil
 	}
 	user := strings.TrimSpace(f.username)
+	if !f.authOn && user == "" && f.password == "" && f.confirm == "" {
+		// Only the listen address changed.
+		if !loopback {
+			return config.WebConfig{}, errors.New("a login is required to listen beyond this machine; set a username and password")
+		}
+		return out, nil
+	}
 	if user == "" || len(user) > 64 || strings.ContainsAny(user, ":\x00\n\r") {
 		return config.WebConfig{}, errors.New("a username is required (up to 64 characters, no colon)")
 	}

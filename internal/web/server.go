@@ -102,13 +102,28 @@ type Server struct {
 	folders *folderStore
 	layout  *layoutStore
 	renames *renameQueue
-	// renameMu lets one poll at a time apply the queued renames.
-	renameMu sync.Mutex
+	// renameMu lets one poll at a time apply the queued renames; it guards
+	// renameRetries.
+	renameMu      sync.Mutex
+	renameRetries map[string]*renameRetry
+	// renameNow is the clock of the rename backoff; nil is time.Now.
+	renameNow func() time.Time
 
 	vault      vaultBackend
 	vaultGuard vaultGuard
 
 	prompts *promptBroker
+
+	// cfgMu serializes the load, change and save of config.yaml and
+	// allowlist.yaml, so concurrent edits keep each other's changes.
+	cfgMu sync.Mutex
+
+	restartMu  sync.Mutex
+	restarting map[string]bool
+
+	lastUsed *lastUsedCache
+
+	loginsOnce sync.Once
 }
 
 // New builds a server. It refuses to listen beyond this machine without a
@@ -141,6 +156,7 @@ func New(opts Options) (*Server, error) {
 		folders:  &folderStore{path: foldersFile()},
 		layout:   &layoutStore{path: layoutFile()},
 		renames:  &renameQueue{path: renamesFile()},
+		lastUsed: newLastUsedCache(),
 		vault:    diskVault{},
 		logf:     func(string, ...any) {},
 	}
@@ -152,10 +168,10 @@ func New(opts Options) (*Server, error) {
 		s.opts.SessionsFile = opts.SessionsFile
 	}
 	s.auth.logf = s.logf
-	if err := s.auth.persist(opts.SessionsFile); err != nil {
-		s.logf("web: login sessions not restored: %v", err)
+	s.sessions.onExit = func(sess *Session) {
+		s.renameOnExit(sess)
+		s.lastUsed.invalidate()
 	}
-	s.sessions.onExit = s.renameOnExit
 	s.sessions.logf = s.logf
 	s.prompts = newPromptBroker(func(id string) bool {
 		// An SSH session never has the prompt socket; refuse one that claims it.
@@ -164,6 +180,17 @@ func New(opts Options) (*Server, error) {
 	}, s.containerSessions, s.logf)
 	s.handler = s.routes()
 	return s, nil
+}
+
+// restoreLogins loads the saved logins and keeps saving them. It runs from
+// Serve, under the single-server lock, so a refused second start or a
+// --service install never rewrites the file.
+func (s *Server) restoreLogins() {
+	s.loginsOnce.Do(func() {
+		if err := s.auth.persist(s.opts.SessionsFile); err != nil {
+			s.logf("web: login sessions not restored: %v", err)
+		}
+	})
 }
 
 // Restore takes over the sessions an earlier exitbox web left running.
@@ -175,14 +202,15 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // Serve runs until ctx ends. Sessions keep running in their hosts; the
 // next exitbox web takes them over.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	s.restoreLogins()
+	if !isLoopbackListen(s.opts.Listen) {
+		s.logf("web: %s serves plain HTTP; put a TLS reverse proxy in front of it", s.opts.Listen)
+	}
 	if err := s.startPrompts(); err != nil {
 		s.logf("web: prompts stay in the terminal: %v", err)
 	}
 	defer s.stopPrompts()
-	srv := &http.Server{
-		Handler:           s.handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := s.httpServer()
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	select {
@@ -200,6 +228,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+// httpServer has no ReadTimeout or WriteTimeout: they would end WebSockets.
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{
+		Handler:           s.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
 }
 
 func (s *Server) routes() http.Handler {
@@ -314,6 +352,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	// Best effort: a writer without deadlines still has the body size cap.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(loginBodyTimeout))
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -322,7 +363,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	token, err := s.auth.login(remoteHost(r), req.Username, req.Password)
+	// Best effort: a deadline left set would cancel the request while it waits for bcrypt.
+	_ = rc.SetReadDeadline(time.Time{})
+	token, err := s.auth.login(r.Context(), remoteHost(r), req.Username, req.Password)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// The request ended before its turn: not a failed login.
+		writeError(w, http.StatusServiceUnavailable, errors.New("the server is busy; try again"))
+		return
+	}
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, errTooManyFailures) {
@@ -343,6 +391,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// loginBodyTimeout bounds reading a login body; tests shorten it.
+var loginBodyTimeout = 10 * time.Second
 
 // secureRequest reports whether the browser reached us over TLS, directly
 // or through a TLS reverse proxy. Trusting the header only ever makes the
@@ -370,6 +421,7 @@ func (s *Server) attachHandler() http.Handler {
 			writeError(w, http.StatusNotFound, errors.New("no such session"))
 			return
 		}
+		key := s.auth.streamKey(r)
 		ws := websocket.Server{
 			Handshake: func(_ *websocket.Config, r *http.Request) error {
 				if !sameOrigin(r, true) {
@@ -377,7 +429,7 @@ func (s *Server) attachHandler() http.Handler {
 				}
 				return nil
 			},
-			Handler: func(conn *websocket.Conn) { s.stream(conn, sess) },
+			Handler: func(conn *websocket.Conn) { s.stream(conn, sess, key) },
 		}
 		ws.ServeHTTP(w, r)
 	})
@@ -420,6 +472,9 @@ func (s *Server) stopPrompts() {
 // writeTimeout bounds one WebSocket write to a browser.
 const writeTimeout = 30 * time.Second
 
+// streamAuthCheck is how often a stream checks its login has not expired.
+var streamAuthCheck = time.Minute
+
 type clientMsg struct {
 	T string `json:"t"`
 	D string `json:"d,omitempty"`
@@ -431,9 +486,15 @@ type clientMsg struct {
 	Password string `json:"password,omitempty"`
 }
 
-func (s *Server) stream(conn *websocket.Conn, sess *Session) {
+// stream serves one WebSocket; key is its login (see auth.streamKey), and
+// signing that login out ends the stream.
+func (s *Server) stream(conn *websocket.Conn, sess *Session, key string) {
 	defer func() { _ = conn.Close() }()
 	conn.PayloadType = websocket.BinaryFrame
+	signedOut, untrack := s.auth.track(key)
+	defer untrack()
+	authTick := time.NewTicker(streamAuthCheck)
+	defer authTick.Stop()
 
 	replay, sub := sess.Attach()
 	defer sess.Detach(sub)
@@ -484,7 +545,7 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 					s.logf("web: resize session %s: %v", sess.Info().ID, err)
 				}
 			case "answer":
-				s.prompts.answer(id, msg.ID, msg.Allow, msg.Password)
+				s.prompts.answerFrom(pv, id, msg.ID, msg.Allow, msg.Password)
 			}
 		}
 	}()
@@ -501,6 +562,12 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session) {
 			}
 		case <-sub.gone:
 			return
+		case <-signedOut:
+			return
+		case <-authTick.C:
+			if !s.auth.live(key) {
+				return
+			}
 		case <-sess.Done():
 			for {
 				select {

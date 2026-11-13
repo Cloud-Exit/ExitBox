@@ -23,13 +23,13 @@
 	}
 </script>
 
-<div class="grid min-h-screen place-items-center p-4">
-	<form onsubmit={submit} class="flex w-full max-w-[380px] flex-col gap-3.5 rounded-xl border border-line-1 bg-surface-1 p-6 shadow-float">
+<div class="grid min-h-screen place-items-center p-4 max-md:min-h-dvh max-md:px-[12px] max-md:pt-[calc(env(safe-area-inset-top)+16px)] max-md:pb-[calc(env(safe-area-inset-bottom)+16px)]">
+	<form onsubmit={submit} class="flex w-full max-w-[380px] flex-col gap-3.5 rounded-xl border border-line-1 bg-surface-1 p-6 shadow-float max-md:p-[16px]">
 		<Brand />
-		<span class="text-[13px] text-ink-2">{app.loginMessage || 'Sign in to manage your agent sessions.'}</span>
+		<span class="text-[13px] text-ink-2 max-md:text-[14px]">{app.loginMessage || 'Sign in to manage your agent sessions.'}</span>
 		{#if error}<Callout tone="bad">{error}</Callout>{/if}
 		<TextField label="Username" name="username" autocomplete="username" required bind:value={username} wrap="" />
 		<TextField label="Password" name="password" type="password" autocomplete="current-password" required bind:value={password} wrap="" />
-		<Button type="submit" variant="primary" disabled={busy} class="self-start">Sign in</Button>
+		<Button type="submit" variant="primary" disabled={busy} class="self-start max-md:self-stretch max-md:justify-center">Sign in</Button>
 	</form>
 </div>

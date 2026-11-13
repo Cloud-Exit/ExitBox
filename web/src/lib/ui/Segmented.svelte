@@ -8,7 +8,8 @@
 		lead
 	}: {
 		label: string;
-		options: { value: T; label: string }[];
+		/** A disabled option stays visible; the page says why next to it. */
+		options: { value: T; label: string; disabled?: boolean }[];
 		value: T;
 		/** Drawn before each option's label, e.g. an icon. */
 		lead?: Snippet<[T]>;
@@ -22,7 +23,9 @@
 		if (!step) return;
 		e.preventDefault();
 		const i = options.findIndex((o) => o.value === value);
-		const next = (i + step + options.length) % options.length;
+		let next = i;
+		do next = (next + step + options.length) % options.length;
+		while (options[next].disabled && next !== i);
 		value = options[next].value;
 		group?.querySelectorAll<HTMLElement>('[role=radio]')[next]?.focus();
 	}
@@ -35,10 +38,11 @@
 			role="radio"
 			aria-checked={value === o.value}
 			tabindex={value === o.value ? 0 : -1}
+			disabled={o.disabled}
 			onclick={() => (value = o.value)}
 			class={[
-				'inline-flex h-8 items-center gap-2 rounded-md px-3 text-[13px] font-semibold transition-colors',
-				value === o.value ? 'bg-surface-0 text-ink-1 shadow-panel' : 'text-ink-2 hover:text-ink-1'
+				'inline-flex h-8 items-center gap-2 rounded-md px-3 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 max-md:h-[44px] max-md:px-[16px] max-md:text-[14px]',
+				value === o.value ? 'bg-surface-0 text-ink-1 shadow-panel' : 'text-ink-2 enabled:hover:text-ink-1'
 			]}
 		>
 			{@render lead?.(o.value)}{o.label}

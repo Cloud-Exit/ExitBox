@@ -40,6 +40,14 @@
 		else app.hide(w);
 	}
 
+	/** Asks first: a rebuild stops the session and can take minutes. */
+	export async function confirmRebuild(w: Win) {
+		const ok = await app.ask('Rebuild image?', `Rebuilds the ${app.agentDisplay(w.info.agent)} image and starts this session again.`, [
+			{ label: 'Rebuild', value: 'yes', tone: 'primary' }
+		]);
+		if (ok === 'yes') void app.rebuild(w);
+	}
+
 	/** Makes a folder, files the session in it, and has the sidebar ask for its name. */
 	export async function newFolderFor(key: string) {
 		if (!(await app.createFolder('New folder'))) return;
@@ -68,6 +76,7 @@
 
 <script lang="ts">
 	import ContextMenu from './ui/ContextMenu.svelte';
+	import { viewport } from './viewport.svelte';
 
 	let {
 		target,
@@ -131,7 +140,8 @@
 			const noTmux = t.kind === 'terminal' && t.run.noTmux;
 			out.push({ label: t.kind === 'saved' ? 'Resume' : 'Open', icon: 'play', disabled: noTmux, onselect: () => openTarget(t) });
 		}
-		if (t.kind === 'window') {
+		// A phone shows one session at a time: no window sizes to change.
+		if (t.kind === 'window' && !viewport.phone) {
 			const w = t.win;
 			out.push({ label: w.max ? 'Exit full screen' : 'Full screen', icon: w.max ? 'restore' : 'maximize', onselect: () => app.toggleMax(w) });
 			if (w.min) out.push({ label: 'Restore', icon: 'restore', onselect: () => openTarget(t) });
@@ -140,8 +150,19 @@
 		sep();
 		if (onrename) out.push({ label: 'Rename', icon: 'pencil', onselect: onrename });
 		if (t.kind === 'window') out.push({ label: 'Session settings', icon: 'settings', onselect: () => (app.sessionSettings = t.win) });
+		if (t.kind === 'window' && t.win.rebuildable) out.push({ label: 'Rebuild', icon: 'hammer', disabled: t.win.busy, onselect: () => void confirmRebuild(t.win) });
 		const key = targetKey(t);
 		if (key) out.push({ type: 'group', label: 'Move to folder', icon: 'folderInput', items: folderItems(key) });
+		// A phone cannot drag a window onto a tab.
+		if (t.kind === 'window' && viewport.phone && app.tabs.length > 1) {
+			const w = t.win;
+			out.push({
+				type: 'group',
+				label: 'Move to tab',
+				icon: 'stack',
+				items: app.tabs.map((tab): MenuItem => ({ label: tab.name, checked: tab.id === w.tab, onselect: () => app.moveToTab(w, tab.id) }))
+			});
+		}
 		sep();
 		if (t.kind === 'window') {
 			const w = t.win;
@@ -150,13 +171,14 @@
 				out.push({ label: 'Close window', icon: 'x', onselect: () => void app.stop(w) });
 			} else if (w.ssh) {
 				// No container and nothing to detach to: Minimize keeps it running.
-				out.push({ label: 'Disconnect', icon: 'power', danger: true, onselect: () => void confirmDisconnect(w) });
+				out.push({ label: 'Disconnect', icon: 'power', danger: true, disabled: w.busy, onselect: () => void confirmDisconnect(w) });
 			} else {
-				out.push({ label: 'Detach', icon: 'logout', onselect: () => void confirmDetach(w) });
-				out.push({ label: 'Terminate', icon: 'power', danger: true, onselect: () => void confirmTerminate(t) });
+				out.push({ label: 'Detach', icon: 'logout', disabled: w.busy, onselect: () => void confirmDetach(w) });
+				out.push({ label: 'Terminate', icon: 'power', danger: true, disabled: w.busy, onselect: () => void confirmTerminate(t) });
 			}
 		} else if (t.kind === 'terminal') {
-			if (!t.run.noTmux) out.push({ label: 'Terminate', icon: 'power', danger: true, onselect: () => void confirmTerminate(t) });
+			const ending = !!app.terminatingRunning[t.run.container];
+			if (!t.run.noTmux) out.push({ label: 'Terminate', icon: 'power', danger: true, disabled: ending, onselect: () => void confirmTerminate(t) });
 		} else {
 			out.push({ label: 'Forget saved session', icon: 'trash', danger: true, onselect: () => void app.forget(t.saved) });
 		}

@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -80,13 +81,16 @@ type auth struct {
 	// path keeps the sessions across restarts; empty keeps them in memory.
 	path string
 	logf func(format string, args ...any)
+	// streams holds the open WebSockets per token key ("" without a
+	// login); dropping the token closes their channels.
+	streams map[string]map[chan struct{}]struct{}
 }
 
 // maxFailureClients caps the failure map; the stalest client goes first.
 const maxFailureClients = 4096
 
 func newAuth(username, hash string) *auth {
-	a := &auth{tokens: map[string]time.Time{}, failures: map[string][]time.Time{}, now: time.Now, logf: func(string, ...any) {}}
+	a := &auth{tokens: map[string]time.Time{}, failures: map[string][]time.Time{}, streams: map[string]map[chan struct{}]struct{}{}, now: time.Now, logf: func(string, ...any) {}}
 	a.username, a.hash = username, hash
 	return a
 }
@@ -187,7 +191,78 @@ func (a *auth) set(username, hash string) {
 	}
 	a.username, a.hash = username, hash
 	a.tokens = map[string]time.Time{}
+	for k := range a.streams {
+		a.endStreamsLocked(k)
+	}
 	a.save()
+}
+
+// endStreamsLocked ends the WebSockets of a token key; a.mu must be held.
+func (a *auth) endStreamsLocked(key string) {
+	for ch := range a.streams[key] {
+		close(ch)
+	}
+	delete(a.streams, key)
+}
+
+// streamKey is the login a WebSocket request belongs to: its token key,
+// or "" without a login.
+func (a *auth) streamKey(r *http.Request) string {
+	if !a.enabled() {
+		return ""
+	}
+	c, err := r.Cookie(cookieName)
+	if err != nil {
+		return "-"
+	}
+	return tokenKey(c.Value)
+}
+
+// track registers a WebSocket of key. The channel closes when that login
+// ends; untrack forgets the stream.
+func (a *auth) track(key string) (<-chan struct{}, func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ch := make(chan struct{})
+	if !a.liveLocked(key) {
+		close(ch)
+		return ch, func() {}
+	}
+	if a.streams[key] == nil {
+		a.streams[key] = map[chan struct{}]struct{}{}
+	}
+	a.streams[key][ch] = struct{}{}
+	return ch, func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		delete(a.streams[key], ch)
+		if len(a.streams[key]) == 0 {
+			delete(a.streams, key)
+		}
+	}
+}
+
+// live reports whether the login of key still holds, ending its streams
+// once it has expired.
+func (a *auth) live(key string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.liveLocked(key)
+}
+
+func (a *auth) liveLocked(key string) bool {
+	if a.username == "" || a.hash == "" {
+		return key == ""
+	}
+	exp, ok := a.tokens[key]
+	if ok && a.now().After(exp) {
+		delete(a.tokens, key)
+		ok = false
+	}
+	if !ok {
+		a.endStreamsLocked(key)
+	}
+	return ok
 }
 
 // credentials returns the active login, which flags may have given.
@@ -262,7 +337,7 @@ func (a *auth) sweepFailuresLocked(now time.Time, key string) {
 }
 
 // login checks the credentials and returns a new cookie value.
-func (a *auth) login(remote, username, password string) (string, error) {
+func (a *auth) login(ctx context.Context, remote, username, password string) (string, error) {
 	key := clientKey(remote)
 	a.mu.Lock()
 	now := a.now()
@@ -279,7 +354,20 @@ func (a *auth) login(remote, username, password string) (string, error) {
 	wantUser, hash := a.username, a.hash
 	a.mu.Unlock()
 
-	bcryptSlots <- struct{}{}
+	select {
+	case bcryptSlots <- struct{}{}:
+	case <-ctx.Done():
+		// Not a wrong password: take the attempt back.
+		a.mu.Lock()
+		if n := len(a.failures[key]); n > 0 {
+			a.failures[key] = a.failures[key][:n-1]
+		}
+		if len(a.failures[key]) == 0 {
+			delete(a.failures, key)
+		}
+		a.mu.Unlock()
+		return "", ctx.Err()
+	}
 	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(wantUser)) == 1
 	// Always run bcrypt so a wrong username takes as long as a wrong password.
 	passErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
@@ -304,6 +392,7 @@ func (a *auth) login(remote, username, password string) (string, error) {
 	for t, exp := range a.tokens {
 		if now.After(exp) {
 			delete(a.tokens, t)
+			a.endStreamsLocked(t)
 		}
 	}
 	a.save()
@@ -314,6 +403,7 @@ func (a *auth) logout(token string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	k := tokenKey(token)
+	a.endStreamsLocked(k)
 	if _, ok := a.tokens[k]; !ok {
 		return
 	}
@@ -336,6 +426,7 @@ func (a *auth) valid(r *http.Request) bool {
 	}
 	if a.now().After(exp) {
 		delete(a.tokens, k)
+		a.endStreamsLocked(k)
 		return false
 	}
 	return true

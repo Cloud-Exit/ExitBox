@@ -212,6 +212,68 @@ func TestSSHHostMatches(t *testing.T) {
 	}
 }
 
+func TestSSHConfigTrailingComments(t *testing.T) {
+	home := t.TempDir()
+	writeSSHFile(t, filepath.Join(home, ".ssh", "config"), "Host alpha # my box\n  HostName a.example.com #where\n  User ann#e\n")
+	got := sshConfigHosts(home)
+	want := []sshHostDoc{{Alias: "alpha", HostName: "a.example.com", User: "ann#e"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hosts\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// Options after an Include in a Host block stay with that block.
+func TestSSHConfigIncludeInHostBlock(t *testing.T) {
+	home := t.TempDir()
+	ssh := filepath.Join(home, ".ssh")
+	writeSSHFile(t, filepath.Join(ssh, "config"), "Host outer\n  Include inc.conf\n  User after\nHost other\n  Port 2200\n")
+	writeSSHFile(t, filepath.Join(ssh, "inc.conf"), "  Port 2022\nHost inner\n  HostName inner.example.com\n")
+	got := sshConfigHosts(home)
+	want := []sshHostDoc{
+		{Alias: "outer", User: "after", Port: 2022},
+		{Alias: "inner", HostName: "inner.example.com"},
+		{Alias: "other", Port: 2200},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hosts\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestSSHGlob(t *testing.T) {
+	cases := []struct {
+		pat, s string
+		want   bool
+	}{
+		{"", "", true},
+		{"", "a", false},
+		{"*", "", true},
+		{"a*", "a", true},
+		{"a*b", "axxb", true},
+		{"a*b", "axxbc", false},
+		{"a*b*c", "abxbc", true},
+		{"?", "", false},
+		{"??", "ab", true},
+		{"a?c", "abc", true},
+		{"*.example.com", "a.example.com", true},
+		{"*.example.com", "example.com", false},
+		{"**x", "abx", true},
+		{"x*", "yx", false},
+	}
+	for _, c := range cases {
+		if got := sshGlob(c.pat, c.s); got != c.want {
+			t.Errorf("sshGlob(%q, %q) = %v", c.pat, c.s, got)
+		}
+	}
+	// Exponential backtracking would take ages here.
+	start := time.Now()
+	if sshGlob(strings.Repeat("*a", 30)+"b", strings.Repeat("a", 200)) {
+		t.Fatal("matched")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v", d)
+	}
+}
+
 func TestSSHHostsEndpoint(t *testing.T) {
 	_, st, ts := newTestServer(t, Options{})
 	writeSSHFile(t, filepath.Join(st.homeD, ".ssh", "config"), "Host box\n  HostName box.example.com\n  User me\n  Port 2222\n")

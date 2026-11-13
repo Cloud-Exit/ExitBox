@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -56,13 +57,13 @@ func TestLoginAndCookie(t *testing.T) {
 	if !a.enabled() {
 		t.Fatal("auth with user and hash is not enabled")
 	}
-	if _, err := a.login("1.2.3.4", "me", "wrong password"); err == nil {
+	if _, err := a.login(context.Background(), "1.2.3.4", "me", "wrong password"); err == nil {
 		t.Fatal("wrong password accepted")
 	}
-	if _, err := a.login("1.2.3.4", "you", "correct horse"); err == nil {
+	if _, err := a.login(context.Background(), "1.2.3.4", "you", "correct horse"); err == nil {
 		t.Fatal("wrong username accepted")
 	}
-	token, err := a.login("1.2.3.4", "me", "correct horse")
+	token, err := a.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +113,11 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "web", "sessions.json")
 	a := restartedAuth(t, "me", hash, path)
-	token, err := a.login("1.2.3.4", "me", "correct horse")
+	token, err := a.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := a.login("1.2.3.4", "me", "correct horse")
+	other, err := a.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +176,7 @@ func TestSessionsDroppedWhenCredentialsChange(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	a := restartedAuth(t, "me", hash, path)
-	token, err := a.login("1.2.3.4", "me", "correct horse")
+	token, err := a.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestSessionsDroppedWhenCredentialsChange(t *testing.T) {
 	}
 
 	b := restartedAuth(t, "me", hash, path)
-	token, err = b.login("1.2.3.4", "me", "correct horse")
+	token, err = b.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +212,7 @@ func TestSessionsFileCorruptStartsEmpty(t *testing.T) {
 	if err := a.persist(path); err == nil {
 		t.Fatal("corrupt sessions file not reported")
 	}
-	token, err := a.login("1.2.3.4", "me", "correct horse")
+	token, err := a.login(context.Background(), "1.2.3.4", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,14 +228,14 @@ func TestLoginFailuresPerIPv6Slash64(t *testing.T) {
 	}
 	a := newAuth("me", string(hash))
 	for i := 0; i < maxFailures; i++ {
-		if _, err := a.login(fmt.Sprintf("2001:db8:1:2::%x", i+1), "me", "nope"); err == nil {
+		if _, err := a.login(context.Background(), fmt.Sprintf("2001:db8:1:2::%x", i+1), "me", "nope"); err == nil {
 			t.Fatal("wrong password accepted")
 		}
 	}
-	if _, err := a.login("2001:db8:1:2:ffff::1", "me", "correct horse"); err != errTooManyFailures {
+	if _, err := a.login(context.Background(), "2001:db8:1:2:ffff::1", "me", "correct horse"); err != errTooManyFailures {
 		t.Fatalf("same /64: got %v, want errTooManyFailures", err)
 	}
-	if _, err := a.login("2001:db8:1:3::1", "me", "correct horse"); err != nil {
+	if _, err := a.login(context.Background(), "2001:db8:1:3::1", "me", "correct horse"); err != nil {
 		t.Fatalf("another /64 is locked out too: %v", err)
 	}
 	if got := clientKey("10.0.0.1"); got != "10.0.0.1" {
@@ -274,7 +275,7 @@ func TestLoginExpiry(t *testing.T) {
 	a := newAuth("me", hash)
 	now := time.Now()
 	a.now = func() time.Time { return now }
-	token, err := a.login("h", "me", "correct horse")
+	token, err := a.login(context.Background(), "h", "me", "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,18 +296,18 @@ func TestLoginLockout(t *testing.T) {
 	now := time.Now()
 	a.now = func() time.Time { return now }
 	for i := 0; i < maxFailures; i++ {
-		if _, err := a.login("9.9.9.9", "me", "nope"); err == nil {
+		if _, err := a.login(context.Background(), "9.9.9.9", "me", "nope"); err == nil {
 			t.Fatal("wrong password accepted")
 		}
 	}
-	if _, err := a.login("9.9.9.9", "me", "correct horse"); err != errTooManyFailures {
+	if _, err := a.login(context.Background(), "9.9.9.9", "me", "correct horse"); err != errTooManyFailures {
 		t.Fatalf("after %d failures: got %v, want errTooManyFailures", maxFailures, err)
 	}
-	if _, err := a.login("8.8.8.8", "me", "correct horse"); err != nil {
+	if _, err := a.login(context.Background(), "8.8.8.8", "me", "correct horse"); err != nil {
 		t.Fatalf("another address is locked out too: %v", err)
 	}
 	now = now.Add(failureWindow + time.Second)
-	if _, err := a.login("9.9.9.9", "me", "correct horse"); err != nil {
+	if _, err := a.login(context.Background(), "9.9.9.9", "me", "correct horse"); err != nil {
 		t.Fatalf("still locked out after the window: %v", err)
 	}
 }
@@ -361,7 +362,7 @@ func TestLoginLimitHoldsUnderParallelAttempts(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := a.login("7.7.7.7", "me", "nope")
+			_, err := a.login(context.Background(), "7.7.7.7", "me", "nope")
 			if err != errTooManyFailures {
 				mu.Lock()
 				checked++

@@ -38,6 +38,9 @@ import (
 	"golang.org/x/term"
 )
 
+// webPasswordEnv is an alternative to --password, which ps would show.
+const webPasswordEnv = "EXITBOX_WEB_PASSWORD"
+
 type webOptions struct {
 	listen        string
 	username      string
@@ -62,8 +65,8 @@ Listening beyond this machine needs a login.
 Login:
   Set it in exitbox setup (Web access), or pass --username and --password.
   Without --service the flags apply to this run only; with --service they
-  are saved so the service uses them. --username without --password asks
-  for the password.
+  are saved so the service uses them. --username without --password reads
+  $EXITBOX_WEB_PASSWORD, else asks for the password.
 
 Service:
   --service installs a systemd user unit (Linux) or a launchd agent (macOS)
@@ -83,7 +86,7 @@ Service:
 	f := cmd.Flags()
 	f.StringVar(&o.listen, "listen", "", "Address to listen on (default from config, else "+config.DefaultWebListen+")")
 	f.StringVar(&o.username, "username", "", "Require a login with this username")
-	f.StringVar(&o.password, "password", "", "Password for --username (asked for when omitted)")
+	f.StringVar(&o.password, "password", "", "Password for --username (else $"+webPasswordEnv+", else asked for)")
 	f.BoolVar(&o.service, "service", false, "Install and start exitbox web as a login service")
 	f.BoolVar(&o.removeService, "remove-service", false, "Stop and remove the login service")
 	f.BoolVar(&o.open, "open", false, "Open the UI in the browser")
@@ -91,6 +94,9 @@ Service:
 }
 
 func runWeb(cmd *cobra.Command, o webOptions) error {
+	if runtime.GOOS == "windows" {
+		return errors.New("exitbox web is not supported on Windows: its sessions need a Unix pty")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -106,7 +112,10 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		return nil
 	}
 
-	cfg := config.LoadOrDefault()
+	cfg, err := loadWebConfig(config.ConfigFile())
+	if err != nil {
+		return err
+	}
 	listen := cfg.Web.ListenOrDefault()
 	if o.listen != "" {
 		if _, _, err := net.SplitHostPort(o.listen); err != nil {
@@ -114,25 +123,14 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		}
 		listen = o.listen
 	}
-	username, hash := cfg.Web.Username, cfg.Web.PasswordHash
-	if o.username != "" || o.password != "" {
-		if o.username == "" {
-			return errors.New("--password needs --username")
-		}
-		pw := o.password
-		if pw == "" {
-			if pw, err = askPassword(); err != nil {
-				return err
-			}
-		}
-		username = strings.TrimSpace(o.username)
-		// Reuse the saved hash for the same login: a fresh salt would sign
-		// every browser out on each restart.
-		if username != cfg.Web.Username || !web.PasswordMatches(cfg.Web.PasswordHash, pw) {
-			if hash, err = web.HashPassword(pw); err != nil {
-				return err
-			}
-		}
+	envPassword := os.Getenv(webPasswordEnv)
+	// Sessions inherit this environment; the password must not reach them.
+	if err := os.Unsetenv(webPasswordEnv); err != nil {
+		return err
+	}
+	username, hash, err := webLogin(o, envPassword, cfg.Web, askPassword)
+	if err != nil {
+		return err
 	}
 
 	exe, err := os.Executable()
@@ -164,12 +162,7 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 				return fmt.Errorf("saving the web settings: %w", err)
 			}
 		}
-		env := map[string]string{}
-		for _, k := range web.ServiceEnvKeys {
-			if v := os.Getenv(k); v != "" {
-				env[k] = v
-			}
-		}
+		env := web.ServiceEnv(os.Getenv)
 		lines, err := web.InstallService(web.ServiceSpec{Exe: exe, Args: []string{"web"}, Path: os.Getenv("PATH"), Home: home, Env: env})
 		if err != nil {
 			return err
@@ -203,7 +196,7 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 	if username != "" {
 		ui.Infof("Login required for user %s", username)
 	}
-	ui.Info("Press Ctrl+C to stop. Sessions keep running; close a window to end its session.")
+	ui.Info("Press Ctrl+C to stop. Sessions keep running after it.")
 	if o.open {
 		openBrowser(url)
 	}
@@ -214,6 +207,53 @@ func runWeb(cmd *cobra.Command, o webOptions) error {
 		return err
 	}
 	return nil
+}
+
+// loadWebConfig reads the config, defaulting only when there is none: an
+// unreadable one would lose the saved login, or be overwritten by --service.
+func loadWebConfig(path string) (*config.Config, error) {
+	cfg, err := config.LoadConfigFrom(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return config.DefaultConfig(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w; fix or remove it", path, err)
+	}
+	return cfg, nil
+}
+
+// webLogin returns the login of this run: the saved one or the one of --username.
+func webLogin(o webOptions, envPassword string, saved config.WebConfig, ask func() (string, error)) (string, string, error) {
+	if o.username == "" && o.password == "" {
+		return saved.Username, saved.PasswordHash, nil
+	}
+	if o.username == "" {
+		return "", "", errors.New("--password needs --username")
+	}
+	username := strings.TrimSpace(o.username)
+	if username == "" || len(username) > 64 || strings.ContainsAny(username, ":\x00\n\r") {
+		return "", "", errors.New("--username needs 1 to 64 characters and no colon")
+	}
+	pw := o.password
+	if pw == "" {
+		pw = envPassword
+	}
+	if pw == "" {
+		var err error
+		if pw, err = ask(); err != nil {
+			return "", "", err
+		}
+	}
+	// Reuse the saved hash for the same login: a fresh salt would sign
+	// every browser out on each restart.
+	if username == saved.Username && web.PasswordMatches(saved.PasswordHash, pw) {
+		return username, saved.PasswordHash, nil
+	}
+	hash, err := web.HashPassword(pw)
+	if err != nil {
+		return "", "", err
+	}
+	return username, hash, nil
 }
 
 // spawnHost starts a session host: this binary in web-session-host mode,
@@ -237,6 +277,11 @@ func spawnHost(exe string) web.SpawnFunc {
 			defer close(exited)
 			_ = c.Wait()
 		}()
+		if err := web.WriteHostPID(dir, id, c.Process.Pid); err != nil {
+			// Without its pid the server could not stop a host that never listens.
+			_ = c.Process.Kill()
+			return nil, err
+		}
 		return exited, nil
 	}
 }
@@ -312,7 +357,7 @@ func webURL(addr string) string {
 func askPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return "", errors.New("--username needs --password when not run in a terminal")
+		return "", errors.New("--username needs --password or $" + webPasswordEnv + " when not run in a terminal")
 	}
 	fmt.Print("Password for exitbox web: ")
 	pw, err := term.ReadPassword(fd)

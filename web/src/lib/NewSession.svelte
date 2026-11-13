@@ -385,17 +385,17 @@
 
 <Modal label={title} onclose={close} wide>
 	<form onsubmit={submit} class="flex min-h-0 flex-col">
-		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4">
+		<div class="flex items-center gap-3 border-b border-line-1 px-5 py-4 max-md:min-h-[52px] max-md:py-0 max-md:pr-[4px] max-md:pl-[16px]">
 			<div class="flex flex-1 flex-col gap-0.5">
-				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase">
+				<span class="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-[0.08em] text-ink-2 uppercase max-md:hidden">
 					<span class="size-1.5 rounded-full bg-brand"></span>{kind === 'ssh' ? 'SSH session' : 'Session'}
 				</span>
-				<h2 class="text-xl font-bold">{title}</h2>
+				<h2 class="text-xl font-bold max-md:text-[15px]">{title}</h2>
 			</div>
 			<IconButton icon="x" label="Close" onclick={close} />
 		</div>
 
-		<div class="flex min-h-0 flex-1 flex-col gap-[18px] overflow-auto px-5 py-[18px]">
+		<div class="flex min-h-0 flex-1 flex-col gap-[18px] overflow-auto px-5 py-[18px] max-md:px-[12px] max-md:py-[16px]">
 			{#if !edit}
 				<Segmented
 					label="Session type"
@@ -428,7 +428,7 @@
 							aria-label="Project folder"
 							autocomplete="off"
 							spellcheck="false"
-							class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none hover:border-line-2 focus:border-brand"
+							class="block w-full min-w-0 rounded-md border border-line-1 bg-inset px-2.5 py-[7px] font-mono text-[12.5px] outline-none hover:border-line-2 focus:border-brand max-md:h-[44px] max-md:rounded-[8px] max-md:px-[12px] max-md:text-[16px]"
 						/>
 						{#if browse}
 							<Button icon="back" onclick={() => (browse = null)}>Known projects</Button>
@@ -440,13 +440,13 @@
 						{#if browse}
 							{#if browse.parent}
 								{@const parent = browse.parent}
-								<button type="button" onclick={() => openFolder(parent)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left hover:bg-surface-2">
+								<button type="button" onclick={() => openFolder(parent)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left hover:bg-surface-2 max-md:min-h-[44px]">
 									<Icon name="up" /><span class="flex-1 font-mono text-[12.5px]">..</span><span class="text-[11.5px] text-ink-2">up</span>
 								</button>
 							{/if}
 							{#each browse.dirs as d (d)}
 								{@const path = browse.path.replace(/\/$/, '') + '/' + d}
-								<button type="button" onclick={() => openFolder(path)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2">
+								<button type="button" onclick={() => openFolder(path)} class="flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2 max-md:min-h-[44px]">
 									<Icon name="folder" /><span class="flex-1 truncate font-mono text-[12.5px]">{d}</span>
 								</button>
 							{:else}
@@ -463,14 +463,14 @@
 									onmousedown={(e) => e.preventDefault()}
 									onclick={() => pick(s)}
 									class={[
-										'flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2',
+										'flex min-h-10 shrink-0 items-center gap-2.5 border-b border-line-1 px-3 text-left last:border-b-0 hover:bg-surface-2 max-md:min-h-[44px]',
 										i === hi ? 'bg-surface-2' : s.kind === 'project' && s.path === fullDir && 'bg-brand-soft'
 									]}
 								>
 									{#if s.kind === 'project'}
 										<Icon name="folder" />
 										<span class="flex-1 truncate font-mono text-[12.5px]">{app.tilde(s.path)}</span>
-										<span class="text-[11.5px] whitespace-nowrap text-ink-2">{s.project.scoped ? 'directory-scoped to ' + s.project.workspace : s.project.workspace}</span>
+										<span class="text-[11.5px] whitespace-nowrap text-ink-2 max-md:max-w-[40%] max-md:truncate">{s.project.scoped ? 'directory-scoped to ' + s.project.workspace : s.project.workspace}</span>
 									{:else}
 										<span class="text-ink-3"><Icon name="folder" /></span>
 										<span class="flex-1 truncate font-mono text-[12.5px]"><span class="text-ink-3">{s.head}</span>{s.tail}</span>
@@ -484,7 +484,7 @@
 					</div>
 					{#if browse}
 						{@const current = browse.path}
-						<label class="flex w-fit cursor-pointer items-center gap-2 text-xs text-ink-2">
+						<label class="flex w-fit cursor-pointer items-center gap-2 text-xs text-ink-2 max-md:min-h-[44px] max-md:text-[14px]">
 							<input
 								type="checkbox"
 								bind:checked={showHidden}
@@ -529,7 +529,7 @@
 						label="Env profile"
 						wrap=""
 						bind:value={envProfile}
-						title={env?.error ?? ''}
+						error={env?.error ? 'Could not load profiles: ' + env.error : ''}
 						options={[
 							{ value: '', label: env?.default ? `Workspace default (${env.default})` : 'Workspace default' },
 							...profiles.map((p) => ({ value: p, label: p }))
@@ -571,18 +571,26 @@
 			{/if}
 		</div>
 
-		<div class="flex flex-wrap items-center gap-2 border-t border-line-1 px-5 py-3.5">
+		<div class="flex flex-wrap items-center gap-2 border-t border-line-1 px-5 py-3.5 max-md:px-[12px] max-md:py-[8px]">
 			{#if edit}
-				<Button type="submit" variant="primary" icon="rotate" disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}
-					>{kind === 'ssh' ? 'Reconnect with these settings' : 'Restart with these settings'}</Button
+				<Button
+					type="submit"
+					variant="primary"
+					icon="rotate"
+					class="max-md:min-w-0 max-md:flex-1 max-md:justify-center"
+					disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}>{kind === 'ssh' ? 'Reconnect' : 'Restart'}<span class="max-md:hidden">&nbsp;with these settings</span></Button
 				>
-				<Button variant="ghost" onclick={close}>Cancel</Button>
+				<Button variant="ghost" class="max-md:border-line-2" onclick={close}>Cancel</Button>
 			{:else}
-				<Button type="submit" variant="primary" icon="play" disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}
-					>{kind === 'ssh' ? 'Connect' : 'Start session'}</Button
+				<Button
+					type="submit"
+					variant="primary"
+					icon="play"
+					class="max-md:min-w-0 max-md:flex-1 max-md:justify-center"
+					disabled={busy || (kind === 'ssh' ? !sshReady : !agent || !dir.trim())}>{kind === 'ssh' ? 'Connect' : 'Start session'}</Button
 				>
-				<Button variant="ghost" onclick={close}>Cancel</Button>
-				{#if kind === 'run'}<span class="ml-auto text-[11.5px] text-ink-2">The image builds on first run.</span>{/if}
+				<Button variant="ghost" class="max-md:border-line-2" onclick={close}>Cancel</Button>
+				{#if kind === 'run'}<span class="ml-auto text-[11.5px] text-ink-2 max-md:order-first max-md:ml-0 max-md:basis-full">The image builds on first run.</span>{/if}
 			{/if}
 		</div>
 	</form>

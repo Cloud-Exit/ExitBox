@@ -141,10 +141,11 @@ type host struct {
 	cmd     *exec.Cmd
 	pty     *os.File
 
-	mu       sync.Mutex // guards replay, client, code
+	mu       sync.Mutex // guards replay, client, code, exitAt
 	replay   []byte
 	client   net.Conn
 	code     int
+	exitAt   time.Time
 	served   bool // a server has connected before
 	exited   chan struct{}
 	quit     chan struct{}
@@ -208,6 +209,7 @@ func (h *host) pump() {
 
 func (h *host) wait() {
 	err := h.cmd.Wait()
+	at := time.Now()
 	code := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -220,15 +222,27 @@ func (h *host) wait() {
 	// Let the last output out first; a leftover child may hold the terminal.
 	time.Sleep(200 * time.Millisecond)
 	h.mu.Lock()
-	h.code = code
+	h.code, h.exitAt = code, at
 	close(h.exited)
-	h.send(frameExit, exitPayload(code))
+	h.sendExit()
 	h.mu.Unlock()
+}
+
+// sendExit reports the exit and its time. Callers hold h.mu.
+func (h *host) sendExit() {
+	h.send(frameExitAt, exitAtPayload(h.exitAt))
+	h.send(frameExit, exitPayload(h.code))
 }
 
 func exitPayload(code int) []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, uint32(int32(code)))
+	return b
+}
+
+func exitAtPayload(t time.Time) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(t.Unix()))
 	return b
 }
 
@@ -258,7 +272,7 @@ func (h *host) accept(ln net.Listener) {
 		h.served = true
 		select {
 		case <-h.exited:
-			h.send(frameExit, exitPayload(h.code))
+			h.sendExit()
 		default:
 		}
 		h.mu.Unlock()
@@ -330,7 +344,8 @@ func (h *host) cleanup(keepLog bool) {
 	}
 	files := []string{specPath(h.dir, h.id), infoPath(h.dir, h.id)}
 	if !keepLog {
-		files = append(files, logPath(h.dir, h.id))
+		// A failed start leaves the pid for exitbox web to kill the host by.
+		files = append(files, logPath(h.dir, h.id), pidPath(h.dir, h.id))
 	}
 	// The socket goes last: while it exists, the session's files do too.
 	files = append(files, sockPath(h.dir, h.id))

@@ -4,12 +4,28 @@
    touch laptops and headless browsers do not report. */
 @custom-variant hover (&:hover);
 
+/* The phone layout: narrow, or a touch screen too short for windows (a phone
+   in landscape). Same query as PHONE in src/lib/viewport.svelte.ts. */
+@custom-variant max-md {
+	@media (width < 48rem), (pointer: coarse) and (width < 60rem) and (height < 500px) {
+		@slot;
+	}
+}
+
 /* Atkinson Hyperlegible Next and Mono, SIL Open Font License (static/fonts/OFL.txt). */
 @font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-Regular.otf') format('opentype'); font-weight: 400; font-display: swap; }
 @font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-SemiBold.otf') format('opentype'); font-weight: 500 600; font-display: swap; }
 @font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-Bold.otf') format('opentype'); font-weight: 650 800; font-display: swap; }
 @font-face { font-family: 'Atkinson Hyperlegible Mono'; src: url('/fonts/AtkinsonHyperlegibleMono-Regular.otf') format('opentype'); font-weight: 400; font-display: block; }
 @font-face { font-family: 'Atkinson Hyperlegible Mono'; src: url('/fonts/AtkinsonHyperlegibleMono-Bold.otf') format('opentype'); font-weight: 700; font-display: block; }
+
+/* Roboto and Roboto Mono, latin subset from @fontsource 5.3.0, SIL Open Font License (static/fonts/Roboto-LICENSE.txt, RobotoMono-LICENSE.txt). */
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Medium.woff2') format('woff2'); font-weight: 500 600; font-display: swap; }
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Bold.woff2') format('woff2'); font-weight: 650 900; font-display: swap; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Regular.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Medium.woff2') format('woff2'); font-weight: 500 600; font-display: block; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Bold.woff2') format('woff2'); font-weight: 650 900; font-display: block; }
 
 /* ExitMesh design system colors. Dark is the default; [data-theme] switches. */
 :root,
@@ -38,6 +54,10 @@
 	--x-btn: #e8f0fa;
 	--x-btn-hover: #ffffff;
 	--x-btn-ink: #0a1520;
+	--x-st-active: #39d66a;
+	--x-st-detached: #5aa9ff;
+	--x-st-ended: #ff6b5e;
+	--x-st-inactive: #6a86a2;
 	--x-kbd: #1a2d42;
 	--x-kbd-line: #2a4463;
 	--x-shadow-md: 0 4px 12px #0009, 0 0 0 1px #ffffff08;
@@ -70,6 +90,10 @@
 	--x-btn: #003356;
 	--x-btn-hover: #002040;
 	--x-btn-ink: #ffffff;
+	--x-st-active: #008236;
+	--x-st-detached: #0b62c4;
+	--x-st-ended: #c4170e;
+	--x-st-inactive: #7a91a6;
 	--x-kbd: #ffffff;
 	--x-kbd-line: #d1dbe6;
 	--x-shadow-md: 0 2px 6px #00335618, 0 0 0 1px #00335612;
@@ -102,18 +126,30 @@
 	--color-btn: var(--x-btn);
 	--color-btn-hover: var(--x-btn-hover);
 	--color-btn-ink: var(--x-btn-ink);
+	--color-st-active: var(--x-st-active);
+	--color-st-detached: var(--x-st-detached);
+	--color-st-ended: var(--x-st-ended);
+	--color-st-inactive: var(--x-st-inactive);
 	--color-kbd: var(--x-kbd);
 	--color-kbd-line: var(--x-kbd-line);
 	--shadow-panel: var(--x-shadow-md);
 	--shadow-float: var(--x-shadow-lg);
-	--font-sans: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
 	--font-mono: 'Atkinson Hyperlegible Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Not inline: the Appearance settings set these on the root element (termFont.svelte.ts). */
+@theme {
+	--font-sans: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+	--font-weight-normal: 400;
+	--font-weight-medium: 500;
+	--font-weight-semibold: 600;
+	--font-weight-bold: 700;
 }
 
 @layer base {
 	html,
 	body {
-		@apply h-full bg-surface-0 font-sans text-sm/[1.45] text-ink-1 antialiased;
+		@apply h-full bg-surface-0 font-sans text-sm/[1.45] font-normal text-ink-1 antialiased;
 	}
 	button:not(:disabled) {
 		@apply cursor-pointer;

@@ -35,6 +35,9 @@ const (
 	frameOutput = 'o' // live terminal output
 	frameReplay = 'p' // recent output for a server that took over; already answered
 	frameExit   = 'x' // the process ended; int32 exit code
+	// frameExitAt comes right before frameExit: when the process ended, as
+	// int64 Unix seconds. A server that predates it ignores it.
+	frameExitAt = 't'
 )
 
 const maxFrame = 4 << 20

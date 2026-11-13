@@ -212,13 +212,13 @@ func TestPromptRoutesToItsSessionAndFirstAnswerWins(t *testing.T) {
 	}
 	quiet(t, vb)
 	// Another session's viewer cannot answer it.
-	if b.answer("b", m1.ID, true, "") {
+	if b.settle("b", m1.ID, true, "") == nil {
 		t.Fatal("answer from another session taken")
 	}
-	if !b.answer("a", m1.ID, true, "") {
+	if b.settle("a", m1.ID, true, "") != nil {
 		t.Fatal("first answer refused")
 	}
-	if b.answer("a", m1.ID, false, "") {
+	if b.settle("a", m1.ID, false, "") == nil {
 		t.Fatal("second answer taken")
 	}
 	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || !rep.Allow {
@@ -229,7 +229,7 @@ func TestPromptRoutesToItsSessionAndFirstAnswerWins(t *testing.T) {
 			t.Fatalf("done %+v", d)
 		}
 	}
-	if b.answer("a", "nope", true, "") {
+	if b.settle("a", "nope", true, "") == nil {
 		t.Fatal("answer for an unknown id taken")
 	}
 }
@@ -245,10 +245,10 @@ func TestPromptRoutesByContainer(t *testing.T) {
 		t.Fatalf("prompt %+v", m)
 	}
 	quiet(t, vb)
-	if b.answer("b", m.ID, true, "") {
+	if b.settle("b", m.ID, true, "") == nil {
 		t.Fatal("answer from a window on another container taken")
 	}
-	if !b.answer("a", m.ID, true, "") {
+	if b.settle("a", m.ID, true, "") != nil {
 		t.Fatal("answer refused")
 	}
 	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || !rep.Allow {
@@ -267,7 +267,7 @@ func TestPromptByContainerShownInEveryWindow(t *testing.T) {
 	if ma.ID != mb.ID {
 		t.Fatalf("prompts %+v %+v", ma, mb)
 	}
-	if !b.answer("b", mb.ID, false, "") {
+	if b.settle("b", mb.ID, false, "") != nil {
 		t.Fatal("answer refused")
 	}
 	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || rep.Allow {
@@ -286,7 +286,7 @@ func TestPromptByContainerShownInEveryWindow(t *testing.T) {
 	if m := next(t, vb2); m.ID != first.ID {
 		t.Fatalf("resent %+v", m)
 	}
-	if !b.answer("b", first.ID, true, "") {
+	if b.settle("b", first.ID, true, "") != nil {
 		t.Fatal("answer refused")
 	}
 	if rep := r2.wait(t); !rep.Allow {
@@ -311,7 +311,7 @@ func TestPromptDeny(t *testing.T) {
 	v := b.watch("a")
 	r := ask(t, path, webprompt.Request{Session: "a", Kind: webprompt.KindVaultWrite, Subject: "API_KEY"})
 	m := next(t, v)
-	if !b.answer("a", m.ID, false, "ignored") {
+	if b.settle("a", m.ID, false, "ignored") != nil {
 		t.Fatal("deny refused")
 	}
 	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || rep.Allow || rep.Password != "" {
@@ -330,7 +330,7 @@ func TestPromptCancelledWhenRequesterHangsUp(t *testing.T) {
 	if d := next(t, v); d.T != "prompt-done" || d.ID != m.ID {
 		t.Fatalf("done %+v", d)
 	}
-	if b.answer("a", m.ID, true, "") {
+	if b.settle("a", m.ID, true, "") == nil {
 		t.Fatal("answer to a cancelled prompt taken")
 	}
 }
@@ -351,7 +351,7 @@ func TestPromptResentToLateViewer(t *testing.T) {
 	if m := next(t, v2); m.ID != second.ID || m.Subject != "TOKEN" {
 		t.Fatalf("second resent %+v", m)
 	}
-	if !b.answer("a", second.ID, true, "") || !b.answer("a", first.ID, false, "") {
+	if b.settle("a", second.ID, true, "") != nil || b.settle("a", first.ID, false, "") != nil {
 		t.Fatal("answers refused")
 	}
 	if rep := r1.wait(t); rep.Allow {
@@ -369,10 +369,10 @@ func TestPromptPasswordStaysOutOfLogs(t *testing.T) {
 	r := ask(t, path, webprompt.Request{Session: "a", Kind: webprompt.KindVaultPassword, Agent: "claude", Workspace: "work"})
 	m := next(t, v)
 	// Unlock without a password is not an answer.
-	if b.answer("a", m.ID, true, "") {
+	if b.settle("a", m.ID, true, "") == nil {
 		t.Fatal("empty password taken")
 	}
-	if !b.answer("a", m.ID, true, secret) {
+	if b.settle("a", m.ID, true, secret) != nil {
 		t.Fatal("password refused")
 	}
 	if rep := r.wait(t); !rep.Allow || rep.Password != secret {
@@ -384,7 +384,7 @@ func TestPromptPasswordStaysOutOfLogs(t *testing.T) {
 	// A password never rides along on other kinds.
 	r2 := ask(t, path, webprompt.Request{Session: "a", Kind: webprompt.KindVaultRead, Subject: "K"})
 	id := next(t, v).ID
-	if !b.answer("a", id, true, secret) {
+	if b.settle("a", id, true, secret) != nil {
 		t.Fatal("read approval refused")
 	}
 	if rep := r2.wait(t); rep.Password != "" {
@@ -485,6 +485,31 @@ func TestPromptOverWebSocket(t *testing.T) {
 	_, done := readUntil(t, ws, "")
 	if done["t"] != "prompt-done" || done["id"] != msg["id"] {
 		t.Fatalf("done %v", done)
+	}
+
+	// A refused answer is reported to the browser and the prompt stays.
+	r = ask(t, path, webprompt.Request{Session: id, Kind: webprompt.KindVaultPassword, Agent: "codex"})
+	_, msg = readUntil(t, ws, "")
+	if msg["t"] != "prompt" || msg["kind"] != webprompt.KindVaultPassword {
+		t.Fatalf("prompt message %v", msg)
+	}
+	for _, pw := range []string{"", "pw"} {
+		answer, err := json.Marshal(map[string]any{"t": "answer", "id": msg["id"], "allow": true, "password": pw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := websocket.Message.Send(ws, string(answer)); err != nil {
+			t.Fatal(err)
+		}
+		if pw == "" {
+			_, perr := readUntil(t, ws, "")
+			if perr["t"] != "prompt-error" || perr["id"] != msg["id"] || perr["error"] == "" {
+				t.Fatalf("prompt error %v", perr)
+			}
+		}
+	}
+	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || rep.Password != "pw" {
+		t.Fatalf("password reply status %q", rep.Status)
 	}
 }
 
@@ -609,5 +634,183 @@ func TestContainerSessions(t *testing.T) {
 	}
 	if got := s.containerSessions("c3"); len(got) != 0 {
 		t.Fatalf("unknown container %v", got)
+	}
+}
+
+// A prompt whose viewers all left goes back to its requester after the
+// grace, so it shows the popup instead of waiting for a timeout.
+func TestPromptNoViewerAfterLastViewerLeaves(t *testing.T) {
+	b, path, _ := testBroker(t)
+	// Long enough that a slow runner cannot reach it between the steps.
+	b.noViewerGrace = time.Hour
+	v1 := b.watch("a")
+	r := ask(t, path, webprompt.Request{Container: ctrAB, Kind: webprompt.KindAllow, Subject: "x.example"})
+	m := next(t, v1)
+	// A reload within the grace keeps it.
+	b.unwatch("a", v1)
+	v2 := b.watch("b")
+	if got := next(t, v2); got.ID != m.ID {
+		t.Fatalf("resent %+v", got)
+	}
+	// The grace of the first viewer runs out while the second views it.
+	b.mu.Lock()
+	p := b.pending[m.ID]
+	b.mu.Unlock()
+	if p == nil {
+		t.Fatal("prompt gone after a reload")
+	}
+	b.expireUnseen(p)
+	select {
+	case rep := <-r.reply:
+		t.Fatalf("replied while viewed: %+v", rep)
+	case <-time.After(200 * time.Millisecond):
+	}
+	const grace = 100 * time.Millisecond
+	b.mu.Lock()
+	b.noViewerGrace = grace
+	b.mu.Unlock()
+	start := time.Now()
+	b.unwatch("b", v2)
+	if rep := r.wait(t); rep.Status != webprompt.StatusNoViewer {
+		t.Fatalf("reply %+v", rep)
+	}
+	if d := time.Since(start); d < grace {
+		t.Fatalf("replied after %v, before the grace", d)
+	}
+	if b.settle("b", m.ID, true, "") == nil {
+		t.Fatal("answer to a returned prompt taken")
+	}
+}
+
+// A viewer whose queue is full did not see the prompt: it is no viewer.
+func TestPromptFullViewerIsNoViewer(t *testing.T) {
+	b, path, _ := testBroker(t)
+	v := b.watch("a")
+	for i := 0; i < promptViewerBuffer; i++ {
+		v.out <- "{}"
+	}
+	r := ask(t, path, webprompt.Request{Session: "a", Kind: webprompt.KindAllow, Subject: "x.example"})
+	if rep := r.wait(t); rep.Status != webprompt.StatusNoViewer {
+		t.Fatalf("reply %+v", rep)
+	}
+}
+
+// A new viewer counts only for the prompts that fit its queue.
+func TestPromptWatchCountsOnlyDelivered(t *testing.T) {
+	b := newPromptBroker(func(string) bool { return true }, nil, func(string, ...any) {})
+	var ps []*pendingPrompt
+	b.mu.Lock()
+	for i := 0; i <= promptViewerBuffer; i++ {
+		b.seq++
+		p := &pendingPrompt{id: fmt.Sprint("p", i), sessions: []string{"a"}, kind: webprompt.KindAllow, seq: b.seq, msg: "{}", reply: make(chan webprompt.Reply, 1), seen: map[*promptViewer]struct{}{}}
+		b.pending[p.id] = p
+		ps = append(ps, p)
+	}
+	b.mu.Unlock()
+	v := b.watch("a")
+	first, last := ps[0], ps[len(ps)-1]
+	b.mu.Lock()
+	_, sawFirst := first.seen[v]
+	_, sawLast := last.seen[v]
+	b.mu.Unlock()
+	if !sawFirst || sawLast {
+		t.Fatalf("seen first=%v last=%v", sawFirst, sawLast)
+	}
+	b.expireUnseen(first)
+	b.expireUnseen(last)
+	select {
+	case rep := <-first.reply:
+		t.Fatalf("a delivered prompt returned: %+v", rep)
+	default:
+	}
+	select {
+	case rep := <-last.reply:
+		if rep.Status != webprompt.StatusNoViewer {
+			t.Fatalf("reply %+v", rep)
+		}
+	default:
+		t.Fatal("an undelivered prompt stayed pending")
+	}
+}
+
+// A refused answer tells its viewer why and leaves the prompt pending.
+func TestPromptRefusedAnswerTellsViewer(t *testing.T) {
+	b, path, _ := testBroker(t)
+	v := b.watch("a")
+	r := ask(t, path, webprompt.Request{Session: "a", Kind: webprompt.KindVaultPassword})
+	m := next(t, v)
+	for _, pw := range []string{"", strings.Repeat("x", webprompt.MaxPassword+1)} {
+		b.answerFrom(v, "a", m.ID, true, pw)
+		var e struct{ T, ID, Error string }
+		select {
+		case raw := <-v.out:
+			if err := json.Unmarshal([]byte(raw), &e); err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("no prompt-error")
+		}
+		if e.T != "prompt-error" || e.ID != m.ID || e.Error == "" {
+			t.Fatalf("message %+v", e)
+		}
+	}
+	// Unknown ids get no message.
+	b.answerFrom(v, "a", "nope", true, "pw")
+	quiet(t, v)
+	b.answerFrom(v, "a", m.ID, true, "pw")
+	if rep := r.wait(t); rep.Status != webprompt.StatusAnswer || rep.Password != "pw" {
+		t.Fatalf("reply status %q", rep.Status)
+	}
+}
+
+// flakyListener fails Accept with a non-timeout error until closed.
+type flakyListener struct {
+	mu     sync.Mutex
+	calls  int
+	closed chan struct{}
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	l.calls++
+	l.mu.Unlock()
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		return nil, errors.New("accept: too many open files")
+	}
+}
+
+func (l *flakyListener) Close() error {
+	close(l.closed)
+	return nil
+}
+
+func (l *flakyListener) Addr() net.Addr { return &net.UnixAddr{Name: "flaky", Net: "unix"} }
+
+// A failing accept is logged and retried, not the end of all prompts.
+func TestPromptAcceptRetries(t *testing.T) {
+	logs := &safeBuf{}
+	lg := log.New(logs, "", 0)
+	b := newPromptBroker(func(string) bool { return true }, nil, lg.Printf)
+	l := &flakyListener{closed: make(chan struct{})}
+	b.start(l)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		n := l.calls
+		l.mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("accept tried %d times", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	b.close()
+	if !strings.Contains(logs.String(), "too many open files") {
+		t.Fatalf("log %q", logs.String())
 	}
 }

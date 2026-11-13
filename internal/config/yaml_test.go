@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -141,5 +142,38 @@ func TestSaveConfigPrivateWithWebPassword(t *testing.T) {
 	}
 	if !got.Web.AuthEnabled() || got.Web.ListenOrDefault() != DefaultWebListen {
 		t.Fatalf("web config %+v", got.Web)
+	}
+}
+
+func TestWebRecentDays(t *testing.T) {
+	if got := (WebConfig{}).RecentDaysOrDefault(); got != DefaultWebRecentDays {
+		t.Fatalf("unset = %d, want %d", got, DefaultWebRecentDays)
+	}
+	if got := (WebConfig{RecentDays: -1}).RecentDaysOrDefault(); got != DefaultWebRecentDays {
+		t.Fatalf("negative = %d, want %d", got, DefaultWebRecentDays)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := DefaultConfig()
+	cfg.Web.RecentDays = 10
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Web.RecentDaysOrDefault() != 10 {
+		t.Fatalf("round trip %+v", got.Web)
+	}
+	cfg.Web.RecentDays = 0
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "recent_days") {
+		t.Fatalf("default written out:\n%s", data)
 	}
 }

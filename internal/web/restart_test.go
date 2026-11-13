@@ -22,6 +22,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,5 +270,168 @@ func TestRestartRequestRefusedForAttach(t *testing.T) {
 	resp, out := do(t, ts, "POST", "/api/sessions/"+sess.info.ID+"/restart", map[string]any{"request": map[string]any{"dir": st.dirs[0], "agent": "claude"}}, "")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("attach restart with a request: %d %v", resp.StatusCode, out)
+	}
+}
+
+func countArg(args []string, a string) int {
+	n := 0
+	for _, x := range args {
+		if x == a {
+			n++
+		}
+	}
+	return n
+}
+
+// A rebuild adds --update to one start only, over a running or ended session.
+func TestRestartRebuild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	for _, script := range []string{"exit 0", "sleep 60"} {
+		t.Run(script, func(t *testing.T) {
+			rec := &recorder{}
+			dir := shortTempDir(t)
+			s, st, ts := newTestServer(t, Options{Command: shellCommand(rec, script), StateDir: dir})
+			resp, out := do(t, ts, "POST", "/api/sessions", startOpts(st.dirs[0]), "")
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("start: %d %v", resp.StatusCode, out)
+			}
+			id := out["id"].(string)
+			old := s.sessions.Get(id)
+			want := old.Info().Args
+			if script == "exit 0" {
+				waitDone(t, old)
+			}
+			resp, out = do(t, ts, "POST", "/api/sessions/"+id+"/restart", map[string]any{"cols": 80, "rows": 24, "rebuild": true}, "")
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("rebuild: %d %v", resp.StatusCode, out)
+			}
+			waitDone(t, old)
+			if s.sessions.Get(id) != nil {
+				t.Fatal("rebuild kept the old session")
+			}
+			nid := out["id"].(string)
+			args, _ := rec.last()
+			if countArg(args, "--update") != 1 || !reflect.DeepEqual(args, append(append(append([]string(nil), want...), "--update"), "--env", WebSessionEnv+"="+nid)) {
+				t.Fatalf("rebuild ran %q", args)
+			}
+			next := s.sessions.Get(nid)
+			info := next.Info()
+			if !reflect.DeepEqual(info.Args, want) || info.Name != "keep" || info.Request == nil || !reflect.DeepEqual(*info.Request, wantKept(st.dirs[0])) {
+				t.Fatalf("rebuilt session %+v", info)
+			}
+			data, err := os.ReadFile(infoPath(dir, nid))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "--update") {
+				t.Fatalf("info file keeps --update: %s", data)
+			}
+			if script == "sleep 60" {
+				if err := next.stop(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitDone(t, next)
+			resp, out = do(t, ts, "POST", "/api/sessions/"+nid+"/restart", map[string]any{}, "")
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("plain restart: %d %v", resp.StatusCode, out)
+			}
+			if args, _ := rec.last(); countArg(args, "--update") != 0 {
+				t.Fatalf("plain restart after a rebuild ran %q", args)
+			}
+		})
+	}
+}
+
+// With new options, --update follows them.
+func TestRestartRebuildWithNewOptions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	rec := &recorder{}
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(rec, "sleep 60")})
+	resp, out := do(t, ts, "POST", "/api/sessions", startOpts(st.dirs[0]), "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	next := startOpts(st.dirs[0])
+	next["memory"] = "4g"
+	resp, out = do(t, ts, "POST", "/api/sessions/"+out["id"].(string)+"/restart", map[string]any{"request": next, "rebuild": true}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("rebuild: %d %v", resp.StatusCode, out)
+	}
+	nid := out["id"].(string)
+	want := []string{"run", "claude", "--no-firewall", "--name", "keep", "--profile", "openrouter", "--memory", "4g", "--allow-urls", "api.example.com"}
+	if args, _ := rec.last(); !reflect.DeepEqual(args, append(append([]string(nil), want...), "--update", "--env", WebSessionEnv+"="+nid)) {
+		t.Fatalf("rebuild ran %q", args)
+	}
+	if info := s.sessions.Get(nid).Info(); !reflect.DeepEqual(info.Args, want) || info.Request == nil || info.Request.Memory != "4g" {
+		t.Fatalf("rebuilt session %+v", info)
+	}
+}
+
+// Only run sessions started here can be rebuilt.
+func TestRestartRebuildRefused(t *testing.T) {
+	s, _, ts := newTestServer(t, Options{})
+	for _, info := range []SessionInfo{
+		{ID: "0123456789abcde1", Kind: KindSSH, Name: "me@box", Args: []string{"me@box"}, SSH: &SSHOptions{Host: "box", User: "me"}, Exited: true},
+		{ID: "0123456789abcde2", Kind: KindAttach, Agent: "claude", Container: "exitbox-claude-p-0a1b2c3d", Exited: true},
+		{ID: "0123456789abcde3", Kind: KindRun, Agent: "claude", Dir: "/p", Args: []string{"run", "claude"}, Exited: true},
+	} {
+		sess := s.sessions.newSession(info)
+		s.sessions.mu.Lock()
+		s.sessions.sessions[info.ID] = sess
+		s.sessions.mu.Unlock()
+		t.Cleanup(func() {
+			s.sessions.mu.Lock()
+			delete(s.sessions.sessions, info.ID)
+			s.sessions.mu.Unlock()
+		})
+		resp, out := do(t, ts, "POST", "/api/sessions/"+info.ID+"/restart", map[string]any{"rebuild": true}, "")
+		if resp.StatusCode != http.StatusBadRequest || out["error"] != "only a session started here can be rebuilt" {
+			t.Errorf("%s rebuild: %d %v", info.Kind, resp.StatusCode, out)
+		}
+	}
+	if resp, _ := do(t, ts, "POST", "/api/sessions/ffffffffffffffff/restart", map[string]any{"rebuild": true}, ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown session rebuild: %d", resp.StatusCode)
+	}
+}
+
+// A rename queued while the session ran happens as it stops for a rebuild,
+// and the new start resumes under the new name.
+func TestRestartRebuildTakesQueuedRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	rec := &recorder{}
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(rec, "sleep 60")})
+	resp, out := do(t, ts, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude", "name": "feature-x"}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	if resp, out = do(t, ts, "POST", "/api/sessions/"+id+"/rename", map[string]string{"name": "renamed"}, ""); resp.StatusCode != http.StatusOK || out["renameTo"] != "renamed" {
+		t.Fatalf("rename while running: %d %v", resp.StatusCode, out)
+	}
+	resp, out = do(t, ts, "POST", "/api/sessions/"+id+"/restart", map[string]any{"cols": 80, "rows": 24, "rebuild": true}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("rebuild: %d %v", resp.StatusCode, out)
+	}
+	nid := out["id"].(string)
+	want := []string{"run", "claude", "--name", "renamed", "--update", "--env", WebSessionEnv + "=" + nid}
+	if args, _ := rec.last(); !reflect.DeepEqual(args, want) {
+		t.Fatalf("rebuild ran %q, want %q", args, want)
+	}
+	info := s.sessions.Get(nid).Info()
+	if info.Name != "renamed" || info.Request == nil || info.Request.Name != "renamed" {
+		t.Fatalf("rebuilt session %+v", info)
+	}
+	st.mu.Lock()
+	renames := append([]string(nil), st.renames...)
+	st.mu.Unlock()
+	if !reflect.DeepEqual(renames, []string{"feature-x->renamed"}) {
+		t.Fatalf("renames %v", renames)
 	}
 }

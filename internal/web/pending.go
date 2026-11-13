@@ -19,12 +19,15 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/session"
 )
 
@@ -132,19 +135,66 @@ func (s *Server) applyPendingRenames(ctrs []containerDoc, sessions []SessionInfo
 		return
 	}
 	defer s.renameMu.Unlock()
-	for _, p := range s.renames.list() {
-		running := false
+	running := func(p pendingRename, ctrs []containerDoc) bool {
 		for _, c := range ctrs {
 			if c.Agent == p.Agent && c.Dir == p.Dir && c.Session == p.Name {
-				running = true
+				return true
 			}
 		}
 		for _, si := range sessions {
 			if !si.Exited && si.Kind == KindRun && si.Agent == p.Agent && si.Dir == p.Dir && si.Name == p.Name {
-				running = true
+				return true
 			}
 		}
-		if running {
+		return false
+	}
+	now := s.renameTime()
+	queued := map[string]bool{}
+	var due []pendingRename
+	for _, p := range s.renames.list() {
+		queued[p.retryKey()] = true
+		if running(p, ctrs) {
+			continue
+		}
+		if r := s.renameRetries[p.retryKey()]; r != nil && now.Before(r.next) {
+			continue
+		}
+		due = append(due, p)
+	}
+	for k := range s.renameRetries {
+		if !queued[k] {
+			delete(s.renameRetries, k)
+		}
+	}
+	if len(due) == 0 {
+		return
+	}
+	// The cached list may predate a restart under the same name; renaming
+	// a running session would lose what it saves.
+	fresh, err := s.recentContainers(renameFreshAge)
+	if err != nil {
+		for _, p := range due {
+			s.renameFailed(p, now, fmt.Errorf("listing containers: %w", err))
+		}
+		return
+	}
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		for _, p := range due {
+			s.renameFailed(p, now, err)
+		}
+		return
+	}
+	for _, p := range due {
+		if running(p, fresh) {
+			continue
+		}
+		if profile.FindWorkspace(cfg, p.Workspace) == nil {
+			s.logf("web: rename session %q to %q dropped: unknown workspace %q", p.Name, p.To, p.Workspace)
+			if err := s.renames.done(p); err != nil {
+				s.logf("web: rename queue: %v", err)
+			}
+			delete(s.renameRetries, p.retryKey())
 			continue
 		}
 		err := s.store.renameSaved(p.Workspace, p.Agent, p.Dir, p.Name, p.To)
@@ -156,14 +206,70 @@ func (s *Server) applyPendingRenames(ctrs []containerDoc, sessions []SessionInfo
 		case errors.As(err, &refused):
 			s.logf("web: rename session %q to %q refused: %v", p.Name, p.To, err)
 		default:
-			// Kept for the next poll: the workspace store may be busy.
-			s.logf("web: rename session %q to %q: %v", p.Name, p.To, err)
+			// Kept for a later poll: the workspace store may be busy.
+			s.renameFailed(p, now, err)
 			continue
 		}
+		delete(s.renameRetries, p.retryKey())
 		if err := s.renames.done(p); err != nil {
 			s.logf("web: rename queue: %v", err)
 		}
 	}
+}
+
+const (
+	// renameFreshAge: a container list this young is fresh enough to rename by.
+	renameFreshAge = time.Second
+	renameRetryMin = 2 * time.Second
+	renameRetryMax = time.Minute
+)
+
+// renameRetry spaces the attempts of a queued rename that keeps failing.
+type renameRetry struct {
+	next  time.Time
+	delay time.Duration
+	err   string // the last error logged, so a repeat is not logged again
+}
+
+// retryKey tells renames apart by target too: a new target retries at once.
+func (p pendingRename) retryKey() string { return p.key() + "\x00" + p.To }
+
+func (s *Server) renameTime() time.Time {
+	if s.renameNow != nil {
+		return s.renameNow()
+	}
+	return time.Now()
+}
+
+// renameFailed backs off a rename that failed for now. Callers hold renameMu.
+func (s *Server) renameFailed(p pendingRename, now time.Time, err error) {
+	if s.renameRetries == nil {
+		s.renameRetries = map[string]*renameRetry{}
+	}
+	r := s.renameRetries[p.retryKey()]
+	if r == nil {
+		r = &renameRetry{}
+		s.renameRetries[p.retryKey()] = r
+	}
+	r.delay = min(max(2*r.delay, renameRetryMin), renameRetryMax)
+	r.next = now.Add(r.delay)
+	if msg := err.Error(); msg != r.err {
+		r.err = msg
+		s.logf("web: rename session %q to %q: %v; retrying", p.Name, p.To, err)
+	}
+}
+
+// checkWorkspace refuses a rename for a workspace the config does not
+// have, as the saved-session handlers do.
+func (s *Server) checkWorkspace(ws string) (int, error) {
+	cfg, err := s.store.loadConfig()
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	if profile.FindWorkspace(cfg, ws) == nil {
+		return http.StatusBadRequest, fmt.Errorf("unknown workspace %q", ws)
+	}
+	return http.StatusOK, nil
 }
 
 // handleRenameRunning queues a rename of a session started in a terminal,
@@ -188,6 +294,10 @@ func (s *Server) handleRenameRunning(w http.ResponseWriter, r *http.Request) {
 		}
 		if c.Session == "" {
 			writeError(w, http.StatusConflict, errors.New("this session has no name to rename yet"))
+			return
+		}
+		if status, err := s.checkWorkspace(c.Workspace); err != nil {
+			writeError(w, status, err)
 			return
 		}
 		if err := s.renames.add(pendingRename{Workspace: c.Workspace, Agent: c.Agent, Dir: c.Dir, Name: c.Session, To: newName}); err != nil {
