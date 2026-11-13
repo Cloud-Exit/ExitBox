@@ -371,6 +371,97 @@ Skills are stored at `~/.config/exitbox/profiles/global/<workspace>/skills/<name
 
 All agents use the same [Agent Skills](https://agentskills.io) SKILL.md format with YAML frontmatter, so a single skill works across agents.
 
+### Web UI
+
+`exitbox web` runs your agent sessions in the browser, on your own machine. Each session is an `exitbox run` in its own terminal window. It works on Linux and macOS (on Windows, run it inside WSL2).
+
+#### Quick start
+
+```bash
+exitbox web --open        # Serve on 127.0.0.1:4848 and open the browser
+```
+
+1. Click **New session**, pick an agent and a project folder, and start it. The options are those of `exitbox run` (workspace, name, env profile, firewall, read-only, memory, CPUs, extra domains).
+2. Work in the terminal window. Start more sessions; they tile next to each other.
+3. Close the browser whenever you like. Sessions keep running and come back with their recent output when you open the page again.
+4. Press `?` outside a terminal for the list of keys and mouse actions.
+
+To keep it running in the background, install it as a service: `exitbox web --service`.
+
+#### Sessions
+
+- **Agent sessions**: start an agent in a project folder. The sidebar groups sessions by workspace.
+- **Sessions started in a terminal**: agents you started with `exitbox run` show up too. Click one to open it in a window: it attaches to the session's tmux, so the terminal and the browser show the same session. Closing that window asks to detach, which leaves the session running, or to terminate it, which also ends the `exitbox run` in its terminal. A session started with `--no-tmux` can only be used in its own terminal.
+- **SSH sessions**: New session > SSH opens a terminal on another machine with the `ssh` client of the machine running exitbox web. Pick a host from `~/.ssh/config` or type one, with an optional user, port and identity file. The key file is passed to `ssh`, never read by exitbox web.
+- **Session settings**: the cog on a window shows the session's options and launch command, and restarts it with new ones.
+- **Rebuild**: the hammer on a window rebuilds the agent image (`--update`) and starts the session again, after a confirmation. Only sessions started in the web UI can be rebuilt.
+- **Rename**: the pencil next to a session's name (window title bar or sidebar) renames it, including its saved conversation, so `--name <new>` resumes it. This works for sessions started in a terminal too. A running session takes the new name when it ends, because its container saves the conversation under the name it started with; the new name shows right away, and the rename is kept across restarts until it happens.
+- **Closing**: closing the window of a running agent session, attached ones included, asks whether to terminate or detach; an SSH session asks whether to disconnect or hide. The window of a session that ended just closes.
+- **Keeps running**: each session runs in its own small host process, so closing the browser, or restarting or stopping exitbox web (or its service), leaves sessions running. The next start reconnects them with their recent output.
+
+#### Approvals
+
+When an agent asks for a firewall domain (`exitbox-allow`) or for the vault (`exitbox-vault`), the request shows as a card over that session's window, also for sessions attached from a terminal. Allow or deny it there; Escape denies. A vault that is locked asks for its password in the same card. A new card stacks above the waiting ones, so none moves under the pointer, and its approving button (Allow, Unlock) waits a moment before it takes a click or a key; Tab reaches Deny first. If no browser is showing the session, the request falls back to the usual prompt on the host.
+
+#### Sidebar
+
+Each session has a `>` mark that shows its state:
+
+| Colour | State |
+|--------|-------|
+| Green  | Running, with a window here (hidden windows included) |
+| Blue   | Running, with no window (started in a terminal or detached) |
+| Amber  | Waiting for your approval |
+| Red    | Ended recently (3 days by default, see Web access settings) |
+| Grey   | Inactive |
+
+- **Inactive sessions** are hidden; "Show inactive" lists them by last use, and clicking one resumes it. A search finds them too.
+- **Drag to open**: drag a session from the sidebar onto the desktop to open it (a saved one resumes, a terminal one attaches) or onto a tab to open it there; dropped on a window or the desktop edge, it lands there as a dragged title bar would.
+- **Folders**: create folders in the sidebar and drag sessions into them (or use the folder button on a session). A session keeps its folder across runs and renames. Folders live in `~/.config/exitbox/web/folders.json` and are shared by every browser.
+- **Collapse** the sidebar to a narrow rail of numbered window buttons with the button at its top.
+
+#### Windows and tabs
+
+- **Tiling**: windows tile themselves like in a tiling window manager such as Hyprland, in a grid by default. They re-tile when a window opens, closes or hides and when the browser resizes, and they never overlap. Drag a title bar onto a side of another window to place it on that side; a highlight shows where it lands. Drop on the centre of a window to swap the two. Drop at the edge of the desktop to take that whole side of the tab. Drag an edge to move the split with its neighbour; the neighbour gives way. Grid, Columns and Main + stack are the layouts; picking one resets a tab you arranged by hand (shown as Custom). Free turns tiling off so windows float where you put them. Maximize covers the whole page, sidebar included.
+- **Tabs**: each tab is its own tiled desktop, for many more sessions than fit on one screen. Add one with `+`, rename it with a double-click, and drag a window's title bar onto a tab to move it there. Closing a tab moves its windows to the tab next to it; clicking a session in the sidebar opens its tab.
+- **Focus**: the window you type into is bright with an accent border; the others are dimmed until you hover them.
+- **Layout is kept**: tabs, the layout, splits and window places are stored in `~/.config/exitbox/web/layout.json`, so they survive restarts and look the same in every browser.
+- **Links**: URLs and OSC 8 hyperlinks in a session open in a new browser tab when clicked; tmux passes hyperlinks through.
+- **Keys**: Shift+Enter sends a line feed (like Ctrl+J), which Claude Code, Codex and OpenCode take as a newline in the prompt. Selecting text copies it; hold Shift (Option on macOS) while dragging when the agent uses the mouse.
+
+#### On a phone
+
+Below tablet width, and on a touch screen under 500 pixels high (a phone in landscape), the page shows one session at a time. The list button opens sessions, folders and settings; the More button (or a long press on a row) has the session's actions. A key bar under the terminal has Esc, Tab, up, down, Enter, `ctrl` and `alt` for the next key, and a line to type and send. Confirmations and menus open as bottom sheets, a menu with Cancel at its end; New session, Help, Session settings and dialogs with fields open full screen. While an approval card waits, the key bar and the tab strip hide to give it room. Tabs can be switched but not created or renamed on a phone.
+
+#### Settings
+
+- **General, Agents, Workspaces, Firewall, Keybindings**: the same settings as `exitbox setup`, written to the same `config.yaml` and `allowlist.yaml`.
+- **Vault**: create a workspace vault, turn it on or off or read-only, and after unlocking it with its password, list, add, edit and delete secrets. Editing opens the secret in its row, hidden, with an eye to show it. The password stays in the page's memory for the requests that need it, and wrong passwords are rate limited. A session that has the vault unlocked holds it, so manage secrets there with `exitbox-vault` meanwhile. Destroying a vault asks you to type the workspace name and is refused while a session of that workspace runs.
+- **Web access**: the listen address, the login, and how many days an ended session stays red in the sidebar (1 to 365, default 3).
+- **Appearance**: terminal font, size and line height, interface font, and the weight of both. Kept per browser.
+
+#### Access from other machines
+
+Sessions mount host folders, so anyone who can open the page can reach your files.
+
+- **Login**: optional on this machine, required beyond it. Set it in the Web access settings, in `exitbox setup` (Web access), or with `--username`. exitbox web refuses to listen on anything but `127.0.0.1`, `::1` or `localhost` without a login.
+- **Passwords** are stored as bcrypt hashes. A login cookie lasts 7 days, and 10 failed logins lock out an address for 10 minutes. Signing out or changing the login also closes that login's open terminals.
+- **Plain HTTP**: exitbox web has no TLS. Beyond this machine, put it behind a TLS reverse proxy or reach it through an SSH tunnel so the password does not cross the network in clear text:
+
+  ```bash
+  ssh -L 4848:127.0.0.1:4848 you@your-machine   # then open http://127.0.0.1:4848
+  ```
+
+- **Browser safety**: on loopback it answers only to `localhost`-style host names (no DNS rebinding), refuses cross-site writes and WebSockets, and sends a strict Content Security Policy.
+
+#### Run as a service
+
+`exitbox web --service` installs a systemd user unit (Linux) or a launchd agent (macOS) that starts it at login; `exitbox web --remove-service` removes it. Stopping or restarting the service leaves sessions running. See [Commands](#web-ui-1) for the flags.
+
+#### Developing the UI
+
+The UI is a SvelteKit + Tailwind CSS app in `web/`. `make web` builds it into `internal/web/assets`, which the binary embeds; commit the build with your change.
+
 ### Named Resumable Sessions
 
 When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox captures this token and can pass it on the next run, so you seamlessly resume where you left off.
@@ -596,6 +687,21 @@ exitbox run opencode [args]   # Run OpenCode
 exitbox run pi [args]         # Run Pi Coding Agent
 exitbox run qwen [args]       # Run Qwen Code
 ```
+
+### Web UI
+
+```bash
+exitbox web                                   # Serve the UI on 127.0.0.1:4848
+exitbox web --open                            # ... and open it in the browser
+exitbox web --listen 127.0.0.1:9000           # Another address (default from config)
+exitbox web --username me                     # Require a login for this run (asks for the password)
+EXITBOX_WEB_PASSWORD=... exitbox web --username me   # Password from the environment, for scripts
+exitbox web --service                         # Install and start it as a login service
+exitbox web --service --listen 0.0.0.0:4848 --username me   # Service on the network, with a login
+exitbox web --remove-service                  # Stop and remove the service
+```
+
+Without `--service`, `--username` and `--password` apply to that run only; with `--service` they are saved to `config.yaml` so the service uses them. Prefer the prompt or `EXITBOX_WEB_PASSWORD` over `--password`, which shows up in your shell history. See the [Web UI guide](#web-ui) for what the page does.
 
 ### Management
 
@@ -964,6 +1070,12 @@ settings:
     read_only: false          # Set true to mount workspace as read-only by default
     no_env: false             # Set true to not pass host env vars by default
     auto_resume: false        # Set true to auto-resume agent sessions
+
+web:                          # exitbox web (set in exitbox setup > Web access)
+  listen: 127.0.0.1:4848      # Omitted means 127.0.0.1:4848
+  username: me                # With password_hash: a login is required
+  password_hash: $2a$12$...   # bcrypt; config.yaml is then written 0600
+  recent_days: 3              # Days an ended session stays red in the sidebar (1 to 365); set in the web UI settings only
 ```
 
 **Settings reference:**

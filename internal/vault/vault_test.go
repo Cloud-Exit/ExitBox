@@ -10,6 +10,25 @@ import (
 	"testing"
 )
 
+// openStore opens a vault that is closed when the test ends, even after a t.Fatal.
+func openStore(t *testing.T, workspace, password string) *Store {
+	t.Helper()
+	s, err := Open(workspace, password)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	closeAtEnd(t, s)
+	return s
+}
+
+func closeAtEnd(t *testing.T, s *Store) {
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+}
+
 func TestInitAndOpen(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -20,11 +39,7 @@ func TestInitAndOpen(t *testing.T) {
 		t.Fatal("expected vault to be initialized")
 	}
 
-	s, err := Open("test-ws", "mypassword")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "mypassword")
 
 	keys, err := s.List()
 	if err != nil {
@@ -52,9 +67,28 @@ func TestOpenWrongPassword(t *testing.T) {
 	if err := Init("test-ws", "correct"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	_, err := Open("test-ws", "wrong")
-	if err == nil {
-		t.Error("expected error for wrong password")
+	s, err := Open("test-ws", "wrong")
+	if s != nil {
+		closeAtEnd(t, s)
+	}
+	if !errors.Is(err, ErrWrongPassword) {
+		t.Errorf("wrong password: got %v, want ErrWrongPassword", err)
+	}
+}
+
+func TestOpenLocked(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	if err := Init("test-ws", "correct"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	openStore(t, "test-ws", "correct")
+	s2, err := Open("test-ws", "correct")
+	if s2 != nil {
+		closeAtEnd(t, s2)
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Errorf("second open: got %v, want ErrLocked", err)
 	}
 }
 
@@ -65,11 +99,7 @@ func TestSetAndGet(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	if err := s.Set("API_KEY", "secret123"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -91,13 +121,9 @@ func TestGetNotFound(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
-	_, err = s.Get("MISSING")
+	_, err := s.Get("MISSING")
 	if err == nil {
 		t.Error("expected error for missing key")
 	}
@@ -110,11 +136,7 @@ func TestListSorted(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	for _, kv := range []struct{ k, v string }{
 		{"GAMMA", "g"}, {"ALPHA", "a"}, {"BETA", "b"},
@@ -143,11 +165,7 @@ func TestListExcludesInternalKeys(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	if err := s.Set("USER_KEY", "val"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -173,11 +191,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	if err := s.Set("KEY", "val"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -185,7 +199,7 @@ func TestDelete(t *testing.T) {
 	if err := s.Delete("KEY"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	_, err = s.Get("KEY")
+	_, err := s.Get("KEY")
 	if err == nil {
 		t.Error("expected error after delete")
 	}
@@ -198,11 +212,7 @@ func TestDeleteNotFound(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	if err := s.Delete("MISSING"); err == nil {
 		t.Error("expected error for missing key")
@@ -216,11 +226,7 @@ func TestAll(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	if err := s.Set("K1", "v1"); err != nil {
 		t.Fatalf("Set K1: %v", err)
@@ -248,11 +254,7 @@ func TestImportEnvEntries(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	s, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer s.Close()
+	s := openStore(t, "test-ws", "pass")
 
 	// Pre-existing key.
 	if err := s.Set("EXISTING", "kept"); err != nil {
@@ -394,19 +396,22 @@ func TestReopenPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = s.Close()
+		}
+	})
 	if err := s.Set("PERSIST", "yes"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
+	closed = true
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
 	// Reopen and verify data persists.
-	s2, err := Open("test-ws", "pass")
-	if err != nil {
-		t.Fatalf("Reopen: %v", err)
-	}
-	defer s2.Close()
+	s2 := openStore(t, "test-ws", "pass")
 
 	val, err := s2.Get("PERSIST")
 	if err != nil {

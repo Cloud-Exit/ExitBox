@@ -130,13 +130,13 @@ func TestIsReservedEnvVar_NotReserved(t *testing.T) {
 // regardless of firewall mode (so vault/kv still work with --no-firewall).
 func TestNewIPCServer_AlwaysCreated(t *testing.T) {
 	// Firewall enabled
-	_, err := newIPCServer(true, nil, "test")
+	_, err := newIPCServer(true, nil, "test", nil)
 	if err != nil {
 		t.Fatalf("newIPCServer(firewall=true) failed: %v", err)
 	}
 
 	// Firewall disabled — must still succeed
-	_, err = newIPCServer(false, nil, "test")
+	_, err = newIPCServer(false, nil, "test", nil)
 	if err != nil {
 		t.Fatalf("newIPCServer(firewall=false) failed: %v", err)
 	}
@@ -145,12 +145,12 @@ func TestNewIPCServer_AlwaysCreated(t *testing.T) {
 // TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall ensures the
 // allow_domain handler is only registered when firewall is enabled.
 func TestNewIPCServer_AllowDomainHandler_OnlyWithFirewall(t *testing.T) {
-	withFirewall, err := newIPCServer(true, nil, "test")
+	withFirewall, err := newIPCServer(true, nil, "test", nil)
 	if err != nil {
 		t.Fatalf("newIPCServer(firewall=true) failed: %v", err)
 	}
 
-	withoutFirewall, err := newIPCServer(false, nil, "test")
+	withoutFirewall, err := newIPCServer(false, nil, "test", nil)
 	if err != nil {
 		t.Fatalf("newIPCServer(firewall=false) failed: %v", err)
 	}

@@ -683,3 +683,31 @@ func sendVaultSet(t *testing.T, srv *Server, key, value string) VaultSetResponse
 	}
 	return result
 }
+
+func TestVaultListUsesListPrompt(t *testing.T) {
+	state := &VaultState{}
+	listAsked := 0
+	cfg := VaultHandlerConfig{
+		WorkspaceName: "test",
+		PromptApproveFunc: func(key string) (bool, error) {
+			t.Errorf("read prompt asked for %q", key)
+			return false, nil
+		},
+		PromptApproveListFunc: func() (bool, error) {
+			listAsked++
+			return true, nil
+		},
+		PromptPasswordFunc: func() (string, error) { return "pw", nil },
+		OpenFunc: func(_, _ string) (map[string]string, error) {
+			return map[string]string{"A": "1"}, nil
+		},
+	}
+	resp, err := NewVaultListHandler(cfg, state)(&Request{Type: "vault_list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := resp.(VaultListResponse)
+	if !ok || !r.Approved || len(r.Keys) != 1 || listAsked != 1 {
+		t.Fatalf("response %+v, list prompts %d", resp, listAsked)
+	}
+}

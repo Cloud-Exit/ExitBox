@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +104,76 @@ agents:
 	}
 	if cfg.Settings.DefaultWorkspace != "myws" {
 		t.Fatalf("expected default workspace 'myws', got %q", cfg.Settings.DefaultWorkspace)
+	}
+}
+
+func TestSaveConfigPrivateWithWebPassword(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no Unix file modes on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := DefaultConfig()
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0644 {
+		t.Fatalf("mode %v without a password, want 0644", st.Mode().Perm())
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".config-*")); len(leftovers) != 0 {
+		t.Fatalf("temp files left: %v", leftovers)
+	}
+	cfg.Web = WebConfig{Username: "me", PasswordHash: "$2a$12$x"}
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0600 {
+		t.Fatalf("mode %v with a password hash, want 0600", st.Mode().Perm())
+	}
+	got, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Web.AuthEnabled() || got.Web.ListenOrDefault() != DefaultWebListen {
+		t.Fatalf("web config %+v", got.Web)
+	}
+}
+
+func TestWebRecentDays(t *testing.T) {
+	if got := (WebConfig{}).RecentDaysOrDefault(); got != DefaultWebRecentDays {
+		t.Fatalf("unset = %d, want %d", got, DefaultWebRecentDays)
+	}
+	if got := (WebConfig{RecentDays: -1}).RecentDaysOrDefault(); got != DefaultWebRecentDays {
+		t.Fatalf("negative = %d, want %d", got, DefaultWebRecentDays)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := DefaultConfig()
+	cfg.Web.RecentDays = 10
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Web.RecentDaysOrDefault() != 10 {
+		t.Fatalf("round trip %+v", got.Web)
+	}
+	cfg.Web.RecentDays = 0
+	if err := SaveConfigTo(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "recent_days") {
+		t.Fatalf("default written out:\n%s", data)
 	}
 }

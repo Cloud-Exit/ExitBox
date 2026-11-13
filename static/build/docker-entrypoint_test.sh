@@ -770,6 +770,7 @@ test_write_tmux_conf_default_terminal() {
     assert_contains "default-terminal is tmux-256color without infocmp" "$out" 'set-option -g default-terminal "tmux-256color"'
     assert_eq "no xterm-256color default-terminal" "" "$(printf '%s\n' "$out" | grep 'default-terminal "xterm-256color"' || true)"
     assert_contains "outer terminal gets synchronized output" "$out" 'set -as terminal-features "*:sync"'
+    assert_contains "hyperlinks pass through tmux" "$out" 'set -as terminal-features "*:hyperlinks"'
     assert_contains "focus events reach the agent" "$out" 'set -g focus-events on'
 }
 

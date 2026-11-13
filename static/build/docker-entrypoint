@@ -116,6 +116,9 @@ set -as terminal-features "*:extkeys"
 # the agent's frame is open; without this, TUI frames still reach the
 # terminal in pieces and the cursor visibly jumps. Terminals without 2026 ignore it.
 set -as terminal-features "*:sync"
+# Pass OSC 8 hyperlinks (links agents print) through to the outer terminal,
+# so they stay clickable in the terminal and in exitbox web.
+set -as terminal-features "*:hyperlinks"
 # Claude Code's recommended tmux setting: pass focus in/out to the agent.
 set -g focus-events on
 set -g status-position top

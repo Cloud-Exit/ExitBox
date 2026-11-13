@@ -40,6 +40,9 @@ type VaultHandlerConfig struct {
 	PromptApproveFunc func(key string) (bool, error)
 	// PromptApproveSetFunc overrides the tmux popup approval prompt for vault set.
 	PromptApproveSetFunc func(key string) (bool, error)
+	// PromptApproveListFunc overrides the vault list approval prompt; when
+	// nil, PromptApproveFunc is asked with "list keys".
+	PromptApproveListFunc func() (bool, error)
 	// OpenFunc overrides vault.Open for testing.
 	OpenFunc func(workspace, password string) (map[string]string, error)
 	// QuickSetFunc overrides vault write for testing. Called with (workspace, password, key, value).
@@ -182,11 +185,13 @@ func NewVaultGetHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
 
 // NewVaultListHandler returns a HandlerFunc for "vault_list" requests.
 func NewVaultListHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
-	promptApprove := cfg.PromptApproveFunc
-	if promptApprove == nil {
-		promptApprove = func(_ string) (bool, error) {
-			return promptVaultApproval(cfg.Runtime, cfg.ContainerName, "list keys")
-		}
+	promptApprove := func(_ string) (bool, error) {
+		return promptVaultApproval(cfg.Runtime, cfg.ContainerName, "list keys")
+	}
+	if cfg.PromptApproveListFunc != nil {
+		promptApprove = func(_ string) (bool, error) { return cfg.PromptApproveListFunc() }
+	} else if cfg.PromptApproveFunc != nil {
+		promptApprove = cfg.PromptApproveFunc
 	}
 
 	promptPassword := cfg.PromptPasswordFunc

@@ -227,6 +227,21 @@ func RemoveByNameKV(store *kvstore.Store, agentName, projectKey, workspaceName, 
 
 // ListNames returns all named sessions for a workspace/agent/project.
 func ListNames(workspaceName, agentName, projectDir string) ([]string, error) {
+	dirs, err := NamedDirs(workspaceName, agentName, projectDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for name := range dirs {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// NamedDirs maps each named session of a workspace/agent/project to its
+// directories under the sessions dir.
+func NamedDirs(workspaceName, agentName, projectDir string) (map[string][]string, error) {
 	sessionsDir := ProjectSessionsDir(workspaceName, agentName, projectDir)
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
@@ -236,14 +251,13 @@ func ListNames(workspaceName, agentName, projectDir string) ([]string, error) {
 		return nil, fmt.Errorf("read sessions dir: %w", err)
 	}
 
-	seen := make(map[string]struct{})
-	var out []string
+	out := make(map[string][]string)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		nameFile := filepath.Join(sessionsDir, e.Name(), ".name")
-		raw, readErr := os.ReadFile(nameFile)
+		dir := filepath.Join(sessionsDir, e.Name())
+		raw, readErr := os.ReadFile(filepath.Join(dir, ".name"))
 		if readErr != nil {
 			continue
 		}
@@ -251,13 +265,8 @@ func ListNames(workspaceName, agentName, projectDir string) ([]string, error) {
 		if name == "" {
 			continue
 		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
+		out[name] = append(out[name], dir)
 	}
-	sort.Strings(out)
 	return out, nil
 }
 

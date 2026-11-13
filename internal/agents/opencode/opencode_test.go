@@ -17,6 +17,7 @@
 package opencode
 
 import (
+	"github.com/cloud-exit/exitbox/internal/agent"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -90,6 +91,17 @@ func TestOpenCodeAgent(t *testing.T) {
 	}
 	if !strings.Contains(df, "sed '/^$/d' | wc -l") {
 		t.Error("GetDockerfileInstall() should count zero fallback binary matches correctly")
+	}
+
+	if !strings.Contains(df, `ASSET="opencode-linux-${OC_ARCH}-musl.tar.gz"`) {
+		t.Error("Alpine image should take the musl build")
+	}
+	gnu, err := o.installSnippet(agent.PrepareBuildInput{Libc: "gnu"})
+	if err != nil {
+		t.Fatalf("installSnippet(gnu) error: %v", err)
+	}
+	if !strings.Contains(gnu, `ASSET="opencode-linux-${OC_ARCH}.tar.gz"`) {
+		t.Error("glibc image should take the glibc build")
 	}
 
 	// GetFullDockerfile

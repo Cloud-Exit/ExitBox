@@ -18,6 +18,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -132,7 +133,29 @@ func SaveConfigTo(cfg *Config, path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// A web password hash makes the file private. Write a temp file with
+	// the final mode and rename it, so the hash is never readable by others.
+	mode := os.FileMode(0644)
+	if cfg.Web.PasswordHash != "" {
+		mode = 0600
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // LoadAllowlist reads and parses allowlist.yaml.

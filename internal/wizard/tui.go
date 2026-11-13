@@ -62,6 +62,8 @@ const (
 	stepVault
 	stepEnvProfiles
 	stepReview
+	// Web access sits outside the sidebar steps.
+	stepWebAccess
 	stepDone
 )
 
@@ -115,6 +117,7 @@ type Model struct {
 	height           int
 	cancelled        bool
 	confirmed        bool
+	web              webForm // the Web access page
 
 	// Tool version step fields
 	toolVersions         map[string]string // working copy of per-tool versions
@@ -577,6 +580,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDomains(msg)
 	case stepReview:
 		return m.updateReview(msg)
+	case stepWebAccess:
+		return m.updateWebAccess(msg)
 	}
 
 	return m, nil
@@ -619,6 +624,8 @@ func (m Model) View() string {
 		content = m.viewDomains()
 	case stepReview:
 		content = m.viewReview()
+	case stepWebAccess:
+		return m.viewWebAccess()
 	case stepDone:
 		return ""
 	default:
@@ -2617,6 +2624,7 @@ const (
 	topMenuWorkspace = "Workspace management"
 	topMenuGeneral   = "General settings"
 	topMenuEnv       = "Env profiles"
+	topMenuWeb       = "Web access"
 )
 
 var topMenuOptions = []struct {
@@ -2626,6 +2634,7 @@ var topMenuOptions = []struct {
 	{topMenuWorkspace, "Configure roles, languages, tools, packages, and workspace settings"},
 	{topMenuGeneral, "Configure keybindings and global preferences"},
 	{topMenuEnv, "View env profiles for a workspace (create/edit via 'exitbox env' CLI)"},
+	{topMenuWeb, "Login and listen address of exitbox web"},
 }
 
 func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2656,6 +2665,8 @@ func (m Model) updateTopMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case topMenuEnv:
 				// Env profiles view
 				m.step = stepEnvProfiles
+			case topMenuWeb:
+				m = m.openWebAccess()
 			}
 			m.cursor = 0
 		case "esc", "q":

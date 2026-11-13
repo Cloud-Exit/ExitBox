@@ -1,0 +1,171 @@
+@import 'tailwindcss';
+
+/* Plain :hover. Tailwind's default also needs (hover: hover), which some
+   touch laptops and headless browsers do not report. */
+@custom-variant hover (&:hover);
+
+/* The phone layout: narrow, or a touch screen too short for windows (a phone
+   in landscape). Same query as PHONE in src/lib/viewport.svelte.ts. */
+@custom-variant max-md {
+	@media (width < 48rem), (pointer: coarse) and (width < 60rem) and (height < 500px) {
+		@slot;
+	}
+}
+
+/* Atkinson Hyperlegible Next and Mono, SIL Open Font License (static/fonts/OFL.txt). */
+@font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-Regular.otf') format('opentype'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-SemiBold.otf') format('opentype'); font-weight: 500 600; font-display: swap; }
+@font-face { font-family: 'Atkinson Hyperlegible Next'; src: url('/fonts/AtkinsonHyperlegibleNext-Bold.otf') format('opentype'); font-weight: 650 800; font-display: swap; }
+@font-face { font-family: 'Atkinson Hyperlegible Mono'; src: url('/fonts/AtkinsonHyperlegibleMono-Regular.otf') format('opentype'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Atkinson Hyperlegible Mono'; src: url('/fonts/AtkinsonHyperlegibleMono-Bold.otf') format('opentype'); font-weight: 700; font-display: block; }
+
+/* Roboto and Roboto Mono, latin subset from @fontsource 5.3.0, SIL Open Font License (static/fonts/Roboto-LICENSE.txt, RobotoMono-LICENSE.txt). */
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Medium.woff2') format('woff2'); font-weight: 500 600; font-display: swap; }
+@font-face { font-family: 'Roboto'; src: url('/fonts/Roboto-Bold.woff2') format('woff2'); font-weight: 650 900; font-display: swap; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Regular.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Medium.woff2') format('woff2'); font-weight: 500 600; font-display: block; }
+@font-face { font-family: 'Roboto Mono'; src: url('/fonts/RobotoMono-Bold.woff2') format('woff2'); font-weight: 650 900; font-display: block; }
+
+/* ExitMesh design system colors. Dark is the default; [data-theme] switches. */
+:root,
+[data-theme='dark'] {
+	--x-surface-0: #0a1520;
+	--x-surface-1: #0f1d2c;
+	--x-surface-2: #14273a;
+	--x-surface-3: #1b3049;
+	--x-inset: #081220;
+	--x-ink-1: #e6f0fa;
+	--x-ink-2: #8ba4bf;
+	--x-ink-3: #5a7692;
+	--x-ink-4: #3d5670;
+	--x-line-1: #1a2d42;
+	--x-line-2: #244161;
+	--x-line-3: #2f5278;
+	--x-accent: #39d66a;
+	--x-accent-soft: #39d66a1f;
+	--x-accent-fg: #62e88a;
+	--x-brand: #6ab8ff;
+	--x-brand-soft: #6ab8ff1a;
+	--x-warn: #ff6b5e;
+	--x-warn-soft: #ff6b5e1a;
+	--x-amber: #ffa842;
+	--x-amber-soft: #ffa8421a;
+	--x-btn: #e8f0fa;
+	--x-btn-hover: #ffffff;
+	--x-btn-ink: #0a1520;
+	--x-st-active: #39d66a;
+	--x-st-detached: #5aa9ff;
+	--x-st-ended: #ff6b5e;
+	--x-st-inactive: #6a86a2;
+	--x-kbd: #1a2d42;
+	--x-kbd-line: #2a4463;
+	--x-shadow-md: 0 4px 12px #0009, 0 0 0 1px #ffffff08;
+	--x-shadow-lg: 0 20px 40px #000c, 0 0 0 1px #ffffff0a;
+	color-scheme: dark;
+}
+
+[data-theme='light'] {
+	--x-surface-0: #fbfcfd;
+	--x-surface-1: #ffffff;
+	--x-surface-2: #edf1f7;
+	--x-surface-3: #dde6f0;
+	--x-inset: #f7f9fc;
+	--x-ink-1: #001625;
+	--x-ink-2: #334d63;
+	--x-ink-3: #5a7a92;
+	--x-ink-4: #8da3b5;
+	--x-line-1: #cdd7e2;
+	--x-line-2: #b3c3d3;
+	--x-line-3: #97adbf;
+	--x-accent: #008236;
+	--x-accent-soft: #0bb94520;
+	--x-accent-fg: #008236;
+	--x-brand: #003356;
+	--x-brand-soft: #00335618;
+	--x-warn: #b10f07;
+	--x-warn-soft: #b10f0714;
+	--x-amber: #b76300;
+	--x-amber-soft: #b763001a;
+	--x-btn: #003356;
+	--x-btn-hover: #002040;
+	--x-btn-ink: #ffffff;
+	--x-st-active: #008236;
+	--x-st-detached: #0b62c4;
+	--x-st-ended: #c4170e;
+	--x-st-inactive: #7a91a6;
+	--x-kbd: #ffffff;
+	--x-kbd-line: #d1dbe6;
+	--x-shadow-md: 0 2px 6px #00335618, 0 0 0 1px #00335612;
+	--x-shadow-lg: 0 12px 32px #00335625, 0 0 0 1px #00335615;
+	color-scheme: light;
+}
+
+@theme inline {
+	--color-surface-0: var(--x-surface-0);
+	--color-surface-1: var(--x-surface-1);
+	--color-surface-2: var(--x-surface-2);
+	--color-surface-3: var(--x-surface-3);
+	--color-inset: var(--x-inset);
+	--color-ink-1: var(--x-ink-1);
+	--color-ink-2: var(--x-ink-2);
+	--color-ink-3: var(--x-ink-3);
+	--color-ink-4: var(--x-ink-4);
+	--color-line-1: var(--x-line-1);
+	--color-line-2: var(--x-line-2);
+	--color-line-3: var(--x-line-3);
+	--color-accent: var(--x-accent);
+	--color-accent-soft: var(--x-accent-soft);
+	--color-accent-fg: var(--x-accent-fg);
+	--color-brand: var(--x-brand);
+	--color-brand-soft: var(--x-brand-soft);
+	--color-warn: var(--x-warn);
+	--color-warn-soft: var(--x-warn-soft);
+	--color-amber: var(--x-amber);
+	--color-amber-soft: var(--x-amber-soft);
+	--color-btn: var(--x-btn);
+	--color-btn-hover: var(--x-btn-hover);
+	--color-btn-ink: var(--x-btn-ink);
+	--color-st-active: var(--x-st-active);
+	--color-st-detached: var(--x-st-detached);
+	--color-st-ended: var(--x-st-ended);
+	--color-st-inactive: var(--x-st-inactive);
+	--color-kbd: var(--x-kbd);
+	--color-kbd-line: var(--x-kbd-line);
+	--shadow-panel: var(--x-shadow-md);
+	--shadow-float: var(--x-shadow-lg);
+	--font-mono: 'Atkinson Hyperlegible Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Not inline: the Appearance settings set these on the root element (termFont.svelte.ts). */
+@theme {
+	--font-sans: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+	--font-weight-normal: 400;
+	--font-weight-medium: 500;
+	--font-weight-semibold: 600;
+	--font-weight-bold: 700;
+}
+
+@layer base {
+	html,
+	body {
+		@apply h-full bg-surface-0 font-sans text-sm/[1.45] font-normal text-ink-1 antialiased;
+	}
+	button:not(:disabled) {
+		@apply cursor-pointer;
+	}
+	:focus-visible {
+		@apply outline-2 outline-offset-1 outline-brand;
+	}
+	::selection {
+		@apply bg-accent-soft text-accent-fg;
+	}
+	* {
+		scrollbar-color: var(--x-line-2) transparent;
+	}
+}
+
+/* xterm paints its own background; let the window's show through. */
+.xterm .xterm-viewport {
+	background: transparent !important;
+}
