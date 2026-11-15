@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { Win } from '../app.svelte';
+	import { app, type Win } from '../app.svelte';
+	import { viewport } from '../viewport.svelte';
 	import Icon from '../ui/Icon.svelte';
 	import type { IconName } from '../ui/icons';
 	import { keyBytes, mods, withMods, type KeyName } from './keys.svelte';
@@ -9,6 +10,8 @@
 	let text = $state('');
 	/** The field's text before the last edit, to find what a key added while a modifier is armed. */
 	let prev = '';
+	/** In focus the header's mark is gone: the focus button carries it. */
+	const otherWaits = $derived(viewport.focus && app.windows.some((w) => w !== win && w.prompts.length));
 	const off = $derived(win.busy || win.info.exited || !win.connected);
 
 	// Arrows and Enter as icons: the mono font has no arrow glyphs.
@@ -100,6 +103,20 @@
 		{/each}
 	</div>
 	<div class="flex items-center gap-[6px]">
+		<button
+			type="button"
+			aria-label={viewport.focus ? (otherWaits ? 'Show the header and tabs; another session waits for your answer' : 'Show the header and tabs') : 'Focus: hide the header and tabs'}
+			aria-pressed={viewport.focus}
+			onmousedown={keepFocus}
+			onclick={() => viewport.toggleFocus()}
+			class={[
+				'relative grid size-[44px] shrink-0 place-items-center rounded-[8px] border select-none',
+				viewport.focus ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
+			]}
+		>
+			<Icon name={viewport.focus ? 'restore' : 'maximize'} size={16} />
+			{#if otherWaits}<span class="absolute top-[6px] right-[6px] size-[8px] rounded-full bg-amber ring-2 ring-amber/40"></span>{/if}
+		</button>
 		<input
 			type="text"
 			bind:value={text}

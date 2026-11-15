@@ -1,14 +1,23 @@
 // The phone layout: narrow, or a touch screen too short for windows (a phone in landscape). Same query as the max-md: variant in app.css.
 const PHONE = '(width < 48rem), (pointer: coarse) and (width < 60rem) and (height < 500px)';
 
+const FOCUS_KEY = 'exitbox.phoneFocus';
+
 class Viewport {
 	/** Phone layout: one session fills the screen, sheets replace dialogs. */
 	phone = $state(false);
 	/** The visual viewport height while an on-screen keyboard shrinks it (iOS keeps innerHeight), else 0. */
 	height = $state(0);
+	/** Phone focus: only the session, its keys and the text field show. */
+	focus = $state(false);
 
 	constructor() {
 		if (typeof window === 'undefined') return;
+		try {
+			this.focus = localStorage.getItem(FOCUS_KEY) === '1';
+		} catch {
+			// Private windows refuse storage; focus then starts off.
+		}
 		const mq = matchMedia(PHONE);
 		this.phone = mq.matches;
 		mq.addEventListener('change', (e) => (this.phone = e.matches));
@@ -24,6 +33,15 @@ class Viewport {
 		vv.addEventListener('resize', update);
 		vv.addEventListener('scroll', update);
 		update();
+	}
+
+	toggleFocus() {
+		this.focus = !this.focus;
+		try {
+			localStorage.setItem(FOCUS_KEY, this.focus ? '1' : '0');
+		} catch {
+			// Not remembered, still switched.
+		}
 	}
 }
 

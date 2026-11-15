@@ -49,7 +49,8 @@
 </script>
 
 <div class={['flex min-h-0 flex-1 flex-col', app.view !== 'sessions' && 'hidden']}>
-	{#if viewport.phone}<SessionHeader />{/if}
+	<!-- Focus needs a session: its key bar holds the way back. -->
+	{#if viewport.phone && !(viewport.focus && app.shown)}<SessionHeader />{/if}
 	<div class="flex min-h-12 shrink-0 flex-wrap items-center gap-2.5 border-b border-line-1 px-4 py-1.5 max-md:hidden">
 		<h1 class="sr-only">Sessions</h1>
 		<Button variant="primary" icon="plus" onclick={() => (app.newSessionOpen = true)}>New session</Button>

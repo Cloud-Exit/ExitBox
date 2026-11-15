@@ -15,6 +15,9 @@
 	import { viewport } from '$lib/viewport.svelte';
 
 	app.boot();
+
+	/** Phone focus is on and a session fills the screen. */
+	const focused = $derived(viewport.phone && viewport.focus && !!app.shown && app.view === 'sessions' && !app.sessionsOpen);
 </script>
 
 <svelte:window
@@ -47,7 +50,7 @@
 		class="flex h-screen flex-col overflow-hidden max-md:h-dvh max-md:bg-surface-1 max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)]"
 	>
 		<!-- Takes layout space, so the desktop measures and tiles below it. -->
-		{#if app.me && !app.me.authEnabled}<NoLoginBar />{/if}
+		{#if app.me && !app.me.authEnabled && !focused}<NoLoginBar />{/if}
 		<div class="flex min-h-0 flex-1">
 			<Sidebar />
 			<!-- Hidden, not unmounted, under the phone's sessions list: terminals keep their connections. -->
