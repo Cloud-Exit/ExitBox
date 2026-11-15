@@ -71,6 +71,17 @@
 		node.focus();
 		node.select();
 	}
+
+	/** Asks first: a closed tab loses its name and window layout. */
+	async function confirmClose(id: string) {
+		const i = app.tabs.findIndex((t) => t.id === id);
+		if (i < 0 || app.tabs.length < 2) return;
+		const n = app.tabWindows(id).length;
+		const to = app.tabs[i === 0 ? 1 : i - 1].name;
+		const text = n ? `Its ${n === 1 ? 'session moves' : n + ' sessions move'} to ${to} and keep running.` : 'It has no sessions.';
+		const ok = await app.ask(`Close tab ${app.tabs[i].name}?`, text, [{ label: 'Close tab', value: 'yes', tone: 'primary' }]);
+		if (ok === 'yes') app.closeTab(id);
+	}
 </script>
 
 <div bind:this={strip} role="tablist" aria-label="Tabs" class="flex min-w-[120px] flex-[1_1_0] items-center gap-1 overflow-x-auto">
@@ -155,7 +166,7 @@
 						label={'Close tab ' + t.name + (count ? ' (its windows move to the tab next to it)' : '')}
 						small
 						class={['mr-0.5', !active && 'invisible group-hover:visible']}
-						onclick={() => app.closeTab(t.id)}
+						onclick={() => void confirmClose(t.id)}
 					/>
 				{:else}
 					<span class="w-1.5"></span>
