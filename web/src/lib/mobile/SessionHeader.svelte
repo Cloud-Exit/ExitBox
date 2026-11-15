@@ -4,6 +4,7 @@
 	import SessionMenu from '../SessionMenu.svelte';
 	import Brand from '../ui/Brand.svelte';
 	import Icon from '../ui/Icon.svelte';
+	import StatusGlyph, { type SessionState } from '../ui/StatusGlyph.svelte';
 	import StatusPill from '../ui/StatusPill.svelte';
 
 	const win = $derived(app.shown);
@@ -12,6 +13,19 @@
 	/** Another session waits for an answer: the list button says so. */
 	const waiting = $derived(app.windows.some((w) => w !== win && w.prompts.length));
 	const canRename = $derived(!!win && !!win.info.name && !(win.attached && win.info.exited));
+
+	/** The active tab's sessions, one tap apart. */
+	const siblings = $derived(app.tabWindows(app.activeTab));
+
+	function chipState(w: (typeof siblings)[number]): SessionState {
+		if (w.prompts.length) return 'waiting';
+		if (!w.info.exited) return 'active';
+		return w.attached ? 'detached' : 'ended';
+	}
+
+	function reveal(node: HTMLElement, on: boolean) {
+		if (on) node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	}
 
 	let menu = $state<{ x: number; y: number; anchor: HTMLElement } | null>(null);
 	let renaming = $state(false);
@@ -132,6 +146,30 @@
 		<Icon name="plus" size={18} />
 	</button>
 </div>
+
+<!-- Short landscape screens keep the room for the terminal. -->
+{#if siblings.length > 1 && !(win && win.prompts.length && !win.info.exited)}
+	<div role="tablist" aria-label="Sessions in this tab" class="flex shrink-0 items-center gap-[6px] overflow-x-auto border-b border-line-1 bg-surface-0 px-[8px] py-[4px] [scrollbar-width:none] [@media(height<500px)]:hidden">
+		{#each siblings as w (w.id)}
+			{@const active = w === win}
+			<button
+				type="button"
+				role="tab"
+				aria-selected={active}
+				{@attach (node) => reveal(node, active)}
+				onclick={() => app.show(w)}
+				class={[
+					'inline-flex min-h-[36px] max-w-[160px] shrink-0 items-center gap-[6px] rounded-full border px-[10px] text-[13px]',
+					active ? 'border-brand bg-surface-2 font-semibold text-ink-1' : 'border-line-1 text-ink-2'
+				]}
+			>
+				<StatusGlyph state={chipState(w)} size={10} />
+				<span class="font-mono text-[12px]">{app.windows.indexOf(w) + 1}</span>
+				<span class="truncate">{w.title}</span>
+			</button>
+		{/each}
+	</div>
+{/if}
 
 {#if menu && win && !win.busy}
 	<SessionMenu target={{ kind: 'window', win }} x={menu.x} y={menu.y} anchor={menu.anchor} returnFocus={menu.anchor} inWindow onrename={canRename ? startRename : undefined} onclose={() => (menu = null)} />
