@@ -28,6 +28,25 @@
 		return drag?.kind === 'window' ? drag.id : null;
 	}
 
+	let swipe: { x: number; y: number; t: number } | null = null;
+
+	function swipeStart(e: TouchEvent) {
+		const p = e.touches[0];
+		swipe = viewport.phone && e.touches.length === 1 ? { x: p.clientX, y: p.clientY, t: e.timeStamp } : null;
+	}
+
+	/** A quick sideways swipe goes to the next or previous session of the tab. */
+	function swipeEnd(e: TouchEvent) {
+		const from = swipe;
+		swipe = null;
+		const p = e.changedTouches[0];
+		if (!from || !p || e.touches.length) return;
+		const dx = p.clientX - from.x;
+		const dy = p.clientY - from.y;
+		if (Math.abs(dx) < 70 || Math.abs(dx) < 2.5 * Math.abs(dy) || e.timeStamp - from.t > 700) return;
+		app.step(dx < 0 ? 1 : -1);
+	}
+
 	// The desktop size bounds the windows; keep them reachable when it shrinks.
 	function measure(node: HTMLElement) {
 		const update = () => {
@@ -50,7 +69,7 @@
 
 <div class={['flex min-h-0 flex-1 flex-col', app.view !== 'sessions' && 'hidden']}>
 	<!-- Focus needs a session: its key bar holds the way back. -->
-	{#if viewport.phone && !(viewport.focus && app.shown)}<SessionHeader />{/if}
+	{#if viewport.phone && !(viewport.bare && app.shown)}<SessionHeader />{/if}
 	<div class="flex min-h-12 shrink-0 flex-wrap items-center gap-2.5 border-b border-line-1 px-4 py-1.5 max-md:hidden">
 		<h1 class="sr-only">Sessions</h1>
 		<Button variant="primary" icon="plus" onclick={() => (app.newSessionOpen = true)}>New session</Button>
@@ -73,6 +92,9 @@
 		data-desktop
 		{@attach measure}
 		role="presentation"
+		ontouchstart={swipeStart}
+		ontouchend={swipeEnd}
+		ontouchcancel={() => (swipe = null)}
 		ondragover={(e) => {
 			if (!e.dataTransfer?.types.includes(OPEN_DRAG)) return;
 			e.preventDefault();

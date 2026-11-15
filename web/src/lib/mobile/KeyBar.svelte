@@ -11,18 +11,17 @@
 	/** The field's text before the last edit, to find what a key added while a modifier is armed. */
 	let prev = '';
 	/** In focus the header's mark is gone: the focus button carries it. */
-	const otherWaits = $derived(viewport.focus && app.windows.some((w) => w !== win && w.prompts.length));
+	const otherWaits = $derived(viewport.bare && app.windows.some((w) => w !== win && w.prompts.length));
 	const off = $derived(win.busy || win.info.exited || !win.connected);
 
-	// Arrows and Enter as icons: the mono font has no arrow glyphs.
+	// Arrows as icons: the mono font has no arrow glyphs. Enter is the send button with an empty field.
 	const keys: { key: KeyName | 'ctrl' | 'alt'; label: string; icon?: IconName; name: string }[] = [
 		{ key: 'esc', label: 'esc', name: 'Escape' },
-		{ key: 'tab', label: 'tab', name: 'Tab' },
-		{ key: 'ctrl', label: 'ctrl', name: 'Control, for the next key' },
-		{ key: 'alt', label: 'alt', name: 'Alt, for the next key' },
 		{ key: 'up', label: '', icon: 'arrowUp', name: 'Up arrow' },
 		{ key: 'down', label: '', icon: 'arrowDown', name: 'Down arrow' },
-		{ key: 'enter', label: '', icon: 'enter', name: 'Enter' }
+		{ key: 'tab', label: 'tab', name: 'Tab' },
+		{ key: 'ctrl', label: 'ctrl', name: 'Control, for the next key' },
+		{ key: 'alt', label: 'alt', name: 'Alt, for the next key' }
 	];
 
 	function press(key: KeyName | 'ctrl' | 'alt') {
@@ -74,17 +73,38 @@
 		setTimeout(() => win.input?.(enter), 40);
 	}
 
+	/** A session switch with the keyboard up keeps it up: the new bar takes the focus. */
+	function keepKeyboard(node: HTMLInputElement) {
+		if (viewport.keyboard && !node.disabled) node.focus();
+	}
+
 	/** Keeps the focus (and the on-screen keyboard) where it is when a key is tapped. */
 	const keepFocus = (e: MouseEvent) => e.preventDefault();
 </script>
 
 <!-- Hidden while a card waits: on a short phone with the keyboard open the card needs the room. -->
 <form
+	data-keys
 	onsubmit={submit}
 	aria-label="Keys for the session"
-	class={['flex shrink-0 flex-col gap-[6px] border-t border-line-1 bg-surface-1 p-[6px]', win.prompts.length && !win.info.exited && 'hidden']}
+	class={['flex shrink-0 items-center gap-[6px] border-t border-line-1 bg-surface-1 p-[6px]', win.prompts.length && !win.info.exited && 'hidden']}
 >
-	<div class="flex gap-[4px]">
+	<button
+		type="button"
+		aria-label={viewport.focus ? (otherWaits ? 'Show the header and tabs; another session waits for your answer' : 'Show the header and tabs') : 'Focus: hide the header and tabs'}
+		aria-pressed={viewport.focus}
+		onmousedown={keepFocus}
+		onclick={() => viewport.toggleFocus()}
+		class={[
+			'relative grid h-[44px] w-[40px] shrink-0 place-items-center rounded-[8px] border select-none',
+			viewport.focus ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
+		]}
+	>
+		<Icon name={viewport.focus ? 'restore' : 'maximize'} size={16} />
+		{#if otherWaits}<span class="absolute top-[6px] right-[6px] size-[8px] rounded-full bg-amber ring-2 ring-amber/40"></span>{/if}
+	</button>
+	<!-- One line with the field; the keys past the edge slide in. -->
+	<div role="group" aria-label="Keys" class="flex max-w-[44%] shrink-0 gap-[4px] overflow-x-auto [scrollbar-width:none]">
 		{#each keys as k (k.key)}
 			{@const sticky = k.key === 'ctrl' || k.key === 'alt'}
 			{@const on = (k.key === 'ctrl' && mods.ctrl) || (k.key === 'alt' && mods.alt)}
@@ -96,47 +116,32 @@
 				onmousedown={keepFocus}
 				onclick={() => press(k.key)}
 				class={[
-					'grid h-[44px] min-w-0 flex-1 place-items-center rounded-[6px] border font-mono text-[12px] select-none disabled:opacity-50',
+					'grid h-[44px] w-[38px] shrink-0 place-items-center rounded-[6px] border font-mono text-[12px] select-none disabled:opacity-50',
 					on ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
 				]}>{#if k.icon}<Icon name={k.icon} />{:else}{k.label}{/if}</button
 			>
 		{/each}
 	</div>
-	<div class="flex items-center gap-[6px]">
-		<button
-			type="button"
-			aria-label={viewport.focus ? (otherWaits ? 'Show the header and tabs; another session waits for your answer' : 'Show the header and tabs') : 'Focus: hide the header and tabs'}
-			aria-pressed={viewport.focus}
-			onmousedown={keepFocus}
-			onclick={() => viewport.toggleFocus()}
-			class={[
-				'relative grid size-[44px] shrink-0 place-items-center rounded-[8px] border select-none',
-				viewport.focus ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
-			]}
-		>
-			<Icon name={viewport.focus ? 'restore' : 'maximize'} size={16} />
-			{#if otherWaits}<span class="absolute top-[6px] right-[6px] size-[8px] rounded-full bg-amber ring-2 ring-amber/40"></span>{/if}
-		</button>
-		<input
-			type="text"
-			bind:value={text}
-			{onbeforeinput}
-			{oninput}
-			disabled={off}
-			aria-label="Text to send"
-			placeholder={'Type to ' + win.title}
-			enterkeyhint="send"
-			autocomplete="off"
-			autocapitalize="off"
-			spellcheck="false"
-			class="h-[44px] min-w-0 flex-1 rounded-[8px] border border-line-2 bg-inset px-[12px] font-mono text-[16px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-brand disabled:opacity-50"
-		/>
-		<button
-			type="submit"
-			aria-label={text ? 'Send the line and Enter' : 'Send Enter'}
-			disabled={off}
-			onmousedown={keepFocus}
-			class="grid size-[44px] shrink-0 place-items-center rounded-[8px] bg-ink-1 text-surface-0 disabled:opacity-50"><Icon name="arrowUp" size={18} /></button
-		>
-	</div>
+	<input
+		type="text"
+		bind:value={text}
+		{@attach keepKeyboard}
+		{onbeforeinput}
+		{oninput}
+		disabled={off}
+		aria-label={'Text to send to ' + win.title}
+		placeholder="Type"
+		enterkeyhint="send"
+		autocomplete="off"
+		autocapitalize="off"
+		spellcheck="false"
+		class="h-[44px] min-w-0 flex-1 rounded-[8px] border border-line-2 bg-inset px-[10px] font-mono text-[16px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-brand disabled:opacity-50"
+	/>
+	<button
+		type="submit"
+		aria-label={text ? 'Send the line and Enter' : 'Send Enter'}
+		disabled={off}
+		onmousedown={keepFocus}
+		class="grid h-[44px] w-[40px] shrink-0 place-items-center rounded-[8px] bg-ink-1 text-surface-0 disabled:opacity-50"><Icon name="enter" size={18} /></button
+	>
 </form>

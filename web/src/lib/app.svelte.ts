@@ -4,6 +4,7 @@ import { api, ApiError, loadLayout, local, sessionKey, setLocal, setUnauthorized
 import type { Folder, Me, RunningDoc, RunOptions, SavedDoc, SessionInfo, SettingsDoc, SSHOptions, State } from './api';
 // Also applies the interface font from this browser's settings.
 import { termFont } from './termFont.svelte';
+import { viewport } from './viewport.svelte';
 import { applyZone, DEFAULTS, edgeAt, fromRects, has, insertAuto, layout, moveEdge, prune, remove, rename, sanitize, zoneAt as zoneUnder, type Node, type Rect, type Shown, type Zone } from './tiling';
 
 export { MIN_H, MIN_W } from './tiling';
@@ -591,6 +592,17 @@ class App {
 			this.retile(true);
 		}
 		this.focus(w);
+	}
+
+	/** Shows the next (1) or previous (-1) session of the active tab, around the ends. */
+	step(by: 1 | -1) {
+		const list = this.tabWindows(this.activeTab);
+		const cur = this.shown;
+		if (list.length < 2 || !cur) return;
+		const next = list[(list.indexOf(cur) + by + list.length) % list.length];
+		this.show(next);
+		// Without the header nothing else says which session this is.
+		if (viewport.bare) this.notify(`${this.windows.indexOf(next) + 1}  ${next.title}`);
 	}
 
 	hide(w: Win) {

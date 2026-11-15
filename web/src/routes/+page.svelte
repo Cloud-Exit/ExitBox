@@ -17,7 +17,7 @@
 	app.boot();
 
 	/** Phone focus is on and a session fills the screen. */
-	const focused = $derived(viewport.phone && viewport.focus && !!app.shown && app.view === 'sessions' && !app.sessionsOpen);
+	const focused = $derived(viewport.phone && viewport.bare && !!app.shown && app.view === 'sessions' && !app.sessionsOpen);
 </script>
 
 <svelte:window
