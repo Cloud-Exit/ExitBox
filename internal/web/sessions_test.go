@@ -605,3 +605,109 @@ func TestInfoJSONEmptyLists(t *testing.T) {
 		}
 	}
 }
+
+// queued returns what a viewer has waiting, without blocking.
+func queued(sub *subscriber) []any {
+	var out []any
+	for {
+		select {
+		case v := <-sub.out:
+			out = append(out, v)
+		default:
+			return out
+		}
+	}
+}
+
+func TestAttachSendsSizeOnlyWhenKnown(t *testing.T) {
+	m := NewManager(nil, nil, t.TempDir())
+	s := m.newSession(SessionInfo{ID: "a"})
+	// Restored sessions do not know the size until a browser sets it.
+	_, sub := s.Attach()
+	if sub.hello != "" || len(queued(sub)) != 0 {
+		t.Fatalf("unknown size, hello %q", sub.hello)
+	}
+	s.Detach(sub)
+	s.mu.Lock()
+	s.size = termSize{80, 24}
+	s.mu.Unlock()
+	_, first := s.Attach()
+	defer s.Detach(first)
+	if first.hello != `{"t":"size","c":80,"r":24}` {
+		t.Fatalf("alone: hello %q", first.hello)
+	}
+	_, second := s.Attach()
+	defer s.Detach(second)
+	if second.hello != `{"t":"size","c":80,"r":24,"others":true}` {
+		t.Fatalf("with another viewer: hello %q", second.hello)
+	}
+	if got := queued(first); len(got) != 0 {
+		t.Fatalf("an attach queued %v for the viewer already there", got)
+	}
+}
+
+func TestFreeOnlyWhenTheSizeHolderLeaves(t *testing.T) {
+	m := NewManager(nil, nil, t.TempDir())
+	s := m.newSession(SessionInfo{ID: "a"})
+	_, a := s.Attach()
+	_, b := s.Attach()
+	_, c := s.Attach()
+	defer s.Detach(c)
+	s.mu.Lock()
+	s.sizer = a
+	s.mu.Unlock()
+	// Viewers that do not hold the size change nothing.
+	s.Release(b)
+	s.Detach(b)
+	for name, sub := range map[string]*subscriber{"a": a, "c": c} {
+		if got := queued(sub); len(got) != 0 {
+			t.Fatalf("%s heard %v when a non-holder left", name, got)
+		}
+	}
+	s.Release(a)
+	if got := queued(a); len(got) != 0 {
+		t.Fatalf("the releasing viewer heard %v", got)
+	}
+	if got := queued(c); len(got) != 1 || got[0] != freeMsg {
+		t.Fatalf("other viewer heard %v, want free", got)
+	}
+	// Released: a later leave is not a second free.
+	s.Detach(a)
+	if got := queued(c); len(got) != 0 {
+		t.Fatalf("heard %v after the holder had released", got)
+	}
+	s.mu.Lock()
+	s.sizer = c
+	s.mu.Unlock()
+	_, d := s.Attach()
+	defer s.Detach(d)
+	s.Detach(c)
+	if got := queued(d); len(got) != 1 || got[0] != freeMsg {
+		t.Fatalf("holder left: heard %v, want free", got)
+	}
+}
+
+func TestFailedResizeKeepsSize(t *testing.T) {
+	m := NewManager(nil, nil, t.TempDir())
+	s := m.newSession(SessionInfo{ID: "a"})
+	s.size = termSize{80, 24}
+	_, sub := s.Attach()
+	defer s.Detach(sub)
+	queued(sub)
+	if err := s.Resize(1, 24); err == nil {
+		t.Fatal("out of range size accepted")
+	}
+	// No host: the frame fails, so no viewer may hear the size.
+	if err := s.Resize(100, 30); err == nil {
+		t.Fatal("resize without a host succeeded")
+	}
+	if got := queued(sub); len(got) != 0 {
+		t.Fatalf("failed resizes announced %v", got)
+	}
+	s.mu.Lock()
+	z := s.size
+	s.mu.Unlock()
+	if z != (termSize{80, 24}) {
+		t.Fatalf("size %v after failed resizes, want 80x24", z)
+	}
+}
