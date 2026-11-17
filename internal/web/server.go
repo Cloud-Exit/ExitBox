@@ -413,7 +413,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // attachHandler streams a session over a WebSocket. Output goes out as
 // binary frames: first the replay, then {"t":"live"}, then live output. The browser sends JSON text frames: {"t":"i","d":"..."}
 // for keys and {"t":"r","c":cols,"r":rows} for a resize. The server sends
-// {"t":"exit","code":N} when the process ends.
+// {"t":"size","c":cols,"r":rows,"others":true} after the replay when the size
+// is known (others: another viewer is attached), {"t":"size","c":cols,"r":rows}
+// after every resize, {"t":"free"} when the viewer holding the size released
+// it ({"t":"release"}) or left, and {"t":"exit","code":N} when the process ends.
 func (s *Server) attachHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess := s.sessions.Get(r.PathValue("id"))
@@ -512,6 +515,12 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session, key string) {
 			return
 		}
 	}
+	// Before live, so a page knows whether others view the session when it decides to take the size.
+	if sub.hello != "" {
+		if err := send(sub.hello); err != nil {
+			return
+		}
+	}
 	// The replay is over. It holds terminal queries (tmux asks the terminal
 	// for its cursor position, device attributes and modes when it
 	// attaches); the browser answers queries only after this marker, or
@@ -541,9 +550,11 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session, key string) {
 					return
 				}
 			case "r":
-				if err := sess.Resize(msg.C, msg.R); err != nil {
+				if err := sess.ResizeFrom(sub, msg.C, msg.R); err != nil {
 					s.logf("web: resize session %s: %v", sess.Info().ID, err)
 				}
+			case "release":
+				sess.Release(sub)
 			case "answer":
 				s.prompts.answerFrom(pv, id, msg.ID, msg.Allow, msg.Password)
 			}
@@ -552,8 +563,8 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session, key string) {
 
 	for {
 		select {
-		case chunk := <-sub.out:
-			if err := send(chunk); err != nil {
+		case m := <-sub.out:
+			if err := send(m); err != nil {
 				return
 			}
 		case m := <-pv.out:
@@ -571,8 +582,8 @@ func (s *Server) stream(conn *websocket.Conn, sess *Session, key string) {
 		case <-sess.Done():
 			for {
 				select {
-				case chunk := <-sub.out:
-					if err := send(chunk); err != nil {
+				case m := <-sub.out:
+					if err := send(m); err != nil {
 						return
 					}
 					continue

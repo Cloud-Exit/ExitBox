@@ -597,6 +597,9 @@ func readUntil(t *testing.T, ws *websocket.Conn, want string) (string, map[strin
 					sawLive = true
 					continue
 				}
+				if msg["t"] == "size" {
+					continue
+				}
 				if want == "" {
 					return got.String(), msg
 				}
@@ -687,6 +690,139 @@ func TestSessionOverWebSocket(t *testing.T) {
 	}
 	if args, _ := rec.last(); !reflect.DeepEqual(args, []string{"run", "claude", "--name", "x", "--env", WebSessionEnv + "=" + out["id"].(string)}) {
 		t.Fatalf("restart ran %q", args)
+	}
+}
+
+// nextMsg returns the next JSON message other than live, skipping output.
+func nextMsg(t *testing.T, ws *websocket.Conn) map[string]any {
+	t.Helper()
+	if err := ws.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var frame []byte
+		if err := websocket.Message.Receive(ws, &frame); err != nil {
+			t.Fatalf("waiting for a message: %v", err)
+		}
+		if !bytes.HasPrefix(frame, []byte(`{"t":`)) {
+			continue
+		}
+		var msg map[string]any
+		if err := json.Unmarshal(frame, &msg); err != nil || msg["t"] == "live" {
+			continue
+		}
+		return msg
+	}
+}
+
+// wantSize reads the next message and checks it is the size cols x rows,
+// with others as given.
+func wantSize(t *testing.T, ws *websocket.Conn, cols, rows int, others bool) {
+	t.Helper()
+	msg := nextMsg(t, ws)
+	_, hasOthers := msg["others"]
+	if msg["t"] != "size" || msg["c"] != float64(cols) || msg["r"] != float64(rows) || hasOthers != others || (others && msg["others"] != true) {
+		t.Fatalf("got %v, want size %dx%d others %v", msg, cols, rows, others)
+	}
+}
+
+// startIdle starts a session that prints nothing, at 100x30.
+func startIdle(t *testing.T) (*Server, *httptest.Server, string) {
+	t.Helper()
+	s, st, ts := newTestServer(t, Options{Command: shellCommand(&recorder{}, "sleep 30")})
+	resp, out := do(t, ts, "POST", "/api/sessions", map[string]any{"dir": st.dirs[0], "agent": "claude", "name": "x", "cols": 100, "rows": 30}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	t.Cleanup(func() { _ = s.sessions.Close(id) })
+	return s, ts, id
+}
+
+func sendMsg(t *testing.T, ws *websocket.Conn, msg string) {
+	t.Helper()
+	if err := websocket.Message.Send(ws, msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResizeTellsEveryViewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	_, ts, id := startIdle(t)
+	var conns []*websocket.Conn
+	for i := 0; i < 2; i++ {
+		ws, err := dialSession(t, ts, id, ts.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = ws.Close() }()
+		// The size the session started at; the second viewer hears the first is there.
+		wantSize(t, ws, 100, 30, i > 0)
+		conns = append(conns, ws)
+	}
+	// Unknown types and an out of range size change nothing and keep the stream.
+	sendMsg(t, conns[0], `{"t":"nope"}`)
+	sendMsg(t, conns[0], `not json`)
+	sendMsg(t, conns[0], `{"t":"r","c":1,"r":20}`)
+	sendMsg(t, conns[0], `{"t":"r","c":90,"r":20}`)
+	for _, ws := range conns {
+		wantSize(t, ws, 90, 20, false)
+	}
+	sendMsg(t, conns[1], `{"t":"r","c":40,"r":12}`)
+	for _, ws := range conns {
+		wantSize(t, ws, 40, 12, false)
+	}
+	// A later viewer gets the size last set, not the start size.
+	ws3, err := dialSession(t, ts, id, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws3.Close() }()
+	wantSize(t, ws3, 40, 12, true)
+}
+
+func TestReleaseAndLeaveFreeTheSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	_, ts, id := startIdle(t)
+	a, err := dialSession(t, ts, id, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.Close() }()
+	wantSize(t, a, 100, 30, false)
+	b, err := dialSession(t, ts, id, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	wantSize(t, b, 100, 30, true)
+
+	sendMsg(t, a, `{"t":"r","c":90,"r":20}`)
+	wantSize(t, a, 90, 20, false)
+	wantSize(t, b, 90, 20, false)
+	// The holder releases: the other hears free, the holder does not.
+	sendMsg(t, a, `{"t":"release"}`)
+	if msg := nextMsg(t, b); msg["t"] != "free" {
+		t.Fatalf("other viewer got %v, want free", msg)
+	}
+	sendMsg(t, b, `{"t":"r","c":50,"r":15}`)
+	wantSize(t, a, 50, 15, false)
+	wantSize(t, b, 50, 15, false)
+	// A release from a viewer that does not hold the size is ignored.
+	sendMsg(t, a, `{"t":"release"}`)
+	sendMsg(t, a, `{"t":"r","c":60,"r":16}`)
+	wantSize(t, b, 60, 16, false)
+	wantSize(t, a, 60, 16, false)
+	// The holder leaves: the other hears free.
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if msg := nextMsg(t, b); msg["t"] != "free" {
+		t.Fatalf("after the holder left got %v, want free", msg)
 	}
 }
 

@@ -98,6 +98,12 @@ type Session struct {
 	queries queryTracker
 	// exitAt is when the host saw the process exit, once it said so.
 	exitAt *time.Time
+	// size is the terminal size last sent to the host; zero when unknown (after a restore).
+	size termSize
+	// rmu keeps the order viewers hear sizes in the order the host applied them.
+	rmu sync.Mutex
+	// sizer is the viewer whose size is in force; nil when none is known.
+	sizer *subscriber
 
 	// gone: this server let go of the session (Disconnect, close); no
 	// more reconnects or info writes.
@@ -112,8 +118,33 @@ type Session struct {
 	lastSaved []byte
 }
 
+// termSize is a terminal size in cells.
+type termSize struct{ cols, rows int }
+
+// sizeMsg tells a viewer the terminal size, so it draws the output at that
+// size; others (attach only) says another viewer shows the session already.
+func sizeMsg(z termSize, others bool) (string, error) {
+	data, err := json.Marshal(struct {
+		T      string `json:"t"`
+		C      int    `json:"c"`
+		R      int    `json:"r"`
+		Others bool   `json:"others,omitempty"`
+	}{"size", z.cols, z.rows, others})
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// freeMsg tells the viewers that nobody holds the size any more.
+const freeMsg = `{"t":"free"}`
+
 type subscriber struct {
-	out  chan []byte
+	// hello is the size message sent after the replay, before {"t":"live"}; empty when the size is unknown.
+	hello string
+	// out carries output ([]byte, binary frames) and JSON messages (string,
+	// text frames) in one queue, so a size lands before the redraw made for it.
+	out  chan any
 	gone chan struct{}
 	once sync.Once
 }
@@ -143,22 +174,57 @@ func (s *Session) Info() SessionInfo {
 // Done is closed when the process has exited.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
-// Attach registers a viewer. It returns the recent output and the viewer;
-// call Detach when the viewer leaves.
+// Attach registers a viewer. It returns the recent output and the viewer,
+// whose hello holds the terminal size when it is known; call Detach when the
+// viewer leaves.
 func (s *Session) Attach() ([]byte, *subscriber) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := &subscriber{out: make(chan []byte, subscriberBuffer), gone: make(chan struct{})}
+	sub := &subscriber{out: make(chan any, subscriberBuffer), gone: make(chan struct{})}
+	if s.size.cols > 0 {
+		if msg, err := sizeMsg(s.size, len(s.subs) > 0); err == nil {
+			sub.hello = msg
+		} else {
+			s.m.logf("web: session %s: %v", s.info.ID, err)
+		}
+	}
 	s.subs[sub] = struct{}{}
 	return append([]byte(nil), s.replay...), sub
 }
 
-// Detach removes a viewer.
+// Detach removes a viewer. When it held the size, the others hear it is free.
 func (s *Session) Detach(sub *subscriber) {
 	s.mu.Lock()
 	delete(s.subs, sub)
+	s.freeLocked(sub)
 	s.mu.Unlock()
 	sub.drop()
+}
+
+// Release is a viewer letting go of the size (its page went to the background).
+func (s *Session) Release(sub *subscriber) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.freeLocked(sub)
+}
+
+// freeLocked tells every viewer but sub that the size is free, if sub held it.
+func (s *Session) freeLocked(sub *subscriber) {
+	if sub == nil || s.sizer != sub {
+		return
+	}
+	s.sizer = nil
+	for other := range s.subs {
+		if other == sub {
+			continue
+		}
+		select {
+		case other.out <- freeMsg:
+		default:
+			delete(s.subs, other)
+			other.drop()
+		}
+	}
 }
 
 // hostWriteTimeout bounds one frame to a host; a var for tests.
@@ -197,6 +263,8 @@ func (s *Session) lost(conn net.Conn) {
 	s.conn = nil
 	// The host sends its replay on the new connection; viewers reattach to it.
 	s.replay = nil
+	// Every viewer reattaches: their attach messages decide the size, not a free.
+	s.sizer = nil
 	for sub := range s.subs {
 		delete(s.subs, sub)
 		sub.drop()
@@ -239,18 +307,52 @@ func (s *Session) Input(p []byte) error {
 	return s.Write(p)
 }
 
-// Resize sets the terminal size. The process gets SIGWINCH.
+// Resize sets the terminal size. The process gets SIGWINCH, and every
+// viewer hears the new size: browsers of other sizes draw at it.
 func (s *Session) Resize(cols, rows int) error {
+	return s.ResizeFrom(nil, cols, rows)
+}
+
+// ResizeFrom is Resize asked by viewer sub, which then holds the size.
+func (s *Session) ResizeFrom(sub *subscriber, cols, rows int) error {
 	if cols < 2 || rows < 2 || cols > 1000 || rows > 1000 {
 		return errors.New("terminal size out of range")
 	}
 	if s.Info().Exited {
 		return nil
 	}
+	z := termSize{cols, rows}
+	msg, err := sizeMsg(z, false)
+	if err != nil {
+		return err
+	}
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint32(b[:4], uint32(cols))
 	binary.BigEndian.PutUint32(b[4:], uint32(rows))
-	return s.frame(frameResize, b)
+	s.rmu.Lock()
+	defer s.rmu.Unlock()
+	if err := s.frame(frameResize, b); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.size = z
+	s.sizer = sub
+	s.sendLocked(msg)
+	return nil
+}
+
+// sendLocked queues v for every viewer; one too far behind is dropped and
+// reattaches with the replay.
+func (s *Session) sendLocked(v any) {
+	for sub := range s.subs {
+		select {
+		case sub.out <- v:
+		default:
+			delete(s.subs, sub)
+			sub.drop()
+		}
+	}
 }
 
 // update changes the session's info under its lock and saves it, so a
@@ -319,15 +421,7 @@ func (s *Session) read(conn net.Conn) {
 			if over := len(s.replay) - replayBytes; over > 0 {
 				s.replay = append([]byte(nil), s.replay[over:]...)
 			}
-			for sub := range s.subs {
-				select {
-				case sub.out <- payload:
-				default:
-					// Too far behind: drop it; it reattaches with the replay.
-					delete(s.subs, sub)
-					sub.drop()
-				}
-			}
+			s.sendLocked(payload)
 			s.mu.Unlock()
 		case frameExitAt:
 			if len(payload) == 8 {
@@ -482,6 +576,8 @@ func (m *Manager) Start(info SessionInfo, cols, rows int, extra ...string) (*Ses
 		return nil, err
 	}
 	s := m.newSession(info)
+	// The host opens its pty at this size.
+	s.size = termSize{cols, rows}
 	s.save()
 	exited, err := m.spawn(m.dir, id)
 	if err != nil {

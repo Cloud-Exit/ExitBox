@@ -6,8 +6,10 @@
 	import { app, MIN_H, MIN_W, sessionStatus, type Win, type Zone } from './app.svelte';
 	import { viewport } from './viewport.svelte';
 	import { withMods } from './mobile/keys.svelte';
+	import { touchScroll } from './mobile/touchScroll';
 	import { copyText, parseOsc52 } from './clipboard';
 	import { termFont } from './termFont.svelte';
+	import { claimsOnConnect, claimsOnFree, claimSize, fitScale, fitSize, heardSize, initialSize, mayFit, reconnectSize, releaseSize, type SizeState } from './termSize';
 	import SessionMenu, { confirmRebuild, detach } from './SessionMenu.svelte';
 	import PromptCard from './PromptCard.svelte';
 	import AgentIcon from './AgentIcon.svelte';
@@ -26,6 +28,13 @@
 	let applyFont: (() => void) | null = null;
 	let cols = 120;
 	let rows = 36;
+	/** Who sets the session's size when other browsers show it too. */
+	let sizing = $state.raw<SizeState>(initialSize());
+	/** Fits the session to this window and makes it the size owner; force sends even an unchanged size. */
+	let takeSize: ((force?: boolean) => void) | null = null;
+	const sizedElsewhere = $derived(!sizing.owner && sizing.pty !== null);
+	/** Below 1 while another screen's larger size is shown whole in this window. */
+	let scale = $state(1);
 
 	const focused = $derived(app.focusedId === win.id);
 	/** Tiled by the dock layout: resizing moves splits, dragging reorders. */
@@ -210,7 +219,6 @@
 		/** True while the replay of a (re)connect is being written. */
 		let replaying = true;
 		let retry = 0;
-		let lastSize = '';
 		let timer: ReturnType<typeof setTimeout> | null = null;
 
 		const send = (msg: { t: string; [k: string]: unknown }) => {
@@ -234,6 +242,7 @@
 		// The phone key bar types through here, under the same rules as the keyboard.
 		win.input = (d) => {
 			if (win.busy || ws?.readyState !== WebSocket.OPEN) return false;
+			takeSize?.();
 			send({ t: 'i', d });
 			t.scrollToBottom();
 			return true;
@@ -242,6 +251,8 @@
 
 		const fitNow = () => {
 			if (disposed || win.min || app.view !== 'sessions' || !node.clientWidth) return;
+			// Output is drawn for another screen's size: refitting would garble it.
+			if (!mayFit(sizing)) return;
 			try {
 				fit.fit();
 			} catch {
@@ -251,11 +262,23 @@
 			rows = t.rows;
 			win.cols = cols;
 			win.rows = rows;
-			const size = cols + 'x' + rows;
-			if (size !== lastSize && ws?.readyState === WebSocket.OPEN) {
-				lastSize = size;
-				send({ t: 'r', c: cols, r: rows });
-			}
+			// A page in the background never sets the size: only a screen in use does.
+			if (ws?.readyState !== WebSocket.OPEN || document.visibilityState !== 'visible') return;
+			const r = fitSize(sizing, { cols, rows });
+			sizing = r.state;
+			if (r.send) send({ t: 'r', c: cols, r: rows });
+		};
+		const updateScale = () => {
+			if (disposed) return;
+			const screen = t.element?.querySelector<HTMLElement>('.xterm-screen');
+			scale = mayFit(sizing) || !screen ? 1 : fitScale({ w: node.clientWidth, h: node.clientHeight }, { w: screen.offsetWidth, h: screen.offsetHeight });
+		};
+		takeSize = (force = false) => {
+			// A page in the background sends no size: owning it there would only refit this screen away from the session's.
+			if (disposed || document.visibilityState !== 'visible') return;
+			sizing = claimSize(sizing, force);
+			fitNow();
+			updateScale();
 		};
 		let pending = false;
 		const fitSoon = () => {
@@ -264,8 +287,11 @@
 			requestAnimationFrame(() => {
 				pending = false;
 				fitNow();
+				updateScale();
 			});
 		};
+		/** The window a free size goes to: the one a phone shows, or any visible one on a desktop. */
+		const inFront = () => (viewport.phone ? app.shown === win : win.tab === app.activeTab && !win.min && app.view === 'sessions');
 
 		let connectedOnce = false;
 		const connect = () => {
@@ -283,9 +309,12 @@
 			// the session, or they show up as typed text in the agent's prompt.
 			replaying = true;
 			let replayParsing = 0;
+			/** The size message before live: whether others already view the session. */
+			let attach: { others: boolean } | null = null;
+			let live = false;
 			sock.onopen = () => {
 				retry = 0;
-				lastSize = '';
+				sizing = reconnectSize(sizing);
 				win.connected = true;
 				fitNow();
 			};
@@ -297,6 +326,9 @@
 							// Answer queries again once xterm has parsed the replay.
 							if (replayParsing === 0) replaying = false;
 							else t.write('', () => (replaying = false));
+							// Loading the page is no use of it: with others watching, the size stays theirs.
+							if (!live && claimsOnConnect(document.visibilityState === 'visible', attach)) takeSize?.(true);
+							live = true;
 						}
 						if (msg?.t === 'exit') {
 							win.prompts = [];
@@ -305,6 +337,18 @@
 						if (msg?.t === 'prompt' && typeof msg.id === 'string' && !win.prompts.some((p) => p.id === msg.id)) {
 							win.prompts = [...win.prompts, { id: msg.id, kind: msg.kind, agent: msg.agent || win.info.agent, workspace: msg.workspace ?? '', subject: msg.subject ?? '' }];
 						}
+						if (msg?.t === 'size' && typeof msg.c === 'number' && typeof msg.r === 'number') {
+							if (!live) attach = { others: msg.others === true };
+							const r = heardSize(sizing, { cols: msg.c, rows: msg.r });
+							sizing = r.state;
+							if (r.resize) {
+								if (t.cols !== r.resize.cols || t.rows !== r.resize.rows) t.resize(r.resize.cols, r.resize.rows);
+								cols = win.cols = t.cols;
+								rows = win.rows = t.rows;
+							}
+							updateScale();
+						}
+						if (msg?.t === 'free' && claimsOnFree(sizing) && document.visibilityState === 'visible' && inFront()) takeSize?.();
 						if (msg?.t === 'prompt-done') win.prompts = win.prompts.filter((p) => p.id !== msg.id);
 						if (msg?.t === 'prompt-error') {
 							const p = win.prompts.find((x) => x.id === msg.id);
@@ -356,6 +400,29 @@
 		};
 		document.addEventListener('visibilitychange', reconnectNow);
 		window.addEventListener('online', reconnectNow);
+		const takeOnShow = () => {
+			if (ws?.readyState !== WebSocket.OPEN) return;
+			if (document.visibilityState !== 'visible') {
+				// Hand the size back while away, so a screen in use gets it.
+				if (sizing.owner) {
+					send({ t: 'release' });
+					sizing = releaseSize(sizing);
+				}
+				return;
+			}
+			// Back on this screen: the window in front takes the size, the others keep what they show.
+			if (viewport.phone ? app.shown === win : app.focusedId === win.id) takeSize?.();
+			// Nobody took it meanwhile: say again that this window holds it.
+			else if (sizing.owner) fitNow();
+		};
+		document.addEventListener('visibilitychange', takeOnShow);
+		// Typing into this terminal takes the size; a lone modifier (Cmd+Tab away) does not.
+		const takeOnKey = (e: KeyboardEvent) => {
+			if (!['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) takeSize?.();
+		};
+		const takeOnPaste = () => takeSize?.();
+		node.addEventListener('keydown', takeOnKey, true);
+		node.addEventListener('paste', takeOnPaste, true);
 
 		const dataSub = t.onData((d) => {
 			// The phone key bar's sticky ctrl and alt apply to on-screen keyboard keys too.
@@ -397,6 +464,7 @@
 		};
 		// Capture: runs before xterm, which may select a word on this press.
 		node.addEventListener('mousedown', selectStart, true);
+		const stopTouchScroll = touchScroll(node, t);
 		// xterm sends Shift+Enter as a plain carriage return, so the agent
 		// would submit. Send a line feed instead (what Ctrl+J sends): Claude
 		// Code, Codex and OpenCode read it as a newline in the prompt.
@@ -441,6 +509,10 @@
 			fitSoon();
 		});
 		ro.observe(node);
+		// xterm sizes its screen element on resize and font changes; the scale follows it.
+		const screenRo = new ResizeObserver(updateScale);
+		const screenEl = t.element?.querySelector('.xterm-screen');
+		if (screenEl) screenRo.observe(screenEl);
 		document.fonts?.ready.then(remeasure);
 		applyFont = () => {
 			t.options.fontFamily = termFont.css;
@@ -459,11 +531,17 @@
 			if (timer) clearTimeout(timer);
 			document.removeEventListener('visibilitychange', reconnectNow);
 			window.removeEventListener('online', reconnectNow);
+			document.removeEventListener('visibilitychange', takeOnShow);
+			node.removeEventListener('keydown', takeOnKey, true);
+			node.removeEventListener('paste', takeOnPaste, true);
+			takeSize = null;
 			ro.disconnect();
+			screenRo.disconnect();
 			dataSub.dispose();
 			oscSub.dispose();
 			selSub.dispose();
 			node.removeEventListener('mousedown', selectStart, true);
+			stopTouchScroll();
 			document.removeEventListener('mouseup', selectEnd);
 			const s = ws;
 			ws = null;
@@ -738,7 +816,11 @@
 <section
 	data-win-id={win.id}
 	aria-label={win.title}
-	onpointerdown={() => app.focus(win)}
+	onpointerdown={() => {
+		app.focus(win);
+		takeSize?.();
+	}}
+	ontouchstart={() => takeSize?.()}
 	style:z-index={win.max ? 5000 + win.z : win.z}
 	style:left={win.max ? '0px' : win.x + 'px'}
 	style:top={win.max ? '0px' : win.y + 'px'}
@@ -836,7 +918,20 @@
 		tabindex="-1"
 		{@attach keyHold}
 	>
-		<div class="size-full" {@attach terminal}></div>
+		<!-- Clip, not hidden: focus must not scroll a wider terminal; a scaled one fits whole and needs no clip. -->
+		<div
+			class={['size-full', sizedElsewhere && scale === 1 && 'overflow-clip']}
+			style:transform={scale < 1 ? `scale(${scale})` : undefined}
+			style:transform-origin={scale < 1 ? 'top left' : undefined}
+			{@attach terminal}
+		></div>
+		{#if sizedElsewhere && !info.exited}
+			<!-- Top right, under the approval overlay: the cards sit at the bottom. -->
+			<div class="absolute top-2 right-3 z-[5] flex items-center gap-2 rounded-lg border border-line-2 bg-surface-1 py-1 pr-1 pl-2.5 text-[12px] text-ink-2 shadow-panel">
+				Sized for another screen
+				<Button size="sm" onclick={() => takeSize?.()}>Fit here</Button>
+			</div>
+		{/if}
 		{#if win.prompts.length && !info.exited}
 			<!-- Fades the session so the card stands out; the card has the keyboard anyway. -->
 			<div class="absolute inset-0 z-[5] bg-black/55 backdrop-blur-[1.5px]"></div>

@@ -91,20 +91,20 @@
 >
 	<button
 		type="button"
-		aria-label={viewport.focus ? (otherWaits ? 'Show the header and tabs; another session waits for your answer' : 'Show the header and tabs') : 'Focus: hide the header and tabs'}
-		aria-pressed={viewport.focus}
+		aria-label={viewport.bare ? (otherWaits ? 'Show the header and tabs; another session waits for your answer' : 'Show the header and tabs') : 'Focus: hide the header and tabs'}
+		aria-pressed={viewport.bare}
 		onmousedown={keepFocus}
 		onclick={() => viewport.toggleFocus()}
 		class={[
 			'relative grid h-[44px] w-[40px] shrink-0 place-items-center rounded-[8px] border select-none',
-			viewport.focus ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
+			viewport.bare ? 'border-brand bg-brand-soft text-ink-1' : 'border-line-2 bg-surface-2 text-ink-1 active:bg-surface-3'
 		]}
 	>
-		<Icon name={viewport.focus ? 'restore' : 'maximize'} size={16} />
+		<Icon name={viewport.bare ? 'restore' : 'maximize'} size={16} />
 		{#if otherWaits}<span class="absolute top-[6px] right-[6px] size-[8px] rounded-full bg-amber ring-2 ring-amber/40"></span>{/if}
 	</button>
-	<!-- One line with the field; the keys past the edge slide in. -->
-	<div role="group" aria-label="Keys" class="flex max-w-[44%] shrink-0 gap-[4px] overflow-x-auto [scrollbar-width:none]">
+	<!-- One line with the field; the keys past the edge slide in. A line being typed takes their place. -->
+	<div role="group" aria-label="Keys" class={['max-w-[33%] shrink-0 gap-[4px] overflow-x-auto [scrollbar-width:none]', text ? 'hidden' : 'flex']}>
 		{#each keys as k (k.key)}
 			{@const sticky = k.key === 'ctrl' || k.key === 'alt'}
 			{@const on = (k.key === 'ctrl' && mods.ctrl) || (k.key === 'alt' && mods.alt)}
