@@ -273,6 +273,19 @@
 					<span class="flex-1"></span>
 					<Button size="sm" variant="ghost" icon="lock" onclick={() => lock(v.workspace)}>Lock</Button>
 				</div>
+				<form
+					class="flex flex-wrap items-end gap-2.5"
+					onsubmit={(e) => {
+						e.preventDefault();
+						setSecret(v.workspace);
+					}}
+				>
+					<TextField label="New secret" mono placeholder="API_TOKEN" hint="Letters, digits and underscores." wrap="flex-[1_1_200px]" bind:value={c.newKey} />
+					<TextField label="Value" type="password" autocomplete="off" hint={c.keys.includes(c.newKey.trim()) ? 'Replaces the stored value.' : 'Hidden as you type.'} wrap="flex-[2_1_280px]" bind:value={c.newValue} />
+					<Button type="submit" variant="primary" icon="check" disabled={c.busy || !validKey(c.newKey.trim()) || !c.newValue}>
+						{c.keys.includes(c.newKey.trim()) ? 'Replace' : 'Store'}
+					</Button>
+				</form>
 				{#if c.keys.length}
 					<div class="flex flex-col overflow-hidden rounded-lg border border-line-1">
 						{#each c.keys as k (k)}
@@ -325,19 +338,6 @@
 				{:else}
 					<span class="text-xs text-ink-3">No secrets yet.</span>
 				{/if}
-				<form
-					class="flex flex-wrap items-end gap-2.5"
-					onsubmit={(e) => {
-						e.preventDefault();
-						setSecret(v.workspace);
-					}}
-				>
-					<TextField label="New secret" mono placeholder="API_TOKEN" hint="Letters, digits and underscores." wrap="flex-[1_1_200px]" bind:value={c.newKey} />
-					<TextField label="Value" type="password" autocomplete="off" hint={c.keys.includes(c.newKey.trim()) ? 'Replaces the stored value.' : 'Hidden as you type.'} wrap="flex-[2_1_280px]" bind:value={c.newValue} />
-					<Button type="submit" variant="primary" icon="check" disabled={c.busy || !validKey(c.newKey.trim()) || !c.newValue}>
-						{c.keys.includes(c.newKey.trim()) ? 'Replace' : 'Store'}
-					</Button>
-				</form>
 			{/if}
 
 			<div class="flex flex-wrap items-center justify-end gap-2">
