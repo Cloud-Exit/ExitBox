@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { codexQuestionInput, codexViewport, parseCodexQuestion } from './codexQuestions';
 	import { untrack } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
@@ -26,6 +27,7 @@
 	let busy = $state<'' | 'drag' | 'resize'>('');
 	let term: Terminal | null = null;
 	let applyFont: (() => void) | null = null;
+	let refreshCodexQuestion: (() => void) | null = null;
 	let cols = 120;
 	let rows = 36;
 	/** Who sets the session's size when other browsers show it too. */
@@ -51,6 +53,12 @@
 	});
 	const info = $derived(win.info);
 	const status = $derived(sessionStatus(win));
+	/** Only the phone's visible Codex pane needs touch controls or viewport inspection. */
+	const trackCodexQuestion = $derived(viewport.phone && app.view === 'sessions' && app.shown === win && win.info.agent === 'codex' && !win.busy && !win.info.exited && win.connected);
+	$effect(() => {
+		void trackCodexQuestion;
+		untrack(() => refreshCodexQuestion?.());
+	});
 
 	function termTheme() {
 		const cs = getComputedStyle(document.documentElement);
@@ -218,6 +226,48 @@
 		let disposed = false;
 		/** True while the replay of a (re)connect is being written. */
 		let replaying = true;
+		let parsing = 0;
+		let awaitingInputRedraw = false;
+		let consumedQuestion = '';
+		let expiresAt = Infinity;
+		let expiryQuestion = '';
+		let lastCountdown: number | undefined;
+		let deadline: ReturnType<typeof setTimeout> | null = null;
+		const currentQuestion = () => {
+			if (!trackCodexQuestion || document.hidden || disposed || replaying || parsing || awaitingInputRedraw || !win.connected || win.busy || win.info.exited || win.info.agent !== 'codex' || ws?.readyState !== WebSocket.OPEN) return null;
+			const screen = codexViewport(t);
+			const question = screen ? parseCodexQuestion(screen) : null;
+			if (question && (question.id !== expiryQuestion || question.countdown !== lastCountdown)) {
+				expiryQuestion = question.id;
+				lastCountdown = question.countdown;
+				expiresAt = question.countdown === undefined ? Infinity : Date.now() + question.countdown * 1000;
+			}
+			return Date.now() < expiresAt ? question : null;
+		};
+		const refreshQuestion = () => {
+			if (deadline) clearTimeout(deadline);
+			deadline = null;
+			const question = currentQuestion();
+			if (trackCodexQuestion && !document.hidden && !replaying && !parsing && !awaitingInputRedraw && (!question || question.id !== consumedQuestion)) consumedQuestion = '';
+			win.codexQuestion = question?.id === consumedQuestion ? null : question;
+			if (question?.countdown !== undefined) deadline = setTimeout(() => { win.codexQuestion = null; }, Math.max(0, expiresAt - Date.now()));
+		};
+		refreshCodexQuestion = refreshQuestion;
+		const parsedSub = t.onWriteParsed(refreshQuestion);
+		const scrollSub = t.onScroll(refreshQuestion);
+		win.focusTerminal = () => {
+			if (!disposed && !replaying && !win.busy && win.connected && !win.info.exited) { t.scrollToBottom(); t.focus(); }
+		};
+		win.answerCodex = (question, action) => {
+			if (win.codexQuestion?.id !== question.id || question.id === consumedQuestion) return false;
+			const key = codexQuestionInput(question, currentQuestion(), action);
+			if (key === null) { refreshQuestion(); return false; }
+			if (!win.input?.(key)) return false;
+			consumedQuestion = question.id;
+			win.codexQuestion = null;
+			if (action.kind === 'notes') t.focus();
+			return true;
+		};
 		let retry = 0;
 		let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -241,8 +291,10 @@
 		};
 		// The phone key bar types through here, under the same rules as the keyboard.
 		win.input = (d) => {
-			if (win.busy || ws?.readyState !== WebSocket.OPEN) return false;
+			if (replaying || win.busy || ws?.readyState !== WebSocket.OPEN) return false;
 			takeSize?.();
+			awaitingInputRedraw = true;
+			win.codexQuestion = null;
 			send({ t: 'i', d });
 			t.scrollToBottom();
 			return true;
@@ -308,6 +360,9 @@
 			// queries as it parses them; answers to the replay must not reach
 			// the session, or they show up as typed text in the agent's prompt.
 			replaying = true;
+			awaitingInputRedraw = false;
+			win.codexQuestion = null;
+			consumedQuestion = "";
 			let replayParsing = 0;
 			/** The size message before live: whether others already view the session. */
 			let attach: { others: boolean } | null = null;
@@ -324,8 +379,8 @@
 						const msg = JSON.parse(ev.data);
 						if (msg?.t === 'live') {
 							// Answer queries again once xterm has parsed the replay.
-							if (replayParsing === 0) replaying = false;
-							else t.write('', () => (replaying = false));
+							if (replayParsing === 0) { replaying = false; refreshQuestion(); }
+							else t.write('', () => { replaying = false; refreshQuestion(); });
 							// Loading the page is no use of it: with others watching, the size stays theirs.
 							if (!live && claimsOnConnect(document.visibilityState === 'visible', attach)) takeSize?.(true);
 							live = true;
@@ -371,12 +426,15 @@
 					replayParsing++;
 					t.write(new Uint8Array(ev.data), () => replayParsing--);
 				} else {
-					t.write(new Uint8Array(ev.data));
+					parsing++;
+					win.codexQuestion = null;
+					t.write(new Uint8Array(ev.data), () => { parsing--; awaitingInputRedraw = false; refreshQuestion(); });
 				}
 			};
 			sock.onclose = () => {
 				if (ws !== sock) return;
 				win.connected = false;
+				win.codexQuestion = null;
 				// The server sends them again on the next connection.
 				win.prompts = [];
 				if (disposed || win.info.exited) return;
@@ -401,6 +459,7 @@
 		document.addEventListener('visibilitychange', reconnectNow);
 		window.addEventListener('online', reconnectNow);
 		const takeOnShow = () => {
+			refreshQuestion();
 			if (ws?.readyState !== WebSocket.OPEN) return;
 			if (document.visibilityState !== 'visible') {
 				// Hand the size back while away, so a screen in use gets it.
@@ -426,7 +485,11 @@
 
 		const dataSub = t.onData((d) => {
 			// The phone key bar's sticky ctrl and alt apply to on-screen keyboard keys too.
-			if (!replaying) send({ t: 'i', d: viewport.phone ? withMods(d) : d });
+			if (!replaying) {
+				awaitingInputRedraw = true;
+				win.codexQuestion = null;
+				send({ t: 'i', d: viewport.phone ? withMods(d) : d });
+			}
 		});
 
 		let copyFailed = false;
@@ -547,6 +610,13 @@
 			ws = null;
 			s?.close();
 			win.answer = null;
+			refreshCodexQuestion = null;
+			parsedSub.dispose();
+			scrollSub.dispose();
+			if (deadline) clearTimeout(deadline);
+			win.codexQuestion = null;
+			win.focusTerminal = null;
+			win.answerCodex = null;
 			win.input = null;
 			win.appCursor = () => false;
 			win.prompts = [];
