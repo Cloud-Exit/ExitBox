@@ -1,5 +1,6 @@
 // App state shared by the components. The app is client-only (ssr = false),
 // so one module-level instance is safe.
+import type { CodexQuestion, CodexQuestionAction } from './codexQuestions';
 import { api, ApiError, loadLayout, local, sessionKey, setLocal, setUnauthorizedHandler } from './api';
 import type { Folder, Me, RunningDoc, RunOptions, SavedDoc, SessionInfo, SettingsDoc, SSHOptions, State } from './api';
 // Also applies the interface font from this browser's settings.
@@ -60,6 +61,10 @@ export class Win {
 	rows = 36;
 	/** Writes keys to the session as typed in its terminal; false when they could not be sent. */
 	input: ((data: string) => boolean) | null = null;
+	/** The current parsed Codex question; unavailable during replay or disconnection. */
+	codexQuestion = $state.raw<CodexQuestion | null>(null);
+	focusTerminal: (() => void) | null = null;
+	answerCodex: ((question: CodexQuestion, action: CodexQuestionAction) => boolean) | null = null;
 	/** The session asked for application cursor keys (arrows send ESC O A). */
 	appCursor: () => boolean = () => false;
 

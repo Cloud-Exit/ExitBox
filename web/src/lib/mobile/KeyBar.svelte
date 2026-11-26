@@ -2,6 +2,8 @@
 	import { app, type Win } from '../app.svelte';
 	import { viewport } from '../viewport.svelte';
 	import Icon from '../ui/Icon.svelte';
+	import Button from '../ui/Button.svelte';
+	import type { CodexQuestionAction } from '../codexQuestions';
 	import type { IconName } from '../ui/icons';
 	import { keyBytes, mods, withMods, type KeyName } from './keys.svelte';
 
@@ -12,6 +14,8 @@
 	let prev = '';
 	/** In focus the header's mark is gone: the focus button carries it. */
 	const otherWaits = $derived(viewport.bare && app.windows.some((w) => w !== win && w.prompts.length));
+	const codex = $derived(win.info.agent === 'codex');
+	const question = $derived(codex && !win.busy && win.connected && !win.info.exited ? win.codexQuestion : null);
 	const off = $derived(win.busy || win.info.exited || !win.connected);
 
 	// Arrows as icons: the mono font has no arrow glyphs. Enter is the send button with an empty field.
@@ -23,6 +27,15 @@
 		{ key: 'ctrl', label: 'ctrl', name: 'Control, for the next key' },
 		{ key: 'alt', label: 'alt', name: 'Alt, for the next key' }
 	];
+
+	function answer(action: CodexQuestionAction) {
+		if (question) win.answerCodex?.(question, action);
+	}
+
+	function focusEditor() { win.focusTerminal?.(); }
+
+	/** A session switch with a phone keyboard open keeps the actual Codex editor focused. */
+	function keepTerminalKeyboard() { if (codex && viewport.keyboard) focusEditor(); }
 
 	function press(key: KeyName | 'ctrl' | 'alt') {
 		if (key === 'ctrl' || key === 'alt') mods[key] = !mods[key];
@@ -60,7 +73,7 @@
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
 		if (off || !win.input) return;
-		const line = text;
+		const line = codex ? '' : text;
 		if (!line) {
 			win.input(keyBytes('enter', win.appCursor()));
 			return;
@@ -82,9 +95,34 @@
 	const keepFocus = (e: MouseEvent) => e.preventDefault();
 </script>
 
+{#if question}
+	<section aria-label="Codex question" class="max-h-[35dvh] shrink-0 overflow-y-auto border-t border-line-1 bg-surface-1 p-2">
+		{#if question.kind === 'queued'}
+			<Button class="w-full justify-center" onclick={() => answer({kind:'open'})} disabled={off}>Answer {question.title}</Button>
+		{:else}
+			<p class="mb-1 text-[12px] text-ink-2">{question.title}</p>
+			<p class="mb-2 text-[14px] text-ink-1">{question.question}</p>
+			{#if question.kind === 'options'}
+				<div class="flex flex-col gap-1.5">
+					{#each question.options as option (option.digit)}
+						<Button class="h-auto! min-h-[44px] w-full justify-start py-2 text-left whitespace-normal!" onclick={() => answer({kind:'choice',digit:option.digit})} disabled={off}>{option.digit}. {option.label}</Button>
+					{/each}
+				</div>
+				{#if question.canAddNotes}<Button class="mt-2" onclick={() => answer({kind:'notes'})} disabled={off}>Add notes to selected option</Button>{/if}
+			{:else}
+				<div class="flex flex-wrap gap-2">
+					<Button onclick={focusEditor} disabled={off}>{question.notes ? 'Edit notes' : 'Type your answer'}</Button>
+					<Button variant="primary" onclick={() => answer({kind:'submit'})} disabled={off}>{question.submitAll ? 'Submit all answers' : 'Submit answer'}</Button>
+				</div>
+			{/if}
+		{/if}
+	</section>
+{/if}
+
 <!-- Hidden while a card waits: on a short phone with the keyboard open the card needs the room. -->
 <form
 	data-keys
+	{@attach keepTerminalKeyboard}
 	onsubmit={submit}
 	aria-label="Keys for the session"
 	class={['flex shrink-0 items-center gap-[6px] border-t border-line-1 bg-surface-1 p-[6px]', win.prompts.length && !win.info.exited && 'hidden']}
@@ -104,7 +142,7 @@
 		{#if otherWaits}<span class="absolute top-[6px] right-[6px] size-[8px] rounded-full bg-amber ring-2 ring-amber/40"></span>{/if}
 	</button>
 	<!-- One line with the field; the keys past the edge slide in. A line being typed takes their place. -->
-	<div role="group" aria-label="Keys" class={['max-w-[33%] shrink-0 gap-[4px] overflow-x-auto [scrollbar-width:none]', text ? 'hidden' : 'flex']}>
+	<div role="group" aria-label="Keys" class={[codex ? 'flex-1 gap-[4px] overflow-x-auto [scrollbar-width:none]' : 'max-w-[33%] shrink-0 gap-[4px] overflow-x-auto [scrollbar-width:none]', text && !codex ? 'hidden' : 'flex']}>
 		{#each keys as k (k.key)}
 			{@const sticky = k.key === 'ctrl' || k.key === 'alt'}
 			{@const on = (k.key === 'ctrl' && mods.ctrl) || (k.key === 'alt' && mods.alt)}
@@ -122,6 +160,9 @@
 			>
 		{/each}
 	</div>
+	{#if codex}
+		<Button icon="terminal" onclick={focusEditor} disabled={off} aria-label="Open keyboard for Codex">Type</Button>
+	{:else}
 	<input
 		type="text"
 		bind:value={text}
@@ -137,9 +178,10 @@
 		spellcheck="false"
 		class="h-[44px] min-w-0 flex-1 rounded-[8px] border border-line-2 bg-inset px-[10px] font-mono text-[16px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-brand disabled:opacity-50"
 	/>
+	{/if}
 	<button
 		type="submit"
-		aria-label={text ? 'Send the line and Enter' : 'Send Enter'}
+		aria-label={!codex && text ? 'Send the line and Enter' : 'Send Enter'}
 		disabled={off}
 		onmousedown={keepFocus}
 		class="grid h-[44px] w-[40px] shrink-0 place-items-center rounded-[8px] bg-ink-1 text-surface-0 disabled:opacity-50"><Icon name="enter" size={18} /></button
